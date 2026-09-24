@@ -9,9 +9,7 @@ R_UNIV = 8314.5  # J/(kmol*K) as used in MATLAB comb.m
 
 def comb(s: Settings, x: State, t: float) -> State:
     if t <= s.tburn or s.tburn == 0:
-        x.k = interp2x(s.prop_OF, s.prop_Pc, s.prop_k, x.OF, x.P_cmbr)
-        x.M = interp2x(s.prop_OF, s.prop_Pc, s.prop_M, x.OF, x.P_cmbr)
-        x.T = interp2x(s.prop_OF, s.prop_Pc, s.prop_T, x.OF, x.P_cmbr)
+        x.k, x.M, x.T = interp2x(s.prop_OF, s.prop_Pc, (s.prop_k, s.prop_M, s.prop_T), x.OF, x.P_cmbr)
         x.R = R_UNIV / x.M
         x.rho = x.P_cmbr / (x.R * x.T)
         x.cstar = s.cstar_eff * (
