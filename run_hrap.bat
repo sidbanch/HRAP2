@@ -41,7 +41,7 @@ if not exist "%PYTHONW%" set "PYTHONW=%PYTHON%"
 
 set "PYTHONPATH=%CD%\src;%PYTHONPATH%"
 
-"%PYTHON%" -c "import hrap, PySide6, pyqtgraph" >> "%LOG%" 2>&1
+"%PYTHON%" -c "import hrap, PySide6, pyqtgraph, CoolProp" >> "%LOG%" 2>&1
 if errorlevel 1 goto :install
 goto :launch
 

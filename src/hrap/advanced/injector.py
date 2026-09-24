@@ -20,10 +20,7 @@ def hem_flux_table(fluid: str = "NitrousOxide") -> Callable[[float, float], floa
     Built once per process from CoolProp: saturated liquid at T_tank expands isentropically to the
     downstream pressure. Below the choke pressure the flux stays at its maximum.
     """
-    try:
-        import CoolProp.CoolProp as CP
-    except ImportError as exc:
-        raise ImportError("CoolProp is required for the HEM and Dyer injector models. pip install hrap[advanced]") from exc
+    import CoolProp.CoolProp as CP
 
     state = CP.AbstractState("HEOS", fluid)
     T_grid = np.linspace(CP.PropsSI("Ttriple", fluid) + 1.0, CP.PropsSI("Tcrit", fluid) - 0.5, 250)

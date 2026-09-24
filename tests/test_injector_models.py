@@ -1,7 +1,5 @@
 import pytest
 
-pytest.importorskip("CoolProp")
-
 from hrap.advanced.injector import hem_flux_table
 from hrap.engine.sim import run
 from hrap.io.config import bundled_motor, resolve
@@ -21,7 +19,7 @@ def test_dyer_flow_is_between_spi_and_hem():
     peaks = {}
     for model in ("SPI", "HEM", "Dyer"):
         cfg = bundled_motor("example_98mm")
-        cfg["advanced"].update(enabled=model != "SPI", inj_model=model)
+        cfg["inj_model"] = model
         s, x = resolve(cfg)
         _x, o = run(s, x)
         peaks[model] = o.mdot_o[1:200].mean()

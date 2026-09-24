@@ -7,10 +7,7 @@ from hrap.engine.types import OxProps
 
 
 def coolprop_sat(fluid: str, T_min: float | None = None, T_max: float | None = None, n: int = 80):
-    try:
-        import CoolProp.CoolProp as CP
-    except ImportError as exc:
-        raise ImportError("CoolProp is required for advanced fluids. pip install hrap[advanced]") from exc
+    import CoolProp.CoolProp as CP
 
     if T_min is None:
         T_min = CP.PropsSI("Tmin", fluid) + 1.0

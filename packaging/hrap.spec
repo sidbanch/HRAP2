@@ -22,7 +22,7 @@ hiddenimports = [
     "hrap.gui.viz",
 ]
 
-for pkg in ("PySide6", "pyqtgraph"):
+for pkg in ("PySide6", "pyqtgraph", "CoolProp"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries

@@ -102,15 +102,15 @@ def default_cfg() -> dict[str, Any]:
         "t_burn": 0.0,
         "dt": 0.001,
         "reg_model": "Constant OF",
+        "inj_model": "SPI",
+        "inj_Cd_HEM": 0.0,
+        "dyer_kappa": 1.0,
         "source": "hrap",
         "advanced": {
             "enabled": False,
             "ox_fluid": "N2O_legacy",
             "grain_shape": "cylindrical",
             "live_chem": False,
-            "inj_model": "SPI",
-            "inj_Cd_HEM": 0.0,
-            "dyer_kappa": 1.0,
         },
     }
 
@@ -383,11 +383,11 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     if adv.get("enabled") and adv.get("grain_shape") == "star":
         from hrap.advanced.geometry import make_star_grain_fn
         s.grain_fn = make_star_grain_fn(int(adv.get("star_tips") or 6))
-    if adv.get("enabled") and adv.get("inj_model", "SPI") != "SPI":
+    if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
-        s.inj_model = str(adv["inj_model"])
-        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(adv.get("inj_Cd_HEM") or cfg["inj_Cd"])
-        s.dyer_kappa = float(adv.get("dyer_kappa") or 1.0)
+        s.inj_model = str(cfg["inj_model"])
+        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or cfg["inj_Cd"])
+        s.dyer_kappa = float(cfg.get("dyer_kappa") or 1.0)
         s.hem_flux = hem_flux_table()
     return s, x
 

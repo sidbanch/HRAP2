@@ -122,9 +122,8 @@ class SweepDialog(QDialog):
             grid.addWidget(self.max_dp, 3, 1)
             grid.addWidget(QLabel(f"{pressure} (burn average)"), 3, 2, 1, 3)
         else:
-            adv = cfg["advanced"]
-            hem_cd = f"fixed at {adv['inj_Cd_HEM']:.3g}" if adv.get("inj_Cd_HEM") else "follows the swept Cd"
-            model = f"Dyer (κ {adv.get('dyer_kappa') or 1.0:.3g})" if adv["inj_model"] == "Dyer" else adv["inj_model"]
+            hem_cd = f"fixed at {cfg['inj_Cd_HEM']:.3g}" if cfg.get("inj_Cd_HEM") else "follows the swept Cd"
+            model = f"Dyer (κ {cfg.get('dyer_kappa') or 1.0:.3g})" if cfg["inj_model"] == "Dyer" else cfg["inj_model"]
             grid.addWidget(QLabel("Injector model"), 3, 0)
             grid.addWidget(QLabel(f"{model}. HEM Cd {hem_cd}."), 3, 1, 1, 6)
         grid.setColumnStretch(7, 1)

@@ -19,11 +19,11 @@ dependencies = [
     "scipy",
     "PySide6",
     "pyqtgraph",
+    "coolprop",
 ]
 
 [project.optional-dependencies]
 advanced = [
-    "coolprop",
     "scikit-image",
     "opencv-python",
 ]
