@@ -502,9 +502,17 @@ class MainWindow(QMainWindow):
             "HEM: liquid boils instantly in the orifice; underpredicts flow and chokes.\n"
             "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM."
         )
-        self.inj_Cd_HEM = PlainDoubleSpinBox(); self.inj_Cd_HEM.setRange(0, 1); self.inj_Cd_HEM.setDecimals(4)
-        self.inj_Cd_HEM.setSpecialValueText("same as injector Cd")
+        self.inj_Cd_HEM = PlainDoubleSpinBox(); self.inj_Cd_HEM.setRange(0.01, 1); self.inj_Cd_HEM.setDecimals(4)
         self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")
+        self.hem_same = QCheckBox("Same as injector Cd")
+        self.hem_same.setChecked(True)
+        hem_row = QWidget()
+        hem_layout = QHBoxLayout(hem_row)
+        hem_layout.setContentsMargins(0, 0, 0, 0)
+        hem_layout.addWidget(self.inj_Cd_HEM, 1)
+        hem_layout.addWidget(self.hem_same)
+        self.hem_same.toggled.connect(self._sync_hem_cd)
+        self.inj_Cd.valueChanged.connect(self._sync_hem_cd)
         self.dyer_kappa = PlainDoubleSpinBox(); self.dyer_kappa.setRange(0.01, 100); self.dyer_kappa.setDecimals(2)
         self.dyer_kappa.setValue(1.0)
         self.dyer_kappa.setToolTip("Dyer weighting. 1 = the formula's value for a tank at its own vapor pressure (even blend). Larger leans toward SPI.")
@@ -517,10 +525,10 @@ class MainWindow(QMainWindow):
         iff.addRow("Injector Cd", self.inj_Cd)
         iff.addRow("Injector count", self.inj_N)
         iff.addRow("Injector model", self.inj_model)
-        iff.addRow("HEM Cd", self.inj_Cd_HEM)
+        iff.addRow("HEM Cd", hem_row)
         iff.addRow("Dyer κ", self.dyer_kappa)
         self.inj_model.currentTextChanged.connect(
-            lambda model: (iff.setRowVisible(self.inj_Cd_HEM, model != "SPI"),
+            lambda model: (iff.setRowVisible(hem_row, model != "SPI"),
                            iff.setRowVisible(self.dyer_kappa, model == "Dyer")))
         self.inj_model.currentTextChanged.emit("SPI")
         self.inj_cda = QLabel("—")
@@ -721,7 +729,7 @@ class MainWindow(QMainWindow):
             "inj_N": self.inj_N.value(),
             "inj_Cd": self.inj_Cd.value(),
             "inj_model": self.inj_model.currentText(),
-            "inj_Cd_HEM": self.inj_Cd_HEM.value(),
+            "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
             "vnt_state": self.vnt_state.currentText(),
             "vnt_D": self.vnt_D.spin.value(),
@@ -806,7 +814,11 @@ class MainWindow(QMainWindow):
         self.inj_Cd.setValue(float(cfg.get("inj_Cd") or 1))
         self.inj_N.setValue(int(cfg.get("inj_N") or 1))
         self.inj_model.setCurrentText(str(cfg.get("inj_model") or "SPI"))
-        self.inj_Cd_HEM.setValue(float(cfg.get("inj_Cd_HEM") or 0.0))
+        hem_cd = float(cfg.get("inj_Cd_HEM") or 0.0)
+        self.hem_same.setChecked(not hem_cd)
+        if hem_cd:
+            self.inj_Cd_HEM.setValue(hem_cd)
+        self._sync_hem_cd()
         self.dyer_kappa.setValue(float(cfg.get("dyer_kappa") or 1.0))
         self.vnt_state.setCurrentText(str(cfg.get("vnt_state") or "None"))
         self.vnt_D.set_display(cfg.get("vnt_D", 0), cfg.get("vnt_D_unit", "mm"))
@@ -827,6 +839,12 @@ class MainWindow(QMainWindow):
             self.star_tips.setValue(int(adv["star_tips"]))
         self.live_chem.setChecked(bool(adv.get("live_chem")))
         self._update_derived_labels()
+
+    def _sync_hem_cd(self):
+        same = self.hem_same.isChecked()
+        self.inj_Cd_HEM.setEnabled(not same)
+        if same:
+            self.inj_Cd_HEM.setValue(self.inj_Cd.value())
 
     def _connect_derived(self):
         self._wire_standalone_units()
