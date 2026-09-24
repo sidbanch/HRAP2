@@ -80,6 +80,7 @@ class SweepPanel(QFrame):
     """Full-simulation check of a sized motor across throat diameters and injector Cds."""
 
     finished = Signal()
+    limit_edited = Signal()  # the chamber limit is a motor setting, shared with the Simulation tab
 
     def __init__(self, get_cfg: Callable[[], dict | None], get_units: Callable[[], DisplayUnits],
                  on_pick: Callable[[float], None]):
@@ -110,7 +111,9 @@ class SweepPanel(QFrame):
         self.cd_n = self._count(6)
         self.max_chamber = self._spin(500.0, 0)
         self.max_dp = self._spin(300.0, 0)
-        self.max_chamber.setToolTip("Peak chamber pressure the chamber is designed for (absolute).")
+        self.max_chamber.setToolTip("Peak chamber pressure the chamber is designed for (absolute).\n"
+                                    "Shared with the chamber pressure limit on the Simulation tab.")
+        self.max_chamber.valueChanged.connect(self.limit_edited)
         self.max_dp.setToolTip("Above this burn-average ΔP, the SPI injector model overpredicts oxidizer flow.")
         self.center_label = QLabel("")
         self.model_label = QLabel("")
@@ -298,6 +301,15 @@ class SweepPanel(QFrame):
 
     def busy(self) -> bool:
         return self._thread is not None
+
+    def chamber_limit(self) -> float:
+        return self._limits()[0]
+
+    def set_chamber_limit(self, limit: float):
+        self.max_chamber.blockSignals(True)
+        self.max_chamber.setValue(from_si(limit, self._get_units().pressure, "pressure"))
+        self.max_chamber.blockSignals(False)
+        self._refresh()
 
     def _limits(self) -> tuple[float, float]:
         p = self._get_units().pressure

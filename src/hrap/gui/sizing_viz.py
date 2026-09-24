@@ -51,9 +51,44 @@ def _circle(p: QPainter, c: QPointF, d: float):
 
 
 class InjectorSketch(Sketch):
-    """Injector face inside the chamber bore, holes to scale (at least 3 px so they stay visible)."""
+    """Injector face inside the chamber bore, holes to scale (at least 4 px so they stay visible),
+    or a swirler looking down its axis."""
 
-    def draw(self, p: QPainter, r: QRectF, bore: float, hole: float, holes: int):
+    def draw(self, p: QPainter, r: QRectF, swirler: dict | None = None, **holes):
+        if swirler:
+            self._draw_swirler(p, r, **swirler)
+        else:
+            self._draw_holes(p, r, **holes)
+
+    def _draw_swirler(self, p: QPainter, r: QRectF, exit: float, ports: int, port: float, offset: float, fill: float):
+        """Tangential inlet ports into the swirl chamber, the exit orifice in the middle and its air core, to scale."""
+        c = r.center()
+        chamber = offset + 0.5 * port  # swirl chamber radius: the ports enter along its wall
+        body = 1.5 * chamber
+        px = 0.5 * min(r.width(), r.height()) / body
+        p.setPen(QPen(self.color("outline"), 1.0))
+        p.setBrush(self.color("plate"))
+        _circle(p, c, 2 * body * px)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color("tank"))
+        _circle(p, c, 2 * chamber * px)
+        channel = QPen(self.color("tank"), max(port * px, 2.0))
+        channel.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p.setPen(channel)
+        for i in range(ports):
+            a = 2 * math.pi * i / ports
+            start = QPointF(offset * math.cos(a), offset * math.sin(a))
+            run = math.sqrt(body ** 2 - offset ** 2)  # along the tangent to the body's edge
+            end = start + QPointF(-math.sin(a), math.cos(a)) * run
+            p.drawLine(c + start * px, c + end * px)
+        p.setPen(QPen(self.color("outline"), 1.0))
+        p.setBrush(self.color("inj"))
+        _circle(p, c, exit * px)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color("port"))
+        _circle(p, c, math.sqrt(1.0 - fill) * exit * px)
+
+    def _draw_holes(self, p: QPainter, r: QRectF, bore: float, hole: float, holes: int):
         c, px = r.center(), min(r.width(), r.height()) / bore
         p.setPen(QPen(self.color("outline"), 1.0))
         p.setBrush(self.color("plate"))

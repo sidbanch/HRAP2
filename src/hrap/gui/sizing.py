@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
+from hrap.engine.swirl import swirl_A, swirl_fill
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
+from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants
 from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
 
@@ -142,6 +144,7 @@ class SizingPage(QWidget):
         self._cfg: dict | None = None
         self._picked_throat: float | None = None
         self._loading = False
+        self._swirler = False
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.burn_time = PlainDoubleSpinBox(); self.burn_time.setRange(0.1, 120); self.burn_time.setDecimals(2)
@@ -173,7 +176,7 @@ class SizingPage(QWidget):
         self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 1)
         self.tank_T = UnitRow(TEMP_ITEMS, "C", 2)
         self.fill = PlainDoubleSpinBox(); self.fill.setRange(0, 100); self.fill.setDecimals(1)
-        self.hole_D = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(3)
         self.inj_model = PlainComboBox(); self.inj_model.addItems(["SPI", "HEM", "Dyer"])
         self.propellant = PlainComboBox()
@@ -196,7 +199,7 @@ class SizingPage(QWidget):
         mform.add("Fill", self.fill, "%")
         mform.add("Tank pressure", self.tank_P, muted=True)
         mform.add("Liquid oxidizer", self.ox_liquid, muted=True)
-        mform.add("Injector hole", self.hole_D)
+        self._hole_D_label = mform.add("Injector hole", self.hole_D)[0]
         mform.add("Injector Cd", self.inj_Cd)
         mform.add("Injector model", self.inj_model)
         mform.add("Propellant", self.propellant)
@@ -221,6 +224,10 @@ class SizingPage(QWidget):
                                     "O/F at liquid burnout", "Fuel burned"], GrainSketch())
         self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
 
+        self.limit_warning = QLabel("")
+        self.limit_warning.setObjectName("sizingError")
+        self.limit_warning.setWordWrap(True)
+        self.limit_warning.hide()
         self.error = QLabel("")
         self.error.setObjectName("sizingError")
         self.error.setWordWrap(True)
@@ -237,6 +244,7 @@ class SizingPage(QWidget):
         buttons.addWidget(self.apply_summary, 1)
         buttons.addWidget(self.apply_btn)
         self.sweep = SweepPanel(self.sized_cfg, get_units, self._on_pick)
+        self.sweep.limit_edited.connect(self._on_motor_edited)
 
         intro = QLabel("Sizes the injector, nozzle and grain for conditions at the start of the burn, using the "
                        "simulation's own injector, combustion and nozzle equations. Apply the result, then run "
@@ -260,6 +268,7 @@ class SizingPage(QWidget):
         results.addWidget(self.performance, 1, 1)
         right = QVBoxLayout()
         right.setSpacing(12)
+        right.addWidget(self.limit_warning)
         right.addWidget(self.error)
         right.addLayout(results)
         right.addWidget(self.sweep, 1)
@@ -343,6 +352,15 @@ class SizingPage(QWidget):
         self.fill.setValue(100.0 * values["fill"])
         self.hole_D.set_display(from_si(values["hole_D"], self.hole_D.unit.currentText(), "length"))
         self.inj_Cd.setValue(values["inj_Cd"])
+        self.inj_Cd.setEnabled(values["inj_Cd_editable"])
+        self.inj_Cd.setToolTip("" if values["inj_Cd_editable"] else
+                               "Worked out from the swirler geometry on the Simulation tab.")
+        self._swirler = values["inj_type"] == "Swirler"
+        self._hole_D_label.setText("Swirler exit" if self._swirler else "Injector hole")
+        self._holes_row[0].setText("Swirler count" if self._swirler else "Hole count")
+        self.injector.labels["Flow per hole"].setText("Flow per swirler" if self._swirler else "Flow per hole")
+        self.injector.labels["Holes"].setText("Swirlers" if self._swirler else "Holes")
+        self.sweep.set_chamber_limit(values["P_cmbr_max"])
         self.inj_model.setCurrentText(values["inj_model"])
         self.propellant.setCurrentIndex(max(self.propellant.findData(values["prop_id"]), 0))
         self.cstar.setValue(values["cstar"])
@@ -362,6 +380,7 @@ class SizingPage(QWidget):
             "cstar": self.cstar.value(),
             "noz_Cd": self.noz_Cd.value(),
             "holes": self.holes.value(),
+            "P_cmbr_max": self.sweep.chamber_limit(),
         }
 
     def refresh(self):
@@ -369,6 +388,10 @@ class SizingPage(QWidget):
             return
         u = self._get_units()
         cfg = self._get_cfg()
+        target, limit = self.targets().P_cmbr, chamber_limit(cfg)
+        self.limit_warning.setText(f"The {u.text(target, 'pressure')} chamber pressure target is above the "
+                                   f"{u.text(limit, 'pressure')} chamber pressure limit.")
+        self.limit_warning.setVisible(target > limit)
         try:
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
@@ -397,10 +420,11 @@ class SizingPage(QWidget):
         lasts = z.ox_liquid / (holes * z.flow_per_hole)
         flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
         dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
-        hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), float(cfg["inj_Cd"]), cfg.get("inj_model") or "SPI"
+        hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), injector_cd(cfg), cfg.get("inj_model") or "SPI"
+        noun = "swirler" if self._swirler else "hole"
         if t.holes:
             self.injector.set("Oxidizer flow", flow,
-                              f"The flow through your holes:\nhole count × flow per hole = {holes} × {per_hole} = {flow}")
+                              f"The flow through your {noun}s:\n{noun} count × flow per {noun} = {holes} × {per_hole} = {flow}")
         else:
             self.injector.set("Oxidizer flow", flow,
                               f"The flow that empties the liquid in the burn time:\n"
@@ -412,21 +436,30 @@ class SizingPage(QWidget):
                           "Above about 20%, chamber pressure swings barely change the injector flow,\n"
                           "which avoids feed-coupled combustion instability.")
         self.injector.set("Flow per hole", per_hole,
-                          f"Flow through one {hole} hole at Cd {inj_Cd:.3g} with {dP} across it,\n"
+                          f"Flow through one {hole} {'swirler exit' if self._swirler else 'hole'} at Cd {inj_Cd:.3g} with {dP} across it,\n"
                           f"from the {model} injector model.")
         if t.holes:
-            self.injector.set("Holes", f"{holes}", "Your hole count, from Targets.")
+            self.injector.set("Holes", f"{holes}", f"Your {noun} count, from Targets.")
         else:
             self.injector.set("Holes", f"{z.holes:.2f} → {holes}",
-                              f"oxidizer flow ÷ flow per hole = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
+                              f"oxidizer flow ÷ flow per {noun} = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
                               f"rounded to {holes}. Apply to motor uses {holes}.")
         self.injector.set("Liquid lasts", f"{lasts:.2f} s",
-                          f"With {holes} holes the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
+                          f"With {holes} {noun}s the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
                           f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
                           "The real flow falls as the tank cools, so the full simulation runs a little longer.")
         bore = to_si(float(cfg["grn_OD"]), cfg["grn_OD_unit"], "length")
-        self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
-                                        "caption": f"{holes} × {hole} holes"})
+        if self._swirler:
+            D_port = to_si(float(cfg["sw_D_port"]), cfg["sw_D_port_unit"], "length")
+            R_in = to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length")
+            ports = int(cfg["sw_ports"])
+            fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
+            self.injector.sketch.show_data({
+                "swirler": {"exit": self._hole_D(cfg), "ports": ports, "port": D_port, "offset": R_in, "fill": fill},
+                "caption": f"{ports} ports, {hole} exit"})
+        else:
+            self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
+                                            "caption": f"{holes} × {hole} holes"})
         end = f" → {from_si(z.port_D_end, u.length, 'length'):.3g}" if math.isfinite(z.port_D_end) else ""
         self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end,
                                      "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}"})

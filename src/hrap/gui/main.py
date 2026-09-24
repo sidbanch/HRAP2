@@ -53,7 +53,10 @@ from hrap.gui.theme import apply_theme
 from hrap.gui.sizing import SizingPage
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
-from hrap.io.config import bundled_motor, default_cfg, load_json, load_matlab_mat, resolve, resolve_layout, save_json
+from hrap.engine.swirl import swirl_cd
+from hrap.io.config import (
+    bundled_motor, chamber_limit, default_cfg, load_json, load_matlab_mat, resolve, resolve_layout, save_json,
+)
 from hrap.io.export import export_csv, export_eng, export_rse
 from hrap.io.propellant import list_propellants, load_propellant
 from hrap.layout import motor_layout
@@ -370,6 +373,28 @@ class MainWindow(QMainWindow):
         self.inj_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(4)
         self.inj_N = PlainSpinBox(); self.inj_N.setRange(1, 200)
+        self.inj_type = PlainComboBox(); self.inj_type.addItems(["Holes", "Swirler"])
+        self.inj_type.setToolTip(
+            "Holes: straight drilled holes. Cd is about 0.6 for a sharp edge, 0.8 or more for a chamfered or rounded one.\n"
+            "Swirler: nitrous enters a small chamber through tangential ports, spins, and leaves the exit orifice as a\n"
+            "hollow cone. The spin leaves an air core, so only a ring of liquid flows and the Cd is low (about 0.15–0.4)."
+        )
+        self.sw_ports = PlainSpinBox(); self.sw_ports.setRange(1, 12)
+        self.sw_ports.setToolTip("Number of tangential inlet ports into the swirl chamber.")
+        self.sw_D_port = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.sw_D_port.setToolTip("Diameter of each tangential inlet port.")
+        self.sw_R_in = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.sw_R_in.setToolTip("Distance from the swirler's axis to each inlet port's axis. Further out spins the flow harder\n"
+                                "and lowers the Cd.")
+        self.sw_cd_geom = QCheckBox("From geometry")
+        self.sw_cd_geom.setChecked(True)
+        self.sw_cd_geom.setToolTip("Work the Cd out from the swirler geometry (Abramovich's theory for an ideal liquid).\n"
+                                   "Untick it to type a Cd measured in a cold flow.")
+        cd_row = QWidget()
+        cd_layout = QHBoxLayout(cd_row)
+        cd_layout.setContentsMargins(0, 0, 0, 0)
+        cd_layout.addWidget(self.inj_Cd, 1)
+        cd_layout.addWidget(self.sw_cd_geom)
         self.inj_model = PlainComboBox()
         self.inj_model.addItems(["SPI", "HEM", "Dyer"])
         self.inj_model.setToolTip(
@@ -401,9 +426,13 @@ class MainWindow(QMainWindow):
         self.vnt_Cd = PlainDoubleSpinBox(); self.vnt_Cd.setRange(0, 1); self.vnt_Cd.setDecimals(3)
         inj = CollapsibleBox("Injector / vent")
         iff = inj.form()
+        iff.addRow("Injector type", self.inj_type)
         iff.addRow("Hole diameter", self.inj_D)
         iff.addRow("Hole count", self.inj_N)
-        iff.addRow("Injector Cd", self.inj_Cd)
+        iff.addRow("Inlet ports", self.sw_ports)
+        iff.addRow("Inlet port diameter", self.sw_D_port)
+        iff.addRow("Port offset from axis", self.sw_R_in)
+        iff.addRow("Injector Cd", cd_row)
         iff.addRow("Injector model", self.inj_model)
         iff.addRow("HEM Cd", hem_row)
         iff.addRow("Dyer κ", self.dyer_kappa)
@@ -418,11 +447,27 @@ class MainWindow(QMainWindow):
             iff.setRowVisible(self.dyer_kappa, model == "Dyer")
             self.ox_fluid.setEnabled(model == "SPI")
 
+        def show_type_rows(kind: str):
+            swirler = kind == "Swirler"
+            cast(QLabel, iff.labelForField(self.inj_D)).setText("Exit diameter" if swirler else "Hole diameter")
+            cast(QLabel, iff.labelForField(self.inj_N)).setText("Swirler count" if swirler else "Hole count")
+            for w in (self.sw_ports, self.sw_D_port, self.sw_R_in):
+                iff.setRowVisible(w, swirler)
+            self.sw_cd_geom.setVisible(swirler)
+            self._sync_swirl_cd()
+
         def show_vent_rows(state: str):
             iff.setRowVisible(self.vnt_D, state != "None")
             iff.setRowVisible(self.vnt_Cd, state != "None")
 
         self.inj_model.currentTextChanged.connect(show_injector_rows)
+        self.inj_type.currentTextChanged.connect(show_type_rows)
+        for w in (self.inj_D.spin, self.sw_ports, self.sw_D_port.spin, self.sw_R_in.spin):
+            w.valueChanged.connect(self._sync_swirl_cd)
+        for w in (self.inj_D.unit, self.sw_D_port.unit, self.sw_R_in.unit):
+            w.currentTextChanged.connect(self._sync_swirl_cd)
+        self.sw_cd_geom.toggled.connect(self._sync_swirl_cd)
+        show_type_rows("Holes")
         self.vnt_state.currentTextChanged.connect(show_vent_rows)
         show_vent_rows("None")
         root.addWidget(inj)
@@ -469,6 +514,9 @@ class MainWindow(QMainWindow):
         gf.addRow("Grain length", self.grn_L)
         gf.addRow(self.cmbr_by_dims)
         gf.addRow("Chamber volume", self.cmbr_V)
+        self.P_cmbr_max = UnitRow(PRESSURE_ITEMS, "psi", 1)
+        self.P_cmbr_max.setToolTip("The chamber's design pressure (absolute). Runs, sizing and the Cd sweep warn above it.")
+        gf.addRow("Chamber pressure limit", self.P_cmbr_max)
 
         def show_regression_rows(model: str):
             for w in (self.prop_a, self.prop_n, self.prop_m):
@@ -683,6 +731,11 @@ class MainWindow(QMainWindow):
             column.addWidget(part)
             column.setStretchFactor(column.indexOf(part), stretch)
         column.setSizes([520, 300, 120])
+        self.limit_warning = QLabel("")
+        self.limit_warning.setObjectName("sizingError")
+        self.limit_warning.setWordWrap(True)
+        self.limit_warning.hide()
+        layout.addWidget(self.limit_warning)
         layout.addWidget(column, 1)
         return box
 
@@ -758,6 +811,15 @@ class MainWindow(QMainWindow):
             "inj_D_unit": self.inj_D.unit.currentText(),
             "inj_N": self.inj_N.value(),
             "inj_Cd": self.inj_Cd.value(),
+            "inj_type": self.inj_type.currentText(),
+            "sw_ports": self.sw_ports.value(),
+            "sw_D_port": self.sw_D_port.spin.value(),
+            "sw_D_port_unit": self.sw_D_port.unit.currentText(),
+            "sw_R_in": self.sw_R_in.spin.value(),
+            "sw_R_in_unit": self.sw_R_in.unit.currentText(),
+            "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
+            "P_cmbr_max": self.P_cmbr_max.spin.value(),
+            "P_cmbr_max_unit": self.P_cmbr_max.unit.currentText(),
             "inj_model": self.inj_model.currentText(),
             "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
@@ -837,6 +899,12 @@ class MainWindow(QMainWindow):
         self.inj_D.set_display(cfg.get("inj_D", 0), cfg.get("inj_D_unit", "in"))
         self.inj_Cd.setValue(float(cfg.get("inj_Cd") or 1))
         self.inj_N.setValue(int(cfg.get("inj_N") or 1))
+        self.sw_ports.setValue(int(cfg["sw_ports"]))
+        self.sw_D_port.set_display(cfg["sw_D_port"], cfg["sw_D_port_unit"])
+        self.sw_R_in.set_display(cfg["sw_R_in"], cfg["sw_R_in_unit"])
+        self.sw_cd_geom.setChecked(bool(cfg["sw_cd_from_geometry"]))
+        self.inj_type.setCurrentText(str(cfg["inj_type"]))
+        self.P_cmbr_max.set_display(cfg["P_cmbr_max"], cfg["P_cmbr_max_unit"])
         self.inj_model.setCurrentText(str(cfg.get("inj_model") or "SPI"))
         hem_cd = float(cfg.get("inj_Cd_HEM") or 0.0)
         self.hem_same.setChecked(not hem_cd)
@@ -903,6 +971,16 @@ class MainWindow(QMainWindow):
         else:
             self._set_fill_mode(mode, "kg")
             self.fill.setValue(m_o)
+
+    def _swirler_cd_from_geometry(self) -> bool:
+        return self.inj_type.currentText() == "Swirler" and self.sw_cd_geom.isChecked()
+
+    def _sync_swirl_cd(self, *_):
+        geom = self._swirler_cd_from_geometry()
+        self.inj_Cd.setEnabled(not geom)
+        D_port = self._len_si(self.sw_D_port)
+        if geom and D_port > 0:
+            self.inj_Cd.setValue(swirl_cd(self._len_si(self.inj_D), self.sw_ports.value(), D_port, self._len_si(self.sw_R_in)))
 
     def _sync_hem_cd(self):
         same = self.hem_same.isChecked()
@@ -1023,6 +1101,10 @@ class MainWindow(QMainWindow):
 
     def _len_si(self, row: UnitRow) -> float:
         return to_si(row.spin.value(), row.unit.currentText(), "length")
+
+    @staticmethod
+    def _pressure_si(row: UnitRow) -> float:
+        return to_si(row.spin.value(), row.unit.currentText(), "pressure")
 
     def _tank_geometry(self) -> tuple[float, float, float]:
         d = self._len_si(self.tnk_D)
@@ -1168,7 +1250,8 @@ class MainWindow(QMainWindow):
         )
         inj_lines = (
             "Injectors",
-            f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}",
+            (f"{inj_N} swirler{'s' if inj_N > 1 else ''}, exit Ø{u.text(inj_D, 'length', 3)}"
+             if self.inj_type.currentText() == "Swirler" else f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}"),
             f"Cd: {inj_Cd:.2f}",
             f"A: {u.text(inj_A, 'area')}",
             f"ox flow = {u.text(ox_mdot, 'mass_flow', 3)}",
@@ -1291,6 +1374,7 @@ class MainWindow(QMainWindow):
             return
         self._output = self._settings = self._state = self._result_cfg = None
         self._hover_index = None
+        self.limit_warning.hide()
         self.summary.clear()
         self._clear_plot()
         self._refresh_viz()
@@ -1354,6 +1438,9 @@ class MainWindow(QMainWindow):
             "cstar": self.cstar.value(),
             "noz_Cd": self.noz_Cd.value(),
             "holes": self.inj_N.value(),
+            "inj_type": self.inj_type.currentText(),
+            "inj_Cd_editable": not self._swirler_cd_from_geometry(),
+            "P_cmbr_max": self._pressure_si(self.P_cmbr_max),
         })
 
     def _sizing_to_form(self):
@@ -1373,8 +1460,10 @@ class MainWindow(QMainWindow):
             m_o = v["fill"] * V * ox.rho_l + (1.0 - v["fill"]) * V * ox.rho_v
             self.fill.setValue(from_si(m_o, self.fill_unit.currentText(), "mass"))
         self.inj_D.set_display(from_si(v["hole_D"], self.inj_D.unit.currentText(), "length"))
-        self.inj_Cd.setValue(v["inj_Cd"])
+        if not self._swirler_cd_from_geometry():
+            self.inj_Cd.setValue(v["inj_Cd"])
         self.inj_model.setCurrentText(v["inj_model"])
+        self.P_cmbr_max.set_display(from_si(v["P_cmbr_max"], self.P_cmbr_max.unit.currentText(), "pressure"))
         self.prop_combo.setCurrentIndex(max(self.prop_combo.findData(v["prop_id"]), 0))
         self.cstar.setValue(v["cstar"])
         self.noz_Cd.setValue(v["noz_Cd"])
@@ -1450,7 +1539,14 @@ class MainWindow(QMainWindow):
         self._refresh_plot()
         self._refresh_viz()
         self._stop_progress()
-        self.statusBar().showMessage(f"Done — {o.sim_end_cond}  Total impulse: {self.display_units.text(info['total_impulse'], 'impulse')}")
+        u = self.display_units
+        peak, limit = float(np.max(o.P_cmbr)), chamber_limit(self._result_cfg)
+        over = peak > limit
+        self.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
+                                   f"{u.text(limit, 'pressure')} chamber pressure limit.")
+        self.limit_warning.setVisible(over)
+        self.statusBar().showMessage(f"Done — {o.sim_end_cond}  Total impulse: {u.text(info['total_impulse'], 'impulse')}"
+                                     + ("  ⚠ Over the chamber pressure limit" if over else ""))
 
     def _on_failed(self, msg: str):
         self._stop_progress()
@@ -1525,6 +1621,11 @@ class MainWindow(QMainWindow):
             pen = pg.mkPen(palette[i % len(palette)], width=2)
             self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
                                       pen=pen, name=label)
+        if "pressure" in self._plots and self._result_cfg is not None:
+            limit = self.display_units.value(chamber_limit(self._result_cfg), "pressure")
+            self._plots["pressure"].addItem(pg.InfiniteLine(
+                pos=limit, angle=0, movable=False, pen=pg.mkPen("#e06c75", width=1, style=Qt.PenStyle.DashLine),
+                label="Chamber limit", labelOpts={"position": 0.05, "color": "#e06c75", "anchors": [(0, 1), (0, 1)]}))
         for plot in self._plots.values():
             vb = cast(pg.ViewBox, plot.vb)
             vb.setXRange(*self._time_range, padding=0)

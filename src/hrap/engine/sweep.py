@@ -27,7 +27,7 @@ class SweepCase:
 
 def run_case(cfg: dict[str, Any], throat: float, cd: float) -> SweepCase:
     case_cfg = clone_cfg(cfg)
-    case_cfg.update(noz_thrt=float(throat), noz_thrt_unit="m", inj_Cd=float(cd))
+    case_cfg.update(noz_thrt=float(throat), noz_thrt_unit="m", inj_Cd=float(cd), sw_cd_from_geometry=False)
     s, x = resolve(case_cfg)
     x, o = run(s, x)
     info = summarize(s, x, o)
