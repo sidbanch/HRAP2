@@ -1635,6 +1635,14 @@ class MainWindow(QMainWindow):
         )
 
 
+def _warm_coolprop_tables() -> None:
+    from hrap.advanced.fluid import coolprop_sat
+    from hrap.advanced.injector import hem_flux_table
+
+    coolprop_sat("NitrousOxide")
+    hem_flux_table("NitrousOxide")
+
+
 def _has_bundled(name: str) -> bool:
     try:
         bundled_motor(name)
@@ -1664,6 +1672,9 @@ def main():
         app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icon.ico")))
         apply_theme(app, "dark")
         pg.setConfigOptions(antialias=True, background="#1a1d23", foreground="#e6e8ee")
+        # Loading CoolProp and building its nitrous tables takes ~0.8 s and blocks Qt even from a
+        # background thread, so do it before the window is up instead of on the first sizing or run.
+        _warm_coolprop_tables()
         win = MainWindow()
         win.show()
         win.raise_()
