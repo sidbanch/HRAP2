@@ -68,6 +68,10 @@ class Settings:
     prop_T: np.ndarray
     get_sat_props: Optional[Callable[[float], OxProps]] = None
     grain_fn: Optional[Callable] = None
+    inj_model: str = "SPI"  # "SPI" (HRAP), "HEM" or "Dyer"
+    inj_CdA_HEM: float = 0.0
+    dyer_kappa: float = 1.0
+    hem_flux: Optional[Callable[[float, float], float]] = None
 
 
 @dataclass
