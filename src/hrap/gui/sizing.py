@@ -159,7 +159,6 @@ class SizingPage(QWidget):
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.burn_time = PlainDoubleSpinBox(); self.burn_time.setRange(0.1, 120); self.burn_time.setDecimals(2)
         self.OF = PlainDoubleSpinBox(); self.OF.setRange(0.1, 50); self.OF.setDecimals(2)
-        self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.P_cmbr.setToolTip("Chamber pressure at the start of the burn (absolute). It falls as the tank cools.")
         self.burn_time.setToolTip("How long the liquid lasts at the starting oxidizer flow. It sets the oxidizer flow,\n"
                                   "and the hole count follows from it. The real flow falls during the burn, so the\n"
@@ -169,16 +168,23 @@ class SizingPage(QWidget):
         self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.")
         self.holes = PlainSpinBox(); self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count, shared with the Simulation tab. The oxidizer flow and burn time follow from it.")
-        self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. With a regression law it drifts during the burn.")
-        self.port_D.setToolTip("Starting port diameter. With the O/F target it sets the grain length.")
+        self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length.\n"
+                           "With a regression law it drifts during the burn.")
+        self.grain_from = PlainComboBox()
+        self.grain_from.addItems(["O/F", "Grain length"])
+        self.grain_from.setToolTip("Pick the starting O/F and get the grain length, or pick the grain length and get the O/F.")
+        self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.grain_OD = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.grain_L = UnitRow(LENGTH_ITEMS, "in", 3)
+        self.port_D.setToolTip("Starting port diameter, shared with the Simulation tab.")
+        self.grain_OD.setToolTip("Grain outer diameter, shared with the Simulation tab. It's also the chamber bore in the drawings.")
+        self.grain_L.setToolTip("Grain length, shared with the Simulation tab. The fuel flow and starting O/F follow from it.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
-        form.add("Size from", self.size_from)
-        self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
         form.add("Chamber pressure", self.P_cmbr)
-        form.add("O/F", self.OF)
-        form.add("Starting port", self.port_D)
+        self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
+        self._OF_row = form.add("O/F", self.OF)
         tl.addLayout(form)
 
         # Motor inputs that drive sizing. They mirror the Simulation tab's fields (MainWindow keeps them in step).
@@ -228,11 +234,13 @@ class SizingPage(QWidget):
         self.motor_fields = (self.tank_V.spin, self.tank_V.unit, self.tank_T.spin, self.tank_T.unit, self.fill,
                              self.hole_D.spin, self.hole_D.unit, self.inj_Cd, self.inj_model, self.propellant,
                              self.cstar, self.noz_Cd, self.inj_type, self.sw_ports, self.sw_D_port.spin,
-                             self.sw_D_port.unit, self.sw_R_in.spin, self.sw_R_in.unit)
+                             self.sw_D_port.unit, self.sw_R_in.spin, self.sw_R_in.unit, self.port_D.spin, self.port_D.unit,
+                             self.grain_OD.spin, self.grain_OD.unit, self.grain_L.spin, self.grain_L.unit)
         for w in self.motor_fields:
             signal = w.currentIndexChanged if isinstance(w, PlainComboBox) else w.valueChanged
             signal.connect(self._on_motor_edited)
         inj_form = FieldGrid()
+        inj_form.add("Size from", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
         self._hole_D_label = inj_form.add("Hole diameter", self.hole_D)[0]
@@ -254,8 +262,13 @@ class SizingPage(QWidget):
                                           "Holes", "Liquid lasts"], InjectorSketch(), inj_form)
         self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.nozzle.show_row("Sized throat", False)
-        self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "Port at liquid burnout",
-                                    "O/F at liquid burnout", "Fuel burned"], GrainSketch())
+        grain_form = FieldGrid()
+        grain_form.add("Size from", self.grain_from)
+        self._grain_L_row = grain_form.add("Grain length", self.grain_L)
+        grain_form.add("Starting port", self.port_D)
+        grain_form.add("Outer diameter", self.grain_OD)
+        self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "O/F", "Port at liquid burnout",
+                                    "O/F at liquid burnout", "Fuel burned"], GrainSketch(), grain_form)
         self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
 
         self.limit_warning = QLabel("")
@@ -268,7 +281,7 @@ class SizingPage(QWidget):
         self.error.hide()
         self.apply_btn = QPushButton("Apply to motor")
         self.apply_btn.setObjectName("runButton")
-        self.apply_btn.setToolTip("Copy the throat, expansion ratio, rounded hole count, port, grain length and O/F into the motor.")
+        self.apply_btn.setToolTip("Copy the throat, expansion ratio, rounded hole count, grain length and O/F into the motor.")
         self.apply_btn.clicked.connect(self._on_apply)
         self.apply_summary = QLabel("")
         bar = QFrame()
@@ -297,12 +310,9 @@ class SizingPage(QWidget):
         results = QGridLayout()
         results.setSpacing(12)
         results.addWidget(self.injector, 0, 0, 1, 2)
-        results.addWidget(self.grain, 1, 0)
-        nozzle_and_performance = QVBoxLayout()
-        nozzle_and_performance.setSpacing(12)
-        nozzle_and_performance.addWidget(self.nozzle)
-        nozzle_and_performance.addWidget(self.performance, 1)
-        results.addLayout(nozzle_and_performance, 1, 1)
+        results.addWidget(self.grain, 1, 0, 1, 2)
+        results.addWidget(self.nozzle, 2, 0)
+        results.addWidget(self.performance, 2, 1)
         right = QVBoxLayout()
         right.setSpacing(12)
         right.addWidget(self.limit_warning)
@@ -329,10 +339,11 @@ class SizingPage(QWidget):
         outer.addWidget(scroll, 1)
         outer.addWidget(bar)
 
-        for spin in (self.P_cmbr.spin, self.burn_time, self.OF, self.port_D.spin):
+        for spin in (self.P_cmbr.spin, self.burn_time, self.OF):
             spin.valueChanged.connect(self.refresh)
         self.holes.valueChanged.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
+        self.grain_from.currentIndexChanged.connect(self._on_size_from)
         self._show_size_from_rows()
 
     def _by_holes(self) -> bool:
@@ -343,7 +354,16 @@ class SizingPage(QWidget):
             w.setVisible(not self._by_holes())
         for w in self._holes_row:
             w.setVisible(self._by_holes())
-        self.injector.show_row("Holes", not self._by_holes())  # with a chosen count it's an input above
+        self.injector.show_row("Holes", not self._by_holes())  # with a chosen count it's an input
+        for w in self._OF_row:
+            w.setVisible(not self._by_length())
+        for w in self._grain_L_row:
+            w.setVisible(self._by_length())
+        self.grain.show_row("Grain length", not self._by_length())
+        self.grain.show_row("O/F", self._by_length())
+
+    def _by_length(self) -> bool:
+        return self.grain_from.currentIndex() == 1
 
     def _on_size_from(self, *_):
         self._show_size_from_rows()
@@ -356,22 +376,22 @@ class SizingPage(QWidget):
             OF=self.OF.value(),
             port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
             holes=self.holes.value() if self._by_holes() else None,
+            grain_L=to_si(self.grain_L.spin.value(), self.grain_L.unit.currentText(), "length") if self._by_length() else None,
         )
 
     def targets_cfg(self) -> dict:
         t = self.targets()
-        return {"size_from": "holes" if self._by_holes() else "burn_time",
-                "P_cmbr": t.P_cmbr, "burn_time": t.burn_time, "OF": t.OF, "port_D": t.port_D}
+        return {"size_from": "holes" if self._by_holes() else "burn_time", "grain_from": "grain_L" if self._by_length() else "OF",
+                "P_cmbr": t.P_cmbr, "burn_time": t.burn_time, "OF": t.OF}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
-        """Load saved targets, or start from the motor's own port and O/F."""
+        """Load saved targets, or start from the motor's own O/F."""
         self._loading = True
-        port = saved.get("port_D") or to_si(float(motor_cfg.get("grn_ID") or 0.0), motor_cfg.get("grn_ID_unit") or "in", "length")
         self.P_cmbr.set_display(from_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), self.P_cmbr.unit.currentText(), "pressure"))
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
         self.size_from.setCurrentIndex(1 if saved.get("size_from") == "holes" else 0)
+        self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
-        self.port_D.set_display(from_si(port, self.port_D.unit.currentText(), "length"))
         self.sweep.set_cd_range(float(motor_cfg.get("inj_Cd") or 0.6))
         self._loading = False
         if self.isVisible():
@@ -412,6 +432,9 @@ class SizingPage(QWidget):
         self.cstar.setValue(values["cstar"])
         self.noz_Cd.setValue(values["noz_Cd"])
         self.holes.setValue(values["holes"])
+        self.port_D.set_display(from_si(values["port_D"], self.port_D.unit.currentText(), "length"))
+        self.grain_OD.set_display(from_si(values["grain_OD"], self.grain_OD.unit.currentText(), "length"))
+        self.grain_L.set_display(from_si(values["grain_L"], self.grain_L.unit.currentText(), "length"))
         self._loading = False
 
     def motor_values(self) -> dict:
@@ -432,6 +455,9 @@ class SizingPage(QWidget):
             "sw_ports": self.sw_ports.value(),
             "sw_D_port": to_si(self.sw_D_port.spin.value(), self.sw_D_port.unit.currentText(), "length"),
             "sw_R_in": to_si(self.sw_R_in.spin.value(), self.sw_R_in.unit.currentText(), "length"),
+            "port_D": to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
+            "grain_OD": to_si(self.grain_OD.spin.value(), self.grain_OD.unit.currentText(), "length"),
+            "grain_L": to_si(self.grain_L.spin.value(), self.grain_L.unit.currentText(), "length"),
         }
 
     def refresh(self):
@@ -521,12 +547,18 @@ class SizingPage(QWidget):
                         f"Exit area ÷ throat area, sized so the exhaust leaves at ambient pressure\n"
                         f"({u.text(to_si(float(cfg['Pa']), cfg['Pa_unit'], 'pressure'), 'pressure')}) when the chamber is at {P_cmbr}, with γ {z.k:.3f}.")
         self.nozzle.set("C*", f"{z.cstar:.0f} m/s",
-                        f"Characteristic velocity from the {self.propellant.currentText()} combustion table at O/F {t.OF:.3g}\n"
+                        f"Characteristic velocity from the {self.propellant.currentText()} combustion table at O/F {z.OF:.3g}\n"
                         f"and {P_cmbr}, times the {self.cstar.value():.3g}% C* efficiency.")
 
         port = u.text(t.port_D, "length")
-        self.grain.set("Fuel flow", u.text(z.mdot_f, "mass_flow", 3),
-                       f"oxidizer flow ÷ O/F = {flow} ÷ {t.OF:.3g}")
+        fuel = u.text(z.mdot_f, "mass_flow", 3)
+        if t.grain_L:
+            self.grain.set("Fuel flow", fuel,
+                           f"The fuel the {u.text(t.grain_L, 'length')} grain burns at the starting flux:\n"
+                           "fuel flow = density × burn rate × port wall area, with burn rate = a × flux^n from the propellant.")
+            self.grain.set("O/F", f"{z.OF:.2f}", f"oxidizer flow ÷ fuel flow = {flow} ÷ {fuel}")
+        else:
+            self.grain.set("Fuel flow", fuel, f"oxidizer flow ÷ O/F = {flow} ÷ {t.OF:.3g}")
         self.grain.set("Oxidizer flux", f"{z.ox_flux:.0f} kg/(m²·s)",
                        f"Oxidizer flow per unit of port area: {flow} ÷ the area of a {port} port.\n"
                        "It sets how fast the fuel burns back.")
@@ -565,9 +597,10 @@ class SizingPage(QWidget):
                                       "caption": f"{u.text(throat, 'length')} throat"})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
-                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}", f"port {u.text(v['port_D'], 'length')}"]
-        if math.isfinite(v["grain_L"]):
+                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}"]
+        if math.isfinite(v["grain_L"]) and not self._by_length():
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
+        parts.append(f"O/F {v['OF']:.2f}")
         self.apply_summary.setText("Applies: " + ", ".join(parts))
 
     @staticmethod
@@ -588,9 +621,8 @@ class SizingPage(QWidget):
             "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
             "holes": t.holes or max(1, round(z.holes)),
-            "port_D": t.port_D,
             "grain_L": z.grain_L,
-            "OF": t.OF,
+            "OF": z.OF,
         }
 
     def sized_cfg(self) -> dict | None:
@@ -600,7 +632,7 @@ class SizingPage(QWidget):
         v = self._values()
         cfg = dict(self._cfg)
         cfg.update(noz_thrt=v["throat_D"], noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=v["ER"],
-                   inj_N=v["holes"], grn_ID=v["port_D"], grn_ID_unit="m", const_OF=v["OF"])
+                   inj_N=v["holes"], const_OF=v["OF"])
         if math.isfinite(v["grain_L"]):
             cfg.update(grn_L=v["grain_L"], grn_L_unit="m")
         return cfg

@@ -1,4 +1,4 @@
-"""Preliminary sizing: injector, nozzle and grain for a target chamber pressure and burn time.
+"""Preliminary sizing: injector, nozzle and grain for a target chamber pressure.
 
 Everything is evaluated at the start of the burn with the tank at its starting temperature, using
 the same injector, combustion-table and nozzle equations as the simulation. The simulation then
@@ -23,9 +23,10 @@ G0 = 9.80665
 class SizingTargets:
     P_cmbr: float     # Pa absolute
     burn_time: float  # s, time to use the liquid at the starting oxidizer flow; ignored when holes is set
-    OF: float
+    OF: float         # ignored when grain_L is set
     port_D: float     # m, starting port diameter
     holes: int | None = None  # a fixed injector hole count; the burn time then follows from it
+    grain_L: float | None = None  # m, a fixed grain length; the starting O/F then follows from it
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class Sizing:
     ox_liquid: float      # kg of liquid in the tank at the start
     mdot_o: float         # kg/s
     mdot_f: float         # kg/s
+    OF: float             # at the start (the target when no grain length was given)
     flow_per_hole: float  # kg/s through one injector hole of the motor's diameter and Cd
     holes: float          # exact number of holes for mdot_o (the fixed count when one was given)
     burn_time: float      # s, liquid burn time at the starting flow (the target when no hole count was given)
@@ -46,7 +48,7 @@ class Sizing:
     thrust: float         # N
     isp: float            # s
     ox_flux: float        # kg/(m²·s) through the starting port
-    grain_L: float        # m, grain length that gives the target O/F at the start (nan without a regression law)
+    grain_L: float        # m, grain length for the target O/F (the fixed length when one was given; nan without a regression law)
     port_D_end: float     # m, port diameter when the liquid runs out
     OF_end: float         # O/F when the liquid runs out
     fuel_burned: float    # kg
@@ -68,10 +70,23 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
     else:
         burn_time = t.burn_time
         mdot_o = x.mLiq_new / burn_time
-    mdot_f = mdot_o / t.OF
+    a, n, m = (float(v) for v in s.prop_Reg[:3])
+    rho = s.prop_Rho
+    ox_flux = mdot_o / (0.25 * math.pi * t.port_D ** 2)
+    if t.grain_L:
+        if a <= 0.0:
+            raise ValueError("Sizing from a grain length needs the propellant's regression law (a > 0).")
+        grain_L = t.grain_L
+        mdot_f = rho * 0.001 * a * ox_flux ** n * grain_L ** m * math.pi * t.port_D * grain_L
+        OF = mdot_o / mdot_f
+    else:
+        OF = t.OF
+        mdot_f = mdot_o / OF
+        # fuel flow = rho · (0.001·a·G^n·L^m) · π·D·L, solved for L
+        grain_L = (mdot_f / (rho * 0.001 * a * ox_flux ** n * math.pi * t.port_D)) ** (1.0 / (1.0 + m)) if a > 0.0 else float("nan")
     mdot = mdot_o + mdot_f
 
-    x.OF, x.P_cmbr = t.OF, t.P_cmbr
+    x.OF, x.P_cmbr = OF, t.P_cmbr
     x = comb(s, x, 0.0)
     k = x.k
     throat_A = mdot * x.cstar / (t.P_cmbr * s.noz_Cd)
@@ -82,13 +97,8 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
     s.noz_thrt, s.noz_ER = throat_D, ER
     thrust = nozzle(s, x).F_thr
 
-    a, n, m = (float(v) for v in s.prop_Reg[:3])
-    rho = s.prop_Rho
-    ox_flux = mdot_o / (0.25 * math.pi * t.port_D ** 2)
-    grain_L = port_D_end = OF_end = fuel_burned = float("nan")
+    port_D_end = OF_end = fuel_burned = float("nan")
     if a > 0.0:
-        # fuel flow = rho · (0.001·a·G^n·L^m) · π·D·L, solved for L
-        grain_L = (mdot_f / (rho * 0.001 * a * ox_flux ** n * math.pi * t.port_D)) ** (1.0 / (1.0 + m))
         # dD/dt = 2·0.001·a·(4·mdot_o/(π·D²))^n·L^m integrates in closed form for constant mdot_o
         c = 2.0 * 0.001 * a * (4.0 * mdot_o / math.pi) ** n * grain_L ** m
         port_D_end = (t.port_D ** (2 * n + 1) + (2 * n + 1) * c * burn_time) ** (1.0 / (2 * n + 1))
@@ -103,6 +113,7 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         ox_liquid=x.mLiq_new,
         mdot_o=mdot_o,
         mdot_f=mdot_f,
+        OF=OF,
         flow_per_hole=flow_per_hole,
         holes=mdot_o / flow_per_hole,
         burn_time=burn_time,

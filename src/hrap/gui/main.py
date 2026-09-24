@@ -1457,6 +1457,9 @@ class MainWindow(QMainWindow):
             "inj_Cd_editable": not self._swirler_cd_from_geometry(),
             "cd_from_geometry": self.sw_cd_geom.isChecked(),
             "P_cmbr_max": self._pressure_si(self.P_cmbr_max),
+            "port_D": self._len_si(self.grn_ID),
+            "grain_OD": self._len_si(self.grn_OD),
+            "grain_L": self._len_si(self.grn_L),
         })
 
     def _sizing_to_form(self):
@@ -1490,18 +1493,20 @@ class MainWindow(QMainWindow):
         self.cstar.setValue(v["cstar"])
         self.noz_Cd.setValue(v["noz_Cd"])
         self.inj_N.setValue(v["holes"])
+        self.grn_ID.set_display(from_si(v["port_D"], self.grn_ID.unit.currentText(), "length"))
+        self.grn_OD.set_display(from_si(v["grain_OD"], self.grn_OD.unit.currentText(), "length"))
+        self.grn_L.set_display(from_si(v["grain_L"], self.grn_L.unit.currentText(), "length"))
         self._invalidate_results()
         self._update_derived_labels()
         self._form_to_sizing()
         self.sizing_page.refresh()
 
     def _apply_sizing(self, values: dict):
-        """Copy a sizing result into the motor: throat, exit, hole count, grain and O/F."""
+        """Copy a sizing result into the motor: throat, exit, hole count, grain length and O/F."""
         self.noz_thrt.set_display(from_si(values["throat_D"], self.noz_thrt.unit.currentText(), "length"))
         self.noz_mode.setCurrentText("Nozzle Expansion Ratio")
         self.noz_ex.setValue(values["ER"])
         self.inj_N.setValue(values["holes"])
-        self.grn_ID.set_display(from_si(values["port_D"], self.grn_ID.unit.currentText(), "length"))
         if values.get("grain_L") and math.isfinite(values["grain_L"]):
             self.grn_L.set_display(from_si(values["grain_L"], self.grn_L.unit.currentText(), "length"))
         self.const_OF.setValue(values["OF"])
