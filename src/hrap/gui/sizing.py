@@ -495,13 +495,13 @@ class SizingPage(QWidget):
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "swirler": {"exit": self._hole_D(cfg), "ports": ports, "port": D_port, "offset": R_in, "fill": fill},
-                "caption": f"{ports} tangential ports, {hole} exit"})
+                "caption": f"{ports} tangential ports, {hole} exit", "unit": u.length})
         else:
             self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
-                                            "caption": f"{holes} × {hole} holes"})
+                                            "caption": f"{holes} × {hole} holes", "unit": u.length})
         end = f" → {from_si(z.port_D_end, u.length, 'length'):.3g}" if math.isfinite(z.port_D_end) else ""
         self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end,
-                                     "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}"})
+                                     "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}", "unit": u.length})
 
         self._show_throat()
         self.nozzle.set("Expansion ratio", f"{z.ER:.2f}",
@@ -549,7 +549,7 @@ class SizingPage(QWidget):
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
         bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
         self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
-                                      "caption": f"{u.text(throat, 'length')} throat"})
+                                      "caption": f"{u.text(throat, 'length')} throat", "unit": u.length})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
                  f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}", f"port {u.text(v['port_D'], 'length')}"]

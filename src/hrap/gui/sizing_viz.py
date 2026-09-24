@@ -8,15 +8,17 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from hrap.gui.viz import DARK_VIZ, LIGHT_VIZ
+from hrap.units import from_si, to_si
 
 SIZE = 104  # px, square drawing area of each sketch
 CAPTION_H = 30
+SCALE_H = 16  # scale bar under the caption, so sketches drawn at different scales can be compared
 
 
 class Sketch(QWidget):
     def __init__(self, width: int = int(SIZE * 1.3)):
         super().__init__()
-        self.setFixedSize(width, SIZE + CAPTION_H)
+        self.setFixedSize(width, SIZE + CAPTION_H + SCALE_H)
         self._colors = dict(DARK_VIZ)
         self._data: dict | None = None
 
@@ -37,13 +39,31 @@ class Sketch(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         data = dict(self._data)
-        caption = data.pop("caption")
-        self.draw(p, QRectF(2, 2, self.width() - 4, SIZE - 4), **data)
+        caption, unit = data.pop("caption"), data.pop("unit")
+        px = self.draw(p, QRectF(2, 2, self.width() - 4, SIZE - 4), **data)
         p.setPen(self.color("muted"))
         p.drawText(QRectF(0, SIZE, self.width(), CAPTION_H),
                    int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), caption)
+        self._draw_scale(p, px, unit)
 
-    def draw(self, p: QPainter, r: QRectF, **data):
+    def _draw_scale(self, p: QPainter, px: float, unit: str):
+        """A bar of a round length (1, 2 or 5 × a power of ten) about 30 px long."""
+        target = from_si(30.0 / px, unit, "length")
+        step = 10.0 ** math.floor(math.log10(target))
+        length = max(m * step for m in (1, 2, 5) if m * step <= target)
+        bar = to_si(length, unit, "length") * px
+        label = f"{length:g} {unit}"
+        y = SIZE + CAPTION_H + 0.5 * SCALE_H
+        text_w = p.fontMetrics().horizontalAdvance(label)
+        x0 = 0.5 * (self.width() - bar - 6 - text_w)
+        p.setPen(QPen(self.color("muted"), 1.2))
+        p.drawLine(QPointF(x0, y), QPointF(x0 + bar, y))
+        for x in (x0, x0 + bar):
+            p.drawLine(QPointF(x, y - 3), QPointF(x, y + 3))
+        p.drawText(QRectF(x0 + bar + 6, y - 8, text_w + 2, 16), int(Qt.AlignmentFlag.AlignVCenter), label)
+
+    def draw(self, p: QPainter, r: QRectF, **data) -> float:
+        """Draw to scale and return the scale in px per metre."""
         raise NotImplementedError
 
 
@@ -55,13 +75,10 @@ class InjectorSketch(Sketch):
     """Injector face inside the chamber bore, holes to scale (at least 4 px so they stay visible),
     or a swirler looking down its axis."""
 
-    def draw(self, p: QPainter, r: QRectF, swirler: dict | None = None, **holes):
-        if swirler:
-            self._draw_swirler(p, r, **swirler)
-        else:
-            self._draw_holes(p, r, **holes)
+    def draw(self, p: QPainter, r: QRectF, swirler: dict | None = None, **holes) -> float:
+        return self._draw_swirler(p, r, **swirler) if swirler else self._draw_holes(p, r, **holes)
 
-    def _draw_swirler(self, p: QPainter, r: QRectF, exit: float, ports: int, port: float, offset: float, fill: float):
+    def _draw_swirler(self, p: QPainter, r: QRectF, exit: float, ports: int, port: float, offset: float, fill: float) -> float:
         """Looking down the swirler's axis: drilled tangential ports through the body wall into the swirl
         chamber, the flow's spin, and the exit orifice beyond it with its air core. All to scale."""
         c = r.center()
@@ -116,8 +133,9 @@ class InjectorSketch(Sketch):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self.color("port"))
         _circle(p, c, math.sqrt(1.0 - fill) * exit * px)
+        return px
 
-    def _draw_holes(self, p: QPainter, r: QRectF, bore: float, hole: float, holes: int):
+    def _draw_holes(self, p: QPainter, r: QRectF, bore: float, hole: float, holes: int) -> float:
         c, px = r.center(), min(r.width(), r.height()) / bore
         p.setPen(QPen(self.color("outline"), 1.0))
         p.setBrush(self.color("plate"))
@@ -128,12 +146,13 @@ class InjectorSketch(Sketch):
         for i in range(holes):
             a = 2 * math.pi * i / holes - math.pi / 2
             _circle(p, c + QPointF(ring * math.cos(a), ring * math.sin(a)), max(hole * px, 4.0))
+        return px
 
 
 class GrainSketch(Sketch):
     """Grain cross-section: the starting port, and the port when the liquid runs out as a dashed circle."""
 
-    def draw(self, p: QPainter, r: QRectF, od: float, port: float, port_end: float):
+    def draw(self, p: QPainter, r: QRectF, od: float, port: float, port_end: float) -> float:
         c, px = r.center(), min(r.width(), r.height()) / od
         p.setPen(QPen(self.color("outline"), 1.0))
         p.setBrush(self.color("grain"))
@@ -146,6 +165,7 @@ class GrainSketch(Sketch):
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             _circle(p, c, min(port_end, od) * px)
+        return px
 
 
 class NozzleSketch(Sketch):
@@ -154,7 +174,7 @@ class NozzleSketch(Sketch):
     def __init__(self):
         super().__init__(int(SIZE * 1.4))
 
-    def draw(self, p: QPainter, r: QRectF, bore: float, throat: float, exit: float):
+    def draw(self, p: QPainter, r: QRectF, bore: float, throat: float, exit: float) -> float:
         rc, rt, re = bore / 2, throat / 2, max(exit, throat) / 2
         l_in = rc - rt  # tan 45° = 1
         l_out = (re - rt) / math.tan(math.radians(15))
@@ -178,3 +198,4 @@ class NozzleSketch(Sketch):
             p.drawPolyline(wall)
         p.setPen(QPen(self.color("muted"), 1.0, Qt.PenStyle.DashLine))
         p.drawLine(QPointF(xs[0], y0), QPointF(xs[-1], y0))
+        return px
