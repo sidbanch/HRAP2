@@ -387,15 +387,11 @@ class MotorVizWidget(QWidget):
             p.drawRect(feed)
 
         if g.x_case > g.x_plate1 + 1e-9:
+            # Pre- and post-combustion chambers: open gas space, the full case bore.
             case = box(g.x_plate1, g.x_case, g.grn_R)
-            p.setBrush(_c(colors, "plate"))
+            p.setBrush(_c(colors, "port"))
             p.setPen(outline)
             p.drawRect(case)
-            if g.port_R > 0:
-                case_port = box(g.x_plate1, g.x_case, g.port_R)
-                p.setBrush(_c(colors, "port"))
-                p.setPen(QPen(_c(colors, "outline"), 0.8))
-                p.drawRect(case_port)
 
         grain = box(g.x_grn0, g.x_grn1, g.grn_R)
         p.setBrush(_c(colors, "grain"))
