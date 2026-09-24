@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
-from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, UnitRow
+from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.propellant import list_propellants
 from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
 
@@ -53,18 +53,22 @@ class FieldGrid(QGridLayout):
         self.setColumnStretch(1, 1)
         self._rows = 0
 
-    def add(self, label: str, field: QWidget, unit: str = "", muted: bool = False):
+    def add(self, label: str, field: QWidget, unit: str = "", muted: bool = False) -> list[QWidget]:
+        """Add a row and return its widgets, so the row can be hidden."""
         name = QLabel(label)
         if muted:
             name.setObjectName("cardLabel")
         self.addWidget(name, self._rows, 0)
+        row: list[QWidget] = [name, field]
         if isinstance(field, (UnitRow, PlainComboBox)):
             self.addWidget(field, self._rows, 1, 1, 2)
         else:
             self.addWidget(field, self._rows, 1)
             if unit:
-                self.addWidget(QLabel(unit), self._rows, 2)
+                row.append(QLabel(unit))
+                self.addWidget(row[-1], self._rows, 2)
         self._rows += 1
+        return row
 
 
 class Card(QFrame):
@@ -140,15 +144,23 @@ class SizingPage(QWidget):
         self.OF = PlainDoubleSpinBox(); self.OF.setRange(0.1, 50); self.OF.setDecimals(2)
         self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.P_cmbr.setToolTip("Chamber pressure at the start of the burn (absolute). It falls as the tank cools.")
-        self.burn_time.setToolTip("How long the liquid lasts at the starting oxidizer flow. The real flow falls\n"
-                                  "during the burn, so the liquid lasts somewhat longer, then a short vapor tail follows.")
+        self.burn_time.setToolTip("How long the liquid lasts at the starting oxidizer flow. It sets the oxidizer flow,\n"
+                                  "and the hole count follows from it. The real flow falls during the burn, so the\n"
+                                  "liquid lasts somewhat longer. A weak vapor tail follows once the liquid runs out.")
+        self.size_from = PlainComboBox()
+        self.size_from.addItems(["Liquid burn time", "Hole count"])
+        self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.")
+        self.holes = PlainSpinBox(); self.holes.setRange(1, 200)
+        self.holes.setToolTip("Injector hole count, shared with the Simulation tab. The oxidizer flow and burn time follow from it.")
         self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. With a regression law it drifts during the burn.")
         self.port_D.setToolTip("Starting port diameter. With the O/F target it sets the grain length.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
+        form.add("Size from", self.size_from)
+        self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
+        self._holes_row = form.add("Hole count", self.holes)
         form.add("Chamber pressure", self.P_cmbr)
-        form.add("Burn time", self.burn_time, "s")
         form.add("O/F", self.OF)
         form.add("Starting port", self.port_D)
         tl.addLayout(form)
@@ -265,6 +277,22 @@ class SizingPage(QWidget):
 
         for spin in (self.P_cmbr.spin, self.burn_time, self.OF, self.port_D.spin):
             spin.valueChanged.connect(self.refresh)
+        self.holes.valueChanged.connect(self._on_motor_edited)
+        self.size_from.currentIndexChanged.connect(self._on_size_from)
+        self._show_size_from_rows()
+
+    def _by_holes(self) -> bool:
+        return self.size_from.currentIndex() == 1
+
+    def _show_size_from_rows(self):
+        for w in self._burn_time_row:
+            w.setVisible(not self._by_holes())
+        for w in self._holes_row:
+            w.setVisible(self._by_holes())
+
+    def _on_size_from(self, *_):
+        self._show_size_from_rows()
+        self.refresh()
 
     def targets(self) -> SizingTargets:
         return SizingTargets(
@@ -272,11 +300,13 @@ class SizingPage(QWidget):
             burn_time=self.burn_time.value(),
             OF=self.OF.value(),
             port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
+            holes=self.holes.value() if self._by_holes() else None,
         )
 
     def targets_cfg(self) -> dict:
         t = self.targets()
-        return {"P_cmbr": t.P_cmbr, "burn_time": t.burn_time, "OF": t.OF, "port_D": t.port_D}
+        return {"size_from": "holes" if self._by_holes() else "burn_time",
+                "P_cmbr": t.P_cmbr, "burn_time": t.burn_time, "OF": t.OF, "port_D": t.port_D}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
         """Load saved targets, or start from the motor's own port and O/F."""
@@ -284,6 +314,7 @@ class SizingPage(QWidget):
         port = saved.get("port_D") or to_si(float(motor_cfg.get("grn_ID") or 0.0), motor_cfg.get("grn_ID_unit") or "in", "length")
         self.P_cmbr.set_display(from_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), self.P_cmbr.unit.currentText(), "pressure"))
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
+        self.size_from.setCurrentIndex(1 if saved.get("size_from") == "holes" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.port_D.set_display(from_si(port, self.port_D.unit.currentText(), "length"))
         self.sweep.set_cd_range(float(motor_cfg.get("inj_Cd") or 0.6))
@@ -308,6 +339,7 @@ class SizingPage(QWidget):
         self.propellant.setCurrentIndex(max(self.propellant.findData(values["prop_id"]), 0))
         self.cstar.setValue(values["cstar"])
         self.noz_Cd.setValue(values["noz_Cd"])
+        self.holes.setValue(values["holes"])
         self._loading = False
 
     def motor_values(self) -> dict:
@@ -321,6 +353,7 @@ class SizingPage(QWidget):
             "prop_id": self.propellant.currentData(),
             "cstar": self.cstar.value(),
             "noz_Cd": self.noz_Cd.value(),
+            "holes": self.holes.value(),
         }
 
     def refresh(self):
@@ -352,14 +385,18 @@ class SizingPage(QWidget):
         self.ox_liquid.setText(u.text(z.ox_liquid, "mass"))
 
         t = self.targets()
-        holes = max(1, round(z.holes))
+        holes = self._values()["holes"]
         lasts = z.ox_liquid / (holes * z.flow_per_hole)
         flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
         dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
         hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), float(cfg["inj_Cd"]), cfg.get("inj_model") or "SPI"
-        self.injector.set("Oxidizer flow", flow,
-                          f"The flow that empties the liquid in the burn time:\n"
-                          f"liquid oxidizer ÷ burn time = {u.text(z.ox_liquid, 'mass')} ÷ {t.burn_time:.3g} s = {flow}")
+        if t.holes:
+            self.injector.set("Oxidizer flow", flow,
+                              f"The flow through your holes:\nhole count × flow per hole = {holes} × {per_hole} = {flow}")
+        else:
+            self.injector.set("Oxidizer flow", flow,
+                              f"The flow that empties the liquid in the burn time:\n"
+                              f"liquid oxidizer ÷ liquid burn time = {u.text(z.ox_liquid, 'mass')} ÷ {t.burn_time:.3g} s = {flow}")
         self.injector.set("Injector ΔP", dP,
                           f"tank pressure − chamber pressure = {u.text(z.P_tnk, 'pressure')} − {P_cmbr} = {dP}")
         self.injector.set("ΔP / chamber", f"{100 * z.inj_dP / t.P_cmbr:.0f}%",
@@ -369,9 +406,12 @@ class SizingPage(QWidget):
         self.injector.set("Flow per hole", per_hole,
                           f"Flow through one {hole} hole at Cd {inj_Cd:.3g} with {dP} across it,\n"
                           f"from the {model} injector model.")
-        self.injector.set("Holes", f"{z.holes:.2f} → {holes}",
-                          f"oxidizer flow ÷ flow per hole = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
-                          f"rounded to {holes}. Apply to motor uses {holes}.")
+        if t.holes:
+            self.injector.set("Holes", f"{holes}", "Your hole count, from Targets.")
+        else:
+            self.injector.set("Holes", f"{z.holes:.2f} → {holes}",
+                              f"oxidizer flow ÷ flow per hole = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
+                              f"rounded to {holes}. Apply to motor uses {holes}.")
         self.injector.set("Liquid lasts", f"{lasts:.2f} s",
                           f"With {holes} holes the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
                           f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
@@ -402,7 +442,7 @@ class SizingPage(QWidget):
                            f"The length whose burning wall gives the fuel flow for O/F {t.OF:.3g}.\n"
                            f"burn rate = a × flux^n from the propellant, and fuel flow = density × burn rate × port wall area.")
             self.grain.set("Port at liquid burnout", u.text(z.port_D_end, "length"),
-                           f"The port after burning back for {t.burn_time:.3g} s at the starting oxidizer flow.\n"
+                           f"The port after burning back for {z.burn_time:.3g} s at the starting oxidizer flow.\n"
                            "The dashed circle in the drawing.")
             self.grain.set("O/F at liquid burnout", f"{z.OF_end:.2f}",
                            "The wider port lowers the flux but adds burning wall, so the O/F drifts.")
@@ -414,7 +454,7 @@ class SizingPage(QWidget):
 
         self.performance.set("Thrust", u.text(z.thrust, "force"))
         self.performance.set("Isp", f"{z.isp:.0f} s")
-        self.performance.set("Impulse over the burn time", u.text(z.thrust * t.burn_time, "impulse"))
+        self.performance.set("Impulse over the burn time", u.text(z.thrust * z.burn_time, "impulse"))
 
     def _show_throat(self):
         z, u = cast(Sizing, self._result), self._get_units()
@@ -456,7 +496,7 @@ class SizingPage(QWidget):
         return {
             "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
-            "holes": max(1, round(z.holes)),
+            "holes": t.holes or max(1, round(z.holes)),
             "port_D": t.port_D,
             "grain_L": z.grain_L,
             "OF": t.OF,

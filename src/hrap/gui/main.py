@@ -1353,6 +1353,7 @@ class MainWindow(QMainWindow):
             "prop_id": self.prop_combo.currentData(),
             "cstar": self.cstar.value(),
             "noz_Cd": self.noz_Cd.value(),
+            "holes": self.inj_N.value(),
         })
 
     def _sizing_to_form(self):
@@ -1377,6 +1378,7 @@ class MainWindow(QMainWindow):
         self.prop_combo.setCurrentIndex(max(self.prop_combo.findData(v["prop_id"]), 0))
         self.cstar.setValue(v["cstar"])
         self.noz_Cd.setValue(v["noz_Cd"])
+        self.inj_N.setValue(v["holes"])
         self._invalidate_results()
         self._update_derived_labels()
         self._form_to_sizing()
