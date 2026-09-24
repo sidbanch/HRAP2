@@ -119,7 +119,7 @@ class SweepPanel(QFrame):
         heading = QLabel("Check across injector Cd")
         heading.setObjectName("cardTitle")
         intro = QLabel("Runs the full simulation of the sized motor for each throat and injector Cd, since the Cd isn't "
-                       "known until the injector is flow tested. Click a row to use that throat.")
+                       "known until the injector is flow tested. Click a column to use that throat.")
         intro.setObjectName("cardLabel")
         intro.setWordWrap(True)
 
@@ -195,8 +195,8 @@ class SweepPanel(QFrame):
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setHighlightSections(False)
-        self.table.cellClicked.connect(lambda row, _col: self._pick(row))
-        self.table.verticalHeader().sectionClicked.connect(self._pick)
+        self.table.cellClicked.connect(lambda _row, col: self._pick(col))
+        self.table.horizontalHeader().sectionClicked.connect(self._pick)
 
         self.dp_chip = _chip(HIGH_DP, "ΔP over the warning: the SPI injector model overpredicts flow")
         self.ok_chip_label = QLabel("")
@@ -273,7 +273,8 @@ class SweepPanel(QFrame):
         u = self._get_units()
         self._center = throat
         self.run_btn.setEnabled(cfg is not None and self._thread is None)
-        self.center_label.setText(f"around {u.text(throat, 'length')}" if cfg is not None else "")
+        self.center_label.setText(f"of the sized {u.text(throat, 'length')} throat" if cfg is not None else "")
+        self.center_label.setToolTip("The throat from the Nozzle card above. Hover it there to see how it's worked out.")
         if u.length != self._length_unit:
             if self._length_unit:
                 for spin in (self.throat_lo, self.throat_hi):
@@ -314,15 +315,15 @@ class SweepPanel(QFrame):
         throats = [float(t) for t in np.linspace(lo, hi, self.throat_n.value())]
         cds = [float(c) for c in np.linspace(self.cd_lo.value(), self.cd_hi.value(), self.cd_n.value())]
         self._throats = throats
-        self._cells = {(t, c): (i, j) for i, t in enumerate(throats) for j, c in enumerate(cds)}
+        self._cells = {(t, c): (j, i) for i, t in enumerate(throats) for j, c in enumerate(cds)}
         self.cases = []
         self._error = ""
         self._picked = None
         self.table.clear()
-        self.table.setRowCount(len(throats))
-        self.table.setColumnCount(len(cds))
-        self._label_rows()
-        self.table.setHorizontalHeaderLabels([f"Cd {c:.3g}" for c in cds])
+        self.table.setRowCount(len(cds))
+        self.table.setColumnCount(len(throats))
+        self._label_throats()
+        self.table.setVerticalHeaderLabels([f"  Cd {c:.3g}  " for c in cds])
         self.table.show()
         self.legend.show()
         self.progress.setRange(0, len(self._cells))
@@ -344,24 +345,24 @@ class SweepPanel(QFrame):
         self._thread.finished.connect(self._on_thread_finished)
         self._thread.start()
 
-    def _label_rows(self):
+    def _label_throats(self):
         u = self._get_units()
-        self.table.setVerticalHeaderLabels([
-            f"{'▶ ' if i == self._picked else '  '}{from_si(t, u.length, 'length'):.4g} {u.length}  "
+        self.table.setHorizontalHeaderLabels([
+            f"{'▼ ' if i == self._picked else ''}{from_si(t, u.length, 'length'):.4g} {u.length}"
             for i, t in enumerate(self._throats)
         ])
 
-    def _pick(self, row: int):
-        if not 0 <= row < len(self._throats):
+    def _pick(self, col: int):
+        if not 0 <= col < len(self._throats):
             return
-        self._picked = row
-        self._label_rows()
-        self._on_pick(self._throats[row])
+        self._picked = col
+        self._label_throats()
+        self._on_pick(self._throats[col])
 
     def clear_pick(self):
         if self._picked is not None:
             self._picked = None
-            self._label_rows()
+            self._label_throats()
 
     def stop(self):
         if self._worker is not None:
