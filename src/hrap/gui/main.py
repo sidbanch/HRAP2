@@ -50,8 +50,10 @@ from hrap.engine.sim import run
 from hrap.engine.types import Settings, State
 from hrap.engine.summary import format_summary, summarize
 from hrap.gui.theme import apply_theme
+from hrap.gui.sizing import SizingPage
 from hrap.gui.sweep import SweepDialog
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
+from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import bundled_motor, default_cfg, load_json, load_matlab_mat, resolve, resolve_layout, save_json
 from hrap.io.export import export_csv, export_eng, export_rse
 from hrap.io.propellant import list_propellants, load_propellant
@@ -75,6 +77,8 @@ TRACES = [
     ("Thrust", "F_thr", "force"),
     ("Tank pressure", "P_tnk", "pressure"),
     ("Chamber pressure", "P_cmbr", "pressure"),
+    ("Injector ΔP", "inj_dP", "pressure"),
+    ("Tank temperature", "T_tnk", "temperature"),
     ("O/F", "OF", "ratio"),
     ("Oxidizer flow", "mdot_o", "mass_flow"),
     ("Fuel flow", "mdot_f", "mass_flow"),
@@ -89,7 +93,9 @@ TRACES = [
 PLOT_LABELS = {
     "force": "Thrust", "pressure": "Pressure (absolute)", "ratio": "O/F",
     "mass_flow": "Mass flow", "speed": "Regression rate", "length": "Length", "mass": "Mass",
+    "temperature": "Temperature",
 }
+DEFAULT_TRACES = {"Thrust", "Tank pressure", "Chamber pressure", "Injector ΔP", "Oxidizer flow", "Fuel flow"}
 DISPLAY_UNIT_OPTIONS = {
     "pressure": ["psi", "bar", "kPa", "MPa", "Pa", "atm"],
     "length": LENGTH_ITEMS,
@@ -114,116 +120,6 @@ def _t_sat(P: float) -> float | None:
         return None
 
 
-class _NoWheel:
-    """Let the settings panel scroll instead of changing the focused control."""
-
-    def wheelEvent(self, event):
-        event.ignore()
-        parent = cast(QWidget, self).parentWidget()
-        while parent is not None:
-            if isinstance(parent, QScrollArea):
-                QApplication.sendEvent(parent.viewport(), event)
-                return
-            parent = parent.parentWidget()
-
-
-class PlainSpinBox(_NoWheel, QSpinBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-
-class PlainDoubleSpinBox(_NoWheel, QDoubleSpinBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-
-class PlainComboBox(_NoWheel, QComboBox):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-
-class CollapsibleBox(QWidget):
-    """Settings category that can be collapsed to just its title."""
-
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        self.setObjectName("collapsibleBox")
-        self._title = title
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self._btn = QPushButton(f"▾  {title}")
-        self._btn.setObjectName("collapseHeader")
-        self._btn.setCheckable(True)
-        self._btn.setChecked(True)
-        self._btn.setFlat(True)
-        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._body = QWidget()
-        self._body.setObjectName("collapseBody")
-        self._form = QFormLayout(self._body)
-        self._form.setContentsMargins(10, 6, 10, 10)
-        outer.addWidget(self._btn)
-        outer.addWidget(self._body)
-        self._btn.toggled.connect(self._set_open)
-
-    def form(self) -> QFormLayout:
-        return self._form
-
-    def _set_open(self, open_: bool) -> None:
-        self._body.setVisible(open_)
-        mark = "▾" if open_ else "▸"
-        self._btn.setText(f"{mark}  {self._title}")
-
-
-class UnitRow(QWidget):
-    def __init__(self, items: list[str], unit: str, decimals: int = 4, maximum: float = 1e12):
-        super().__init__()
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.spin = PlainDoubleSpinBox()
-        self.spin.setDecimals(decimals)
-        self.spin.setRange(0.0, maximum)
-        self.spin.setKeyboardTracking(False)
-        self.unit = PlainComboBox()
-        self.unit.addItems(items)
-        if unit in items:
-            self.unit.setCurrentText(unit)
-        self.unit.setFixedWidth(72)
-        self._unit = self.unit.currentText()
-        self.unit.currentTextChanged.connect(self._on_unit_changed)
-        layout.addWidget(self.spin, 1)
-        layout.addWidget(self.unit)
-
-    def _on_unit_changed(self, new_unit: str):
-        old = self._unit
-        self._unit = new_unit
-        if not old or old == new_unit:
-            return
-        try:
-            new_val = convert(self.spin.value(), old, new_unit)
-        except Exception:
-            return
-        self.spin.blockSignals(True)
-        self.spin.setValue(new_val)
-        self.spin.blockSignals(False)
-
-    def set_display(self, value: float, unit: str | None = None):
-        if unit:
-            self.unit.blockSignals(True)
-            self.unit.setCurrentText(unit)
-            self.unit.blockSignals(False)
-            self._unit = self.unit.currentText()
-        self.spin.blockSignals(True)
-        self.spin.setValue(float(value or 0.0))
-        self.spin.blockSignals(False)
-
-
 def _remember_unit(combo: QComboBox, unit: str | None = None) -> None:
     combo.setProperty("hrap_unit", combo.currentText() if unit is None else unit)
 
@@ -234,6 +130,16 @@ def _set_unit_text(combo: QComboBox, unit: str) -> None:
     combo.setCurrentText(unit)
     combo.blockSignals(False)
     _remember_unit(combo, combo.currentText())
+
+
+def _set_unit_items(combo: QComboBox, items: list[str], unit: str) -> None:
+    """Replace a unit combo's choices without converting the paired numeric field."""
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItems(items)
+    combo.setCurrentText(unit if unit in items else items[0])
+    combo.blockSignals(False)
+    _remember_unit(combo)
 
 
 def _wire_unit_combo(spin: QDoubleSpinBox, combo: QComboBox, group: str | None = None, should_convert=None) -> None:
@@ -309,8 +215,9 @@ class MainWindow(QMainWindow):
             (QDoubleSpinBox, "valueChanged"), (QSpinBox, "valueChanged"),
             (QComboBox, "currentIndexChanged"), (QCheckBox, "toggled"),
         ):
-            for control in self._form.findChildren(control_type):
-                getattr(control, signal).connect(self._invalidate_results)
+            for page in (self._form, self.mass_page):
+                for control in page.findChildren(control_type):
+                    getattr(control, signal).connect(self._invalidate_results)
         self.name.textChanged.connect(self._invalidate_results)
         self.mfg.textChanged.connect(self._invalidate_results)
 
@@ -341,18 +248,44 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(f"About {APP_NAME}", self._about)
 
+        top = QWidget()
+        top.setObjectName("configHeader")
+        top_l = QHBoxLayout(top)
+        top_l.setContentsMargins(12, 8, 12, 8)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("Motor name")
+        save_btn = QPushButton("Save")
+        load_btn = QPushButton("Load")
+        save_btn.clicked.connect(self._save_json)
+        load_btn.clicked.connect(self._open_json)
+        top_l.addWidget(QLabel("Motor"))
+        top_l.addWidget(self.name, 1)
+        top_l.addWidget(save_btn)
+        top_l.addWidget(load_btn)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._form = self._make_form()
         splitter.addWidget(self._form)
         splitter.addWidget(self._make_results())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([520, 760])
+        splitter.setSizes([500, 900])
+        self.sizing_page = SizingPage(self._form_to_cfg, lambda: self.display_units, self._apply_sizing, self._open_sweep)
+        self.mass_page = self._make_mass_page()
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("pageTabs")
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(self.sizing_page, "Sizing")
+        self.tabs.addTab(splitter, "Simulation")
+        self.tabs.addTab(self.mass_page, "Mass && export")
+        self.tabs.setCurrentWidget(splitter)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(splitter, 1)
+        root.addWidget(top)
+        root.addWidget(self.tabs, 1)
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
@@ -363,7 +296,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._progress)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Ready — MATLAB-parity engine")
+        self.statusBar().showMessage("Ready")
 
     def _make_form(self) -> QWidget:
         wrap = QWidget()
@@ -371,48 +304,14 @@ class MainWindow(QMainWindow):
         wl.setContentsMargins(8, 8, 8, 8)
         wl.setSpacing(8)
 
-        header = QWidget()
-        header.setObjectName("configHeader")
-        header.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        header_l = QVBoxLayout(header)
-        header_l.setContentsMargins(10, 8, 10, 8)
-        header_l.setSpacing(6)
-
-        run_row = QHBoxLayout()
-        self.name = QLineEdit()
         self.run_btn = QPushButton("Run")
         self.run_btn.setObjectName("runButton")
         self.run_btn.clicked.connect(self._run)
-        self.sweep_btn = QPushButton("Sweep…")
-        self.sweep_btn.setToolTip("Run this motor across a range of throat diameters and injector Cds")
-        self.sweep_btn.clicked.connect(self._open_sweep)
-        run_row.addWidget(QLabel("Motor Name"))
-        run_row.addWidget(self.name, 1)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(self.sweep_btn)
-        header_l.addLayout(run_row)
-
-        io_row = QHBoxLayout()
-        self.mfg = QLineEdit("HRAP")
-        save_btn = QPushButton("Save")
-        load_btn = QPushButton("Load")
-        save_btn.clicked.connect(self._save_json)
-        load_btn.clicked.connect(self._open_json)
-        io_row.addWidget(QLabel("Manufacturer"))
-        io_row.addWidget(self.mfg, 1)
-        io_row.addWidget(save_btn)
-        io_row.addWidget(load_btn)
-        header_l.addLayout(io_row)
-
-        rse_row = QHBoxLayout()
-        self.rse_btn = QPushButton("Export .RSE")
-        self.rse_btn.clicked.connect(lambda: self._export("rse"))
-        rse_row.addWidget(self.rse_btn, 1)
-        header_l.addLayout(rse_row)
-        wl.addWidget(header)
+        wl.addWidget(self.run_btn)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         root = QVBoxLayout(inner)
         root.setSpacing(8)
@@ -421,14 +320,25 @@ class MainWindow(QMainWindow):
         for item in list_propellants():
             self.prop_combo.addItem(f"{item['name']} ({item['id']})", item["id"])
         self.prop_combo.currentIndexChanged.connect(self._on_propellant)
+        self.prop_combo.setToolTip("Sets the fuel's density and regression law, and picks the combustion table used for C*, γ and flame temperature.")
 
+        # Tank
         self.tnk_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
         self.tnk_D = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_L = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_by_dims = QCheckBox("Tank volume from diameter × length")
-        self.cmbr_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
-        self.cmbr_by_dims = QCheckBox("Chamber volume from grain envelope")
-        self.cmbr_by_dims.setChecked(True)
+        self.tnk_dd = PlainComboBox(); self.tnk_dd.addItems(["Starting Tank Temperature", "Starting Tank Pressure"])
+        self.tnk_cond = PlainDoubleSpinBox(); self.tnk_cond.setDecimals(4); self.tnk_cond.setRange(0, 1e8); self.tnk_cond.setValue(293.15)
+        self.T_tnk_unit = PlainComboBox(); self.T_tnk_unit.addItems(TEMP_ITEMS)
+        self.fill_dd = PlainComboBox(); self.fill_dd.addItems(["Tank Fill Percentage", "Starting Oxidizer Mass"])
+        self.fill = PlainDoubleSpinBox(); self.fill.setDecimals(4); self.fill.setRange(0, 1e6); self.fill.setValue(95)
+        self.fill_unit = PlainComboBox(); self.fill_unit.addItems(["%"])
+        self._tnk_mode = self.tnk_dd.currentText()
+        self._fill_mode = self.fill_dd.currentText()
+        self.tnk_dd.currentTextChanged.connect(self._on_tank_mode)
+        self.fill_dd.currentTextChanged.connect(self._on_fill_mode)
+        self.sat_info = QLabel("Saturation: —")
+        self.sat_info.setWordWrap(True)
         self.solve_tank_cooling = QCheckBox("Solve tank cooling each step (not MATLAB-identical)")
         self.solve_tank_cooling.setToolTip(
             "HRAP cools the tank after splitting liquid and vapor. When the liquid runs low that overcools\n"
@@ -436,70 +346,26 @@ class MainWindow(QMainWindow):
             "This solves the cooling at the step's end temperature instead, so the fallback never runs.\n"
             "Total impulse usually changes by under 1%."
         )
-
         tank = CollapsibleBox("Tank")
-        tf = tank.form()
+        tf = self._tank_form = tank.form()
         tf.addRow(self.tnk_by_dims)
         tf.addRow("Volume", self.tnk_V)
         tf.addRow("Diameter", self.tnk_D)
         tf.addRow("Length", self.tnk_L)
+        tf.addRow("Starting condition", self.tnk_dd)
+        trow = QWidget(); tl = QHBoxLayout(trow); tl.setContentsMargins(0, 0, 0, 0); tl.addWidget(self.tnk_cond, 1); tl.addWidget(self.T_tnk_unit)
+        self.T_tnk_unit.setFixedWidth(72)
+        tf.addRow("Temperature", trow)
+        tf.addRow("Oxidizer amount", self.fill_dd)
+        frow = QWidget(); fl = QHBoxLayout(frow); fl.setContentsMargins(0, 0, 0, 0); fl.addWidget(self.fill, 1); fl.addWidget(self.fill_unit)
+        self.fill_unit.setFixedWidth(72)
+        tf.addRow("Fill", frow)
+        tf.addRow(self.sat_info)
         tf.addRow(self.solve_tank_cooling)
-        tf.addRow(self.cmbr_by_dims)
-        tf.addRow("Chamber volume", self.cmbr_V)
+        self._tank_cond_row, self._fill_row = trow, frow
         root.addWidget(tank)
 
-        self.noz_thrt = UnitRow(LENGTH_ITEMS, "in")
-        self.noz_mode = PlainComboBox()
-        self.noz_mode.addItems(["Nozzle Expansion Ratio", "Nozzle Exit Diameter"])
-        self.noz_ex = PlainDoubleSpinBox()
-        self.noz_ex.setRange(0.0, 1e6)
-        self.noz_ex.setDecimals(4)
-        self.noz_ex_unit = PlainComboBox()
-        self.noz_ex_unit.addItems(LENGTH_ITEMS)
-        self.noz_eff = PlainDoubleSpinBox()
-        self.noz_eff.setRange(0.0, 100.0)
-        self.noz_eff.setValue(97.0)
-        self.noz_Cd = PlainDoubleSpinBox()
-        self.noz_Cd.setRange(0.0, 1.0)
-        self.noz_Cd.setDecimals(3)
-        self.noz_Cd.setValue(0.95)
-        noz = CollapsibleBox("Nozzle")
-        nf = noz.form()
-        nf.addRow("Throat", self.noz_thrt)
-        nf.addRow("Define by", self.noz_mode)
-        ex_row = QWidget()
-        ex_l = QHBoxLayout(ex_row)
-        ex_l.setContentsMargins(0, 0, 0, 0)
-        ex_l.addWidget(self.noz_ex, 1)
-        ex_l.addWidget(self.noz_ex_unit)
-        nf.addRow("Exit / ER", ex_row)
-        nf.addRow("Efficiency %", self.noz_eff)
-        nf.addRow("Cd", self.noz_Cd)
-        root.addWidget(noz)
-
-        self.rho = UnitRow(DENSITY_ITEMS, "kg/m^3", 4)
-        self.prop_a = PlainDoubleSpinBox(); self.prop_a.setDecimals(5); self.prop_a.setRange(0, 1e3)
-        self.prop_n = PlainDoubleSpinBox(); self.prop_n.setDecimals(5); self.prop_n.setRange(-2, 5)
-        self.prop_m = PlainDoubleSpinBox(); self.prop_m.setDecimals(5); self.prop_m.setRange(-2, 5)
-        self.const_OF = PlainDoubleSpinBox(); self.const_OF.setDecimals(4); self.const_OF.setRange(0.01, 100)
-        self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0.0, 100.0); self.cstar.setValue(100.0)
-        self.grn_ID = UnitRow(LENGTH_ITEMS, "in")
-        self.grn_OD = UnitRow(LENGTH_ITEMS, "in")
-        self.grn_L = UnitRow(LENGTH_ITEMS, "in")
-        grain = CollapsibleBox("Propellant / grain")
-        gf = grain.form()
-        gf.addRow("Preset", self.prop_combo)
-        gf.addRow("Density", self.rho)
-        gf.addRow("a (mm/s)", self.prop_a)
-        gf.addRow("n", self.prop_n)
-        gf.addRow("m", self.prop_m)
-        gf.addRow("Constant O/F", self.const_OF)
-        gf.addRow("C* efficiency %", self.cstar)
-        gf.addRow("Port ID", self.grn_ID)
-        gf.addRow("Grain OD", self.grn_OD)
-        gf.addRow("Grain length", self.grn_L)
-        root.addWidget(grain)
-
+        # Injector / vent
         self.inj_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(4)
         self.inj_N = PlainSpinBox(); self.inj_N.setRange(1, 200)
@@ -513,7 +379,7 @@ class MainWindow(QMainWindow):
         )
         self.inj_Cd_HEM = PlainDoubleSpinBox(); self.inj_Cd_HEM.setRange(0.01, 1); self.inj_Cd_HEM.setDecimals(4)
         self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")
-        self.hem_same = QCheckBox("Same as injector Cd")
+        self.hem_same = QCheckBox("Same as Cd")
         self.hem_same.setChecked(True)
         hem_row = QWidget()
         hem_layout = QHBoxLayout(hem_row)
@@ -526,26 +392,198 @@ class MainWindow(QMainWindow):
         self.dyer_kappa.setValue(1.0)
         self.dyer_kappa.setToolTip("Dyer weighting. 1 = the formula's value for a tank at its own vapor pressure (even blend). Larger leans toward SPI.")
         self.vnt_state = PlainComboBox(); self.vnt_state.addItems(["None", "External", "Internal"])
+        self.vnt_state.setToolTip(
+            "External: an orifice at the top of the tank vents vapor overboard.\n"
+            "Internal: the vent flow goes into the chamber along with the injector flow."
+        )
         self.vnt_D = UnitRow(LENGTH_ITEMS, "mm", 4)
         self.vnt_Cd = PlainDoubleSpinBox(); self.vnt_Cd.setRange(0, 1); self.vnt_Cd.setDecimals(3)
         inj = CollapsibleBox("Injector / vent")
         iff = inj.form()
-        iff.addRow("Injector diameter", self.inj_D)
+        iff.addRow("Hole diameter", self.inj_D)
+        iff.addRow("Hole count", self.inj_N)
         iff.addRow("Injector Cd", self.inj_Cd)
-        iff.addRow("Injector count", self.inj_N)
         iff.addRow("Injector model", self.inj_model)
         iff.addRow("HEM Cd", hem_row)
         iff.addRow("Dyer κ", self.dyer_kappa)
-        self.inj_model.currentTextChanged.connect(
-            lambda model: (iff.setRowVisible(hem_row, model != "SPI"),
-                           iff.setRowVisible(self.dyer_kappa, model == "Dyer")))
-        self.inj_model.currentTextChanged.emit("SPI")
         self.inj_cda = QLabel("—")
-        iff.addRow("Injector CdA (computed)", self.inj_cda)
+        iff.addRow("Total CdA", self.inj_cda)
         iff.addRow("Vent", self.vnt_state)
         iff.addRow("Vent diameter", self.vnt_D)
         iff.addRow("Vent Cd", self.vnt_Cd)
+
+        def show_injector_rows(model: str):
+            iff.setRowVisible(hem_row, model != "SPI")
+            iff.setRowVisible(self.dyer_kappa, model == "Dyer")
+            self.ox_fluid.setEnabled(model == "SPI")
+
+        def show_vent_rows(state: str):
+            iff.setRowVisible(self.vnt_D, state != "None")
+            iff.setRowVisible(self.vnt_Cd, state != "None")
+
+        self.inj_model.currentTextChanged.connect(show_injector_rows)
+        self.vnt_state.currentTextChanged.connect(show_vent_rows)
+        show_vent_rows("None")
         root.addWidget(inj)
+
+        # Propellant / grain
+        self.reg_model = PlainComboBox(); self.reg_model.addItems(["Shifting OF", "Constant OF"])
+        self.reg_model.setToolTip(
+            "Shifting OF: fuel burns back at a × G^n × L^m (G = oxidizer flux through the port), so O/F drifts as the port opens.\n"
+            "Constant OF: fuel flow is oxidizer flow ÷ a fixed O/F. Use it when you have no regression data."
+        )
+        self.rho = UnitRow(DENSITY_ITEMS, "kg/m^3", 4)
+        self.prop_a = PlainDoubleSpinBox(); self.prop_a.setDecimals(5); self.prop_a.setRange(0, 1e3)
+        self.prop_n = PlainDoubleSpinBox(); self.prop_n.setDecimals(5); self.prop_n.setRange(-2, 5)
+        self.prop_m = PlainDoubleSpinBox(); self.prop_m.setDecimals(5); self.prop_m.setRange(-2, 5)
+        self.prop_a.setToolTip("Scales the whole burn rate. In mm/s with G in kg/(m²·s) and L in m.")
+        self.prop_n.setToolTip("How strongly the burn rate follows oxidizer flux. Usually 0.3–0.8.")
+        self.prop_m.setToolTip("Grain-length effect. Almost always 0.")
+        self.const_OF = PlainDoubleSpinBox(); self.const_OF.setDecimals(4); self.const_OF.setRange(0.01, 100)
+        self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0.0, 100.0); self.cstar.setValue(100.0)
+        self.cstar.setToolTip(
+            "How completely the propellants burn compared with the combustion table. Small hybrids are usually 85–95%.\n"
+            "From a hot fire: chamber pressure × throat area ÷ total mass flow, divided by the table's C*."
+        )
+        self.grn_ID = UnitRow(LENGTH_ITEMS, "in")
+        self.grn_OD = UnitRow(LENGTH_ITEMS, "in")
+        self.grn_L = UnitRow(LENGTH_ITEMS, "in")
+        self.cmbr_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
+        self.cmbr_by_dims = QCheckBox("Chamber volume = grain envelope")
+        self.cmbr_by_dims.setChecked(True)
+        self.cmbr_by_dims.setToolTip("Gas space around the grain; it sets how fast chamber pressure builds at ignition.\n"
+                                     "Checked: the grain's outer cylinder, with no pre- or post-combustion chamber.")
+        grain = CollapsibleBox("Propellant / grain")
+        gf = grain.form()
+        gf.addRow("Propellant", self.prop_combo)
+        gf.addRow("Regression model", self.reg_model)
+        gf.addRow("Density", self.rho)
+        gf.addRow("a (mm/s)", self.prop_a)
+        gf.addRow("n", self.prop_n)
+        gf.addRow("m", self.prop_m)
+        gf.addRow("Constant O/F", self.const_OF)
+        gf.addRow("C* efficiency %", self.cstar)
+        gf.addRow("Port diameter", self.grn_ID)
+        gf.addRow("Grain OD", self.grn_OD)
+        gf.addRow("Grain length", self.grn_L)
+        gf.addRow(self.cmbr_by_dims)
+        gf.addRow("Chamber volume", self.cmbr_V)
+
+        def show_regression_rows(model: str):
+            for w in (self.prop_a, self.prop_n, self.prop_m):
+                gf.setRowVisible(w, model == "Shifting OF")
+            gf.setRowVisible(self.const_OF, model == "Constant OF")
+
+        self.reg_model.currentTextChanged.connect(show_regression_rows)
+        show_regression_rows(self.reg_model.currentText())
+        root.addWidget(grain)
+
+        # Nozzle
+        self.noz_thrt = UnitRow(LENGTH_ITEMS, "in")
+        self.noz_mode = PlainComboBox()
+        self.noz_mode.addItems(["Nozzle Expansion Ratio", "Nozzle Exit Diameter"])
+        self.noz_ex = PlainDoubleSpinBox()
+        self.noz_ex.setRange(0.0, 1e6)
+        self.noz_ex.setDecimals(4)
+        self.noz_ex_unit = PlainComboBox()
+        self.noz_ex_unit.addItems(LENGTH_ITEMS)
+        self.noz_ex_unit.setFixedWidth(72)
+        self.noz_eff = PlainDoubleSpinBox()
+        self.noz_eff.setRange(0.0, 100.0)
+        self.noz_eff.setValue(97.0)
+        self.noz_eff.setToolTip("Thrust lost to the nozzle's cone angle and friction; scales thrust only.\n"
+                                "A 15° cone loses about 2% to the angle alone. 92–97% is typical.")
+        self.noz_Cd = PlainDoubleSpinBox()
+        self.noz_Cd.setRange(0.0, 1.0)
+        self.noz_Cd.setDecimals(3)
+        self.noz_Cd.setValue(0.95)
+        self.noz_Cd.setToolTip("How much of the throat area actually flows. About 0.97–0.99 for a smooth, rounded throat.\n"
+                               "Acts like a smaller throat. Put combustion losses in C* efficiency instead.")
+        noz = CollapsibleBox("Nozzle")
+        nf = noz.form()
+        nf.addRow("Throat diameter", self.noz_thrt)
+        nf.addRow("Define exit by", self.noz_mode)
+        ex_row = QWidget()
+        ex_l = QHBoxLayout(ex_row)
+        ex_l.setContentsMargins(0, 0, 0, 0)
+        ex_l.addWidget(self.noz_ex, 1)
+        ex_l.addWidget(self.noz_ex_unit)
+        nf.addRow("Expansion ratio", ex_row)
+        nf.addRow("Efficiency %", self.noz_eff)
+        nf.addRow("Throat Cd", self.noz_Cd)
+
+        def show_exit_row(mode: str):
+            by_ratio = "Expansion" in mode
+            self.noz_ex_unit.setVisible(not by_ratio)
+            cast(QLabel, nf.labelForField(ex_row)).setText("Expansion ratio" if by_ratio else "Exit diameter")
+            self.noz_ex.setToolTip("Exit area ÷ throat area" if by_ratio else "")
+
+        self.noz_mode.currentTextChanged.connect(show_exit_row)
+        show_exit_row(self.noz_mode.currentText())
+        root.addWidget(noz)
+
+        # Simulation
+        self.tmax = PlainDoubleSpinBox(); self.tmax.setRange(0.01, 120); self.tmax.setValue(10)
+        self.tburn = PlainDoubleSpinBox(); self.tburn.setRange(0.0, 120)
+        self.tburn.setToolTip("Closes the oxidizer valve at this time. 0 = never.")
+        self.dt = PlainDoubleSpinBox(); self.dt.setDecimals(3); self.dt.setRange(0.01, 100); self.dt.setValue(1.0)
+        self.dt.setToolTip("1 ms is usually within 0.1% of finer steps. Check a new motor by comparing with 0.2 ms.")
+        self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
+        self.Pa = UnitRow(PRESSURE_ITEMS, "atm")
+        self.Pa.setToolTip("Outside pressure. Lower it to model a motor at altitude.")
+        sim = CollapsibleBox("Simulation")
+        sf = sim.form()
+        sf.addRow("Max run time [s]", self.tmax)
+        sf.addRow("Close valve at [s]", self.tburn)
+        sf.addRow("Timestep [ms]", self.dt)
+        sf.addRow("Chamber start pressure", self.P_cmbr)
+        sf.addRow("Ambient pressure", self.Pa)
+        root.addWidget(sim)
+
+        # Advanced
+        adv = CollapsibleBox("Advanced (not MATLAB-identical)")
+        af = adv.form()
+        self.adv_on = QCheckBox("Enable advanced options")
+        self.live_chem = QCheckBox("Live chemistry (NASA thermo.dat Gibbs solver)")
+        self.ox_fluid = PlainComboBox()
+        self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
+        self.ox_fluid.setToolTip("Nitrous properties for the tank with the SPI injector model.\n"
+                                 "HEM and Dyer always use CoolProp.")
+        self.grain_shape = PlainComboBox()
+        self.grain_shape.addItems(["cylindrical", "star"])
+        self.star_tips = PlainSpinBox(); self.star_tips.setRange(3, 16); self.star_tips.setValue(6)
+        af.addRow(self.adv_on)
+        af.addRow(self.live_chem)
+        af.addRow("Oxidizer fluid", self.ox_fluid)
+        af.addRow("Grain shape", self.grain_shape)
+        af.addRow("Star tips", self.star_tips)
+        self.grain_shape.currentTextChanged.connect(lambda shape: af.setRowVisible(self.star_tips, shape == "star"))
+        af.setRowVisible(self.star_tips, False)
+        root.addWidget(adv)
+        show_injector_rows("SPI")
+
+        # One label column width for every section, so the fields line up down the panel.
+        labels = [item.widget() for box in inner.findChildren(CollapsibleBox) for r in range(box.form().rowCount())
+                  if (item := box.form().itemAt(r, QFormLayout.ItemRole.LabelRole)) is not None]
+        width = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setMinimumWidth(width)
+        root.addStretch(1)
+        scroll.setWidget(inner)
+        wl.addWidget(scroll, 1)
+        return wrap
+
+    def _make_mass_page(self) -> QWidget:
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        inner = QWidget()
+        outer = QHBoxLayout(inner)
+        outer.setContentsMargins(16, 16, 16, 16)
+        column = QVBoxLayout()
+        column.setSpacing(12)
+        outer.addLayout(column)
+        outer.addStretch(1)
+        inner.setMaximumWidth(1100)
 
         self.mp_on = QCheckBox("Calculate mass properties (ENG / RSE CG)")
         self.tnk_start = UnitRow(LENGTH_ITEMS, "in")
@@ -555,79 +593,47 @@ class MainWindow(QMainWindow):
         self.cmbr_m = UnitRow(MASS_ITEMS, "kg")
         self.dry_OD = UnitRow(LENGTH_ITEMS, "in")
         self.dry_L = UnitRow(LENGTH_ITEMS, "in")
+        self.mfg = QLineEdit("HRAP")
         self.mass_info = QLabel("Empty mass / CG: —")
         self.mass_info.setWordWrap(True)
-        mass = CollapsibleBox("Mass properties")
-        mf = mass.form()
-        mf.addRow(self.mp_on)
-        mf.addRow("Oxidizer tank start", self.tnk_start)
-        mf.addRow("Oxidizer tank dry mass", self.tnk_m)
-        mf.addRow("Chamber start", self.cmbr_start)
-        mf.addRow("Chamber length (incl. injector + nozzle)", self.cmbr_L)
-        mf.addRow("Chamber dry mass (no grain)", self.cmbr_m)
-        mf.addRow("Motor OD (export)", self.dry_OD)
-        mf.addRow("Motor length (export)", self.dry_L)
-        mf.addRow(self.mass_info)
-        root.addWidget(mass)
         self._legacy_mtr_m = 0.0
         self._legacy_mtr_m_unit = "kg"
         self._legacy_mtr_cg = 0.0
         self._legacy_mtr_cg_unit = "in"
 
-        self.tmax = PlainDoubleSpinBox(); self.tmax.setRange(0.01, 120); self.tmax.setValue(10)
-        self.tburn = PlainDoubleSpinBox(); self.tburn.setRange(0.0, 120)
-        self.dt = PlainDoubleSpinBox(); self.dt.setDecimals(5); self.dt.setRange(1e-5, 0.1); self.dt.setValue(0.001)
-        self.reg_model = PlainComboBox(); self.reg_model.addItems(["Constant OF", "Shifting OF"])
-        sim = CollapsibleBox("Simulation")
-        sf = sim.form()
-        sf.addRow("Max run time [s]", self.tmax)
-        sf.addRow("Max burn time [s] (0 = none)", self.tburn)
-        sf.addRow("Timestep [s]", self.dt)
-        sf.addRow("Regression model", self.reg_model)
-        root.addWidget(sim)
+        mass = CollapsibleBox("Mass properties")
+        mf = mass.form()
+        mf.addRow(self.mp_on)
+        mf.addRow("Tank front, from datum", self.tnk_start)
+        mf.addRow("Tank dry mass", self.tnk_m)
+        mf.addRow("Chamber front, from datum", self.cmbr_start)
+        mf.addRow("Chamber length (injector to nozzle exit)", self.cmbr_L)
+        mf.addRow("Chamber dry mass (no grain)", self.cmbr_m)
+        mf.addRow(self.mass_info)
+        mass_fields = (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_L, self.cmbr_m)
+        self.mp_on.toggled.connect(lambda on: [w.setEnabled(on) for w in mass_fields])
+        for w in mass_fields:
+            w.setEnabled(False)
+        column.addWidget(mass)
 
-        self.tnk_dd = PlainComboBox(); self.tnk_dd.addItems(["Starting Tank Temperature", "Starting Tank Pressure"])
-        self.tnk_cond = PlainDoubleSpinBox(); self.tnk_cond.setDecimals(4); self.tnk_cond.setRange(0, 1e8); self.tnk_cond.setValue(293.15)
-        self.T_tnk_unit = PlainComboBox(); self.T_tnk_unit.addItems(TEMP_ITEMS + PRESSURE_ITEMS)
-        self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
-        self.fill_dd = PlainComboBox(); self.fill_dd.addItems(["Tank Fill Percentage", "Starting Oxidizer Mass"])
-        self.fill = PlainDoubleSpinBox(); self.fill.setDecimals(4); self.fill.setRange(0, 1e6); self.fill.setValue(95)
-        self.fill_unit = PlainComboBox(); self.fill_unit.addItems(["%"] + MASS_ITEMS)
-        self.Pa = UnitRow(PRESSURE_ITEMS, "atm")
-        ic = CollapsibleBox("Initial conditions")
-        icf = ic.form()
-        icf.addRow("Tank specified by", self.tnk_dd)
-        trow = QWidget(); tl = QHBoxLayout(trow); tl.setContentsMargins(0,0,0,0); tl.addWidget(self.tnk_cond, 1); tl.addWidget(self.T_tnk_unit)
-        icf.addRow("Tank T / P", trow)
-        icf.addRow("Chamber pressure", self.P_cmbr)
-        icf.addRow("Oxidizer specified by", self.fill_dd)
-        frow = QWidget(); fl = QHBoxLayout(frow); fl.setContentsMargins(0,0,0,0); fl.addWidget(self.fill, 1); fl.addWidget(self.fill_unit)
-        icf.addRow("Fill / mass", frow)
-        icf.addRow("Ambient pressure", self.Pa)
-        self.sat_info = QLabel("Saturation: —")
-        self.sat_info.setWordWrap(True)
-        icf.addRow(self.sat_info)
-        root.addWidget(ic)
-
-        adv = CollapsibleBox("Advanced (not MATLAB-identical)")
-        af = adv.form()
-        self.adv_on = QCheckBox("Enable advanced options — results will not match original HRAP")
-        self.live_chem = QCheckBox("Live chemistry (NASA thermo.dat Gibbs solver)")
-        self.ox_fluid = PlainComboBox()
-        self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)", "Oxygen (CoolProp)"])
-        self.grain_shape = PlainComboBox()
-        self.grain_shape.addItems(["cylindrical", "star"])
-        self.star_tips = PlainSpinBox(); self.star_tips.setRange(3, 16); self.star_tips.setValue(6)
-        af.addRow(self.adv_on)
-        af.addRow(self.live_chem)
-        af.addRow("Oxidizer fluid", self.ox_fluid)
-        af.addRow("Grain shape", self.grain_shape)
-        af.addRow("Star tips", self.star_tips)
-        root.addWidget(adv)
-        root.addStretch(1)
-        scroll.setWidget(inner)
-        wl.addWidget(scroll, 1)
-        return wrap
+        export = CollapsibleBox("Export")
+        ef = export.form()
+        ef.addRow("Manufacturer", self.mfg)
+        ef.addRow("Motor OD", self.dry_OD)
+        ef.addRow("Motor length", self.dry_L)
+        buttons = QHBoxLayout()
+        for label, kind in (("Export .RSE", "rse"), ("Export .ENG", "eng"), ("Export CSV", "csv")):
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _=False, k=kind: self._export(k))
+            buttons.addWidget(btn)
+        self.rse_btn = cast(QPushButton, buttons.itemAt(0).widget())
+        ef.addRow(buttons)
+        column.addWidget(export)
+        column.addStretch(1)
+        for box in (mass, export):
+            box.setMinimumWidth(520)
+        page.setWidget(inner)
+        return page
 
     def _make_results(self) -> QWidget:
         box = QWidget()
@@ -649,7 +655,7 @@ class MainWindow(QMainWindow):
         for i, (label, _key, _quantity) in enumerate(TRACES):
             item = QListWidgetItem(label)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if i < 3 or 4 <= i <= 6 else Qt.CheckState.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if label in DEFAULT_TRACES else Qt.CheckState.Unchecked)
             self.trace_list.addItem(item)
         self.trace_list.itemChanged.connect(lambda *_: self._refresh_plot())
         mid.addWidget(self.trace_list)
@@ -747,7 +753,7 @@ class MainWindow(QMainWindow):
             "vnt_Cd": self.vnt_Cd.value(),
             "t_max": self.tmax.value(),
             "t_burn": self.tburn.value(),
-            "dt": self.dt.value(),
+            "dt": self.dt.value() / 1000.0,
             "reg_model": self.reg_model.currentText(),
             "advanced": {
                 "enabled": self.adv_on.isChecked(),
@@ -759,6 +765,7 @@ class MainWindow(QMainWindow):
             "export_OD": to_si(self.dry_OD.spin.value(), self.dry_OD.unit.currentText(), "length"),
             "export_L": to_si(self.dry_L.spin.value(), self.dry_L.unit.currentText(), "length"),
             "mfg": self.mfg.text() or "HRAP",
+            "sizing": self.sizing_page.targets_cfg(),
         })
         return cfg
 
@@ -789,19 +796,11 @@ class MainWindow(QMainWindow):
         self.cmbr_L.set_display(from_si(lay.cmbr_L, cfg.get("cmbr_L_unit") or "in", "length"), cfg.get("cmbr_L_unit") or "in")
         self.tnk_m.set_display(cfg.get("tnk_m", 0), cfg.get("tnk_m_unit", "kg"))
         self.cmbr_m.set_display(cfg.get("cmbr_m", 0), cfg.get("cmbr_m_unit", "kg"))
-        self.tnk_dd.setCurrentText(cfg.get("tnk_dd") or "Starting Tank Temperature")
+        self._set_tank_mode(cfg.get("tnk_dd") or "Starting Tank Temperature", cfg.get("T_tnk_unit") or "K")
         self.tnk_cond.setValue(float(cfg.get("tnk_cond") or 0))
-        _set_unit_text(self.T_tnk_unit, cfg.get("T_tnk_unit") or "K")
         self.P_cmbr.set_display(cfg.get("P_cmbr", 1), cfg.get("P_cmbr_unit", "atm"))
-        self.fill_dd.setCurrentText(cfg.get("fill_dd") or "Tank Fill Percentage")
+        self._set_fill_mode(cfg.get("fill_dd") or "Tank Fill Percentage", cfg.get("fill_unit") or "kg")
         self.fill.setValue(float(cfg.get("fill") or 0))
-        fu = cfg.get("fill_unit") or "%"
-        if fu not in [self.fill_unit.itemText(i) for i in range(self.fill_unit.count())]:
-            fu = "%"
-        _set_unit_text(
-            self.fill_unit,
-            fu if self.fill_dd.currentText() == "Tank Fill Percentage" else (cfg.get("fill_unit") or "kg"),
-        )
         self.Pa.set_display(cfg.get("Pa", 1), cfg.get("Pa_unit", "atm"))
         pid = cfg.get("prop_id") or cfg.get("prop_nm") or "ABS"
         idx = self.prop_combo.findData(pid)
@@ -836,7 +835,7 @@ class MainWindow(QMainWindow):
         self.vnt_Cd.setValue(float(cfg.get("vnt_Cd") or 0))
         self.tmax.setValue(float(cfg.get("t_max") or 10))
         self.tburn.setValue(float(cfg.get("t_burn") or 0))
-        self.dt.setValue(float(cfg.get("dt") or 0.001))
+        self.dt.setValue(1000.0 * float(cfg.get("dt") or 0.001))
         self.reg_model.setCurrentText(cfg.get("reg_model") or "Constant OF")
         self.dry_OD.set_display(from_si(cfg.get("export_OD") or lay.overall_OD, "in", "length"), "in")
         self.dry_L.set_display(from_si(cfg.get("export_L") or lay.overall_L, "in", "length"), "in")
@@ -849,7 +848,46 @@ class MainWindow(QMainWindow):
         if adv.get("star_tips"):
             self.star_tips.setValue(int(adv["star_tips"]))
         self.live_chem.setChecked(bool(adv.get("live_chem")))
+        self.sizing_page.set_targets(cfg.get("sizing") or {}, cfg)
         self._update_derived_labels()
+
+    def _set_tank_mode(self, mode: str, unit: str):
+        self._tnk_mode = mode
+        self.tnk_dd.blockSignals(True)
+        self.tnk_dd.setCurrentText(mode)
+        self.tnk_dd.blockSignals(False)
+        by_T = mode == "Starting Tank Temperature"
+        _set_unit_items(self.T_tnk_unit, TEMP_ITEMS if by_T else PRESSURE_ITEMS, unit)
+        cast(QLabel, self._tank_form.labelForField(self._tank_cond_row)).setText("Temperature" if by_T else "Pressure")
+
+    def _set_fill_mode(self, mode: str, unit: str):
+        self._fill_mode = mode
+        self.fill_dd.blockSignals(True)
+        self.fill_dd.setCurrentText(mode)
+        self.fill_dd.blockSignals(False)
+        by_fill = mode == "Tank Fill Percentage"
+        _set_unit_items(self.fill_unit, ["%"] if by_fill else MASS_ITEMS, unit)
+        cast(QLabel, self._tank_form.labelForField(self._fill_row)).setText("Fill" if by_fill else "Oxidizer mass")
+
+    def _on_tank_mode(self, mode: str):
+        """Switch between starting temperature and pressure, keeping the same tank state."""
+        _fill, T, _m = self._initial_fill_and_T(tank_mode=self._tnk_mode)
+        if mode == "Starting Tank Temperature":
+            self._set_tank_mode(mode, "K")
+            self.tnk_cond.setValue(T)
+        else:
+            self._set_tank_mode(mode, "psi")
+            self.tnk_cond.setValue(from_si(nox(T).Pv, "psi", "pressure"))
+
+    def _on_fill_mode(self, mode: str):
+        """Switch between fill percentage and oxidizer mass, keeping the same oxidizer load."""
+        fill, _T, m_o = self._initial_fill_and_T(fill_mode=self._fill_mode)
+        if mode == "Tank Fill Percentage":
+            self._set_fill_mode(mode, "%")
+            self.fill.setValue(100.0 * fill)
+        else:
+            self._set_fill_mode(mode, "kg")
+            self.fill.setValue(m_o)
 
     def _sync_hem_cd(self):
         same = self.hem_same.isChecked()
@@ -889,6 +927,7 @@ class MainWindow(QMainWindow):
         self.noz_ex_unit.currentTextChanged.connect(self._update_derived_labels)
         self.vnt_D.unit.currentTextChanged.connect(self._update_derived_labels)
         self.tnk_by_dims.toggled.connect(self._update_derived_labels)
+        self.cmbr_by_dims.toggled.connect(self._update_derived_labels)
         self.noz_mode.currentTextChanged.connect(self._update_derived_labels)
         self.vnt_state.currentTextChanged.connect(self._update_derived_labels)
         self.name.textChanged.connect(self._update_derived_labels)
@@ -907,11 +946,18 @@ class MainWindow(QMainWindow):
         D = to_si(self.inj_D.spin.value(), self.inj_D.unit.currentText(), "length")
         cda = 0.25 * math.pi * D ** 2 * self.inj_Cd.value() * self.inj_N.value()
         self.inj_cda.setText(self.display_units.text(cda, "area"))
-        if self.tnk_by_dims.isChecked():
-            d = to_si(self.tnk_D.spin.value(), self.tnk_D.unit.currentText(), "length")
-            L = to_si(self.tnk_L.spin.value(), self.tnk_L.unit.currentText(), "length")
-            V = L * 0.25 * math.pi * d ** 2
-            self.tnk_V.set_display(from_si(V, self.tnk_V.unit.currentText(), "volume"))
+        by_dims = self.tnk_by_dims.isChecked()
+        self.tnk_V.setEnabled(not by_dims)
+        self.tnk_L.setEnabled(by_dims)
+        tnk_L, _d, tnk_V = self._tank_geometry()
+        if by_dims:
+            self.tnk_V.set_display(from_si(tnk_V, self.tnk_V.unit.currentText(), "volume"))
+        else:
+            self.tnk_L.set_display(from_si(tnk_L, self.tnk_L.unit.currentText(), "length"))
+        self.cmbr_V.setEnabled(not self.cmbr_by_dims.isChecked())
+        if self.cmbr_by_dims.isChecked():
+            envelope = 0.25 * math.pi * self._len_si(self.grn_OD) ** 2 * self._len_si(self.grn_L)
+            self.cmbr_V.set_display(from_si(envelope, self.cmbr_V.unit.currentText(), "volume"))
         try:
             if self.tnk_dd.currentText() == "Starting Tank Temperature":
                 T = to_si(self.tnk_cond.value(), self.T_tnk_unit.currentText(), "temperature")
@@ -972,9 +1018,7 @@ class MainWindow(QMainWindow):
             V = L * 0.25 * math.pi * d ** 2
         else:
             V = to_si(self.tnk_V.spin.value(), self.tnk_V.unit.currentText(), "volume")
-            L = self._len_si(self.tnk_L)
-            if L <= 1e-9 and d > 0 and V > 0:
-                L = V / (0.25 * math.pi * d ** 2)
+            L = V / (0.25 * math.pi * d ** 2)
         return max(L, 1e-4), max(d, 1e-4), max(V, 0.0)
 
     def _form_layout(self):
@@ -1015,11 +1059,11 @@ class MainWindow(QMainWindow):
         er = (exit_d / th) ** 2 if th > 0 else 1.0
         return exit_d, er
 
-    def _initial_fill_and_T(self) -> tuple[float, float, float]:
+    def _initial_fill_and_T(self, tank_mode: str | None = None, fill_mode: str | None = None) -> tuple[float, float, float]:
         """Return (fill fraction, tank T [K], oxidizer mass [kg]) from the form."""
         L, d, V = self._tank_geometry()
         try:
-            if self.tnk_dd.currentText() == "Starting Tank Temperature":
+            if (tank_mode or self.tnk_dd.currentText()) == "Starting Tank Temperature":
                 T = to_si(self.tnk_cond.value(), self.T_tnk_unit.currentText(), "temperature")
             else:
                 P = to_si(self.tnk_cond.value(), self.T_tnk_unit.currentText(), "pressure")
@@ -1027,7 +1071,7 @@ class MainWindow(QMainWindow):
             ox = nox(T)
         except Exception:
             T, ox = 293.15, None
-        if self.fill_dd.currentText() == "Tank Fill Percentage" or self.fill_unit.currentText() == "%":
+        if (fill_mode or self.fill_dd.currentText()) == "Tank Fill Percentage":
             fill = self.fill.value() / 100.0
             m_o = 0.0
             if ox is not None:
@@ -1036,7 +1080,7 @@ class MainWindow(QMainWindow):
             m_o = to_si(self.fill.value(), self.fill_unit.currentText(), "mass")
             fill = 0.0
             if ox is not None and V > 0 and ox.rho_l > 0:
-                fill = min(max(m_o / (ox.rho_l * V), 0.0), 1.0)
+                fill = min(max((m_o / V - ox.rho_v) / (ox.rho_l - ox.rho_v), 0.0), 1.0)  # liquid volume fraction
         return fill, T, m_o
 
     def _motor_view(self, index: int | None = None) -> MotorView:
@@ -1207,10 +1251,10 @@ class MainWindow(QMainWindow):
             line.setVisible(True)
         bits = [f"Time: {t[i]:.3f} s"]
         for k, (label, key, trace_quantity) in enumerate(TRACES):
-            if trace_quantity != quantity or self.trace_list.item(k).checkState() != Qt.CheckState.Checked:
+            if self.trace_list.item(k).checkState() != Qt.CheckState.Checked:
                 continue
             value = float(getattr(self._output, key)[i])
-            bits.append(f"{label}: {self.display_units.text(value, quantity)}")
+            bits.append(f"{label}: {self.display_units.text(value, trace_quantity)}")
         self.plot_readout.setText("   ·   ".join(bits))
         self._refresh_viz_at(i)
 
@@ -1278,9 +1322,27 @@ class MainWindow(QMainWindow):
     def _open_sweep(self):
         SweepDialog(self._form_to_cfg(), self.display_units, self).exec()
 
+    def _on_tab_changed(self, _index: int):
+        if self.tabs.currentWidget() is self.sizing_page:
+            self.sizing_page.refresh()
+
+    def _apply_sizing(self, values: dict):
+        """Copy a sizing result into the motor: throat, exit, hole count, grain and O/F."""
+        self.noz_thrt.set_display(from_si(values["throat_D"], self.noz_thrt.unit.currentText(), "length"))
+        self.noz_mode.setCurrentText("Nozzle Expansion Ratio")
+        self.noz_ex.setValue(values["ER"])
+        self.inj_N.setValue(values["holes"])
+        self.grn_ID.set_display(from_si(values["port_D"], self.grn_ID.unit.currentText(), "length"))
+        if values.get("grain_L") and math.isfinite(values["grain_L"]):
+            self.grn_L.set_display(from_si(values["grain_L"], self.grn_L.unit.currentText(), "length"))
+        self.const_OF.setValue(values["OF"])
+        self._update_derived_labels()
+        self.statusBar().showMessage("Sizing applied to the motor. Run the simulation to check it over the whole burn.")
+        self.tabs.setCurrentIndex(1)
+
     def _set_running(self, running: bool):
-        self._form.setEnabled(not running)
-        self.sweep_btn.setEnabled(not running)
+        for page in (self._form, self.sizing_page, self.mass_page):
+            page.setEnabled(not running)
         self._file_menu.setEnabled(not running)
         self._examples_menu.setEnabled(not running)
 
@@ -1366,15 +1428,19 @@ class MainWindow(QMainWindow):
             self._time_range = (float(o.t[0]), float(o.t[-1]))
         self._clear_plot()
         palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
-        for i, (label, key, quantity) in enumerate(TRACES):
-            if self.trace_list.item(i).checkState() != Qt.CheckState.Checked:
-                continue
+        checked = [i for i in range(len(TRACES)) if self.trace_list.item(i).checkState() == Qt.CheckState.Checked]
+        per_plot: dict[str, int] = {}
+        for i in checked:
+            per_plot[TRACES[i][2]] = per_plot.get(TRACES[i][2], 0) + 1
+        for i in checked:
+            label, key, quantity = TRACES[i]
             unit = self.display_units.unit(quantity)
             if quantity not in self._plots:
                 widget = pg.PlotWidget()
                 plot = cast(pg.PlotItem, widget.getPlotItem())
                 plot.showGrid(x=True, y=True, alpha=0.25)
-                plot.addLegend(offset=(-10, 5))
+                if per_plot[quantity] > 1:
+                    plot.addLegend(offset=(-10, 5))
                 plot.setLabel("left", PLOT_LABELS[quantity], units=unit)
                 plot.getAxis("left").enableAutoSIPrefix(False)
                 plot.getAxis("left").setWidth(100)
@@ -1392,7 +1458,7 @@ class MainWindow(QMainWindow):
                 plot.addItem(line, ignoreBounds=True)
                 self._hover_lines.append(line)
             pen = pg.mkPen(palette[i % len(palette)], width=2)
-            self._plots[quantity].plot(o.t, np.asarray(getattr(o, key), dtype=float) * self.display_units.value(1.0, quantity),
+            self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
                                       pen=pen, name=label)
         for plot in self._plots.values():
             vb = cast(pg.ViewBox, plot.vb)
@@ -1416,7 +1482,8 @@ class MainWindow(QMainWindow):
                 axis.setPen(fg)
                 axis.setTextPen(fg)
                 axis.setLabel(text=axis.labelText, units=axis.labelUnits, **{"color": fg})
-            cast(pg.LegendItem, plot.legend).setLabelTextColor(fg)
+            if plot.legend is not None:
+                cast(pg.LegendItem, plot.legend).setLabelTextColor(fg)
         for line in self._hover_lines:
             line.setPen(self._hover_line_pen())
 

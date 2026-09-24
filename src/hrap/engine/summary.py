@@ -30,6 +30,7 @@ def summarize(s: Settings, x: State, o: Output) -> dict:
     cstar = int_pressure * Ath / (fuel_consumed + ox_consumed) if (fuel_consumed + ox_consumed) else 0.0
     isp = total_impulse / ((ox_consumed + fuel_consumed) * 9.81) if (ox_consumed + fuel_consumed) else 0.0
     port_cm = float(x.grn_ID * 100.0)
+    avg_inj_dP = float(np.mean(o.P_tnk[mask] - o.P_cmbr[mask])) if np.any(mask) else 0.0
     return {
         "name": s.mtr_nm,
         "propellant": s.prop_nm,
@@ -46,6 +47,7 @@ def summarize(s: Settings, x: State, o: Output) -> dict:
         "avg_OF": avg_OF,
         "cstar": cstar,
         "isp": isp,
+        "avg_inj_dP": avg_inj_dP,
         "impulse_class": motor_class,
         "impulse_percent": percent,
         "end_cond": o.sim_end_cond,
@@ -64,6 +66,7 @@ def format_summary(info: dict, units: DisplayUnits | None = None) -> str:
         f"    Total Impulse: {u.text(info['total_impulse'], 'impulse', 7)}\n"
         f"    Peak Chamber Pressure: {u.text(info['peak_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)\n"
         f"    Average Chamber Pressure: {u.text(info['avg_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)\n"
+        f"    Average Injector ΔP: {u.text(info['avg_inj_dP'], 'pressure', 6)}\n"
         f"    Port Diameter at Burnout: {u.text(info['port_cm'] * .01, 'length', 6)}\n"
         f"    Fuel Consumed: {u.text(info['fuel_consumed'], 'mass', 6)}\n"
         f"    Oxidizer Consumed: {u.text(info['ox_consumed'], 'mass', 6)}\n"

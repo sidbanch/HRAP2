@@ -39,6 +39,7 @@ def _blank_output(s: Settings) -> Output:
         dP=z(),
         m_t=z(),
         cg=z(),
+        T_tnk=z(),
     )
     return o
 
@@ -57,6 +58,7 @@ def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
     o.m_f[i] = x.m_f
     o.dP[i] = x.dP
     o.F_thr[i] = x.F_thr
+    o.T_tnk[i] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[i] = mp[0]
     o.cg[i] = mp[1]
@@ -120,9 +122,10 @@ def sim_loop(
     last = min(last, o.t.size)
     for name in (
         "t", "m_o", "P_tnk", "P_cmbr", "mdot_o", "mdot_f", "OF",
-        "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg",
+        "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg", "T_tnk",
     ):
         setattr(o, name, getattr(o, name)[:last])
+    o.inj_dP = o.P_tnk - o.P_cmbr
     return s, x, o, t
 
 
@@ -144,6 +147,7 @@ def run(
     o.mdot_n[0] = x.mdot_n
     o.rdot[0] = x.rdot
     o.m_f[0] = x.m_f
+    o.T_tnk[0] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[0] = mp[0]
     o.cg[0] = mp[1]

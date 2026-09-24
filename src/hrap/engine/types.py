@@ -125,5 +125,7 @@ class Output:
     dP: np.ndarray
     m_t: Optional[np.ndarray] = None
     cg: Optional[np.ndarray] = None
+    T_tnk: Optional[np.ndarray] = None
+    inj_dP: Optional[np.ndarray] = None  # tank minus chamber pressure
     sim_end_cond: str = ""
     extra: dict = field(default_factory=dict)
