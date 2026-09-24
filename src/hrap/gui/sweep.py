@@ -95,8 +95,16 @@ class SweepPanel(QFrame):
         self._picked: int | None = None
         self.spi = True
         self._center = 0.0
+        self._length_unit = ""
 
-        self.spread = self._spin(30.0, 0, suffix=" %")
+        # The throat range is either ± a percentage of the sized throat, or a from / to range in a length unit.
+        self.throat_mode = QComboBox()
+        self.throat_mode.addItems(["± %", ""])
+        self.throat_mode.setFixedWidth(72)
+        self.throat_mode.setToolTip("Give the throat range as ± a percentage of the sized throat, or as a from / to range.")
+        self.spread = self._spin(30.0, 0)
+        self.throat_lo, self.throat_hi = self._spin(0.0, 3), self._spin(0.0, 3)
+        self.throat_to = QLabel("to")
         self.throat_n = self._count(7)
         self.cd_lo, self.cd_hi = self._spin(0.3, 3), self._spin(0.9, 3)
         self.cd_n = self._count(6)
@@ -118,28 +126,35 @@ class SweepPanel(QFrame):
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
+        # Columns: label, range mode, from, "to", to, "steps", count. Rows without a mode span the first two.
         grid.addWidget(QLabel("Throat"), 0, 0)
-        grid.addWidget(self.spread, 0, 1)
-        grid.addWidget(self.center_label, 0, 2, 1, 3)
+        grid.addWidget(self.throat_mode, 0, 1)
+        grid.addWidget(self.spread, 0, 2)
+        grid.addWidget(self.center_label, 0, 3, 1, 2)
+        grid.addWidget(self.throat_lo, 0, 2)
+        grid.addWidget(self.throat_to, 0, 3)
+        grid.addWidget(self.throat_hi, 0, 4)
         grid.addWidget(QLabel("steps"), 0, 5)
         grid.addWidget(self.throat_n, 0, 6)
-        grid.addWidget(QLabel("Injector Cd"), 1, 0)
-        grid.addWidget(self.cd_lo, 1, 1)
-        grid.addWidget(QLabel("to"), 1, 2)
-        grid.addWidget(self.cd_hi, 1, 3)
+        grid.addWidget(QLabel("Injector Cd"), 1, 0, 1, 2)
+        grid.addWidget(self.cd_lo, 1, 2)
+        grid.addWidget(QLabel("to"), 1, 3)
+        grid.addWidget(self.cd_hi, 1, 4)
         grid.addWidget(QLabel("steps"), 1, 5)
         grid.addWidget(self.cd_n, 1, 6)
-        grid.addWidget(QLabel("Chamber limit"), 2, 0)
-        grid.addWidget(self.max_chamber, 2, 1)
+        grid.addWidget(QLabel("Chamber limit"), 2, 0, 1, 2)
+        grid.addWidget(self.max_chamber, 2, 2)
         self.pressure_unit = QLabel("")
-        grid.addWidget(self.pressure_unit, 2, 2, 1, 3)
+        grid.addWidget(self.pressure_unit, 2, 3, 1, 4)
         self.dp_label = QLabel("ΔP warning")
         self.dp_unit = QLabel("")
-        grid.addWidget(self.dp_label, 3, 0)
-        grid.addWidget(self.max_dp, 3, 1)
-        grid.addWidget(self.dp_unit, 3, 2, 1, 3)
+        grid.addWidget(self.dp_label, 3, 0, 1, 2)
+        grid.addWidget(self.max_dp, 3, 2)
+        grid.addWidget(self.dp_unit, 3, 3, 1, 4)
         grid.addWidget(self.model_label, 4, 0, 1, 7)
         grid.setColumnStretch(7, 1)
+        self.throat_mode.currentIndexChanged.connect(self._on_throat_mode)
+        self._on_throat_mode(0)
 
         self.run_btn = QPushButton("Run sweep")
         self.run_btn.setObjectName("runButton")
@@ -202,7 +217,12 @@ class SweepPanel(QFrame):
         layout.addLayout(buttons)
         layout.addWidget(self.answer)
         layout.addWidget(self.table, 1)
-        layout.addLayout(legend)
+        self.legend = QWidget()
+        legend.setContentsMargins(0, 0, 0, 0)
+        self.legend.setLayout(legend)
+        layout.addWidget(self.legend)
+        self.table.hide()  # shown once a sweep runs
+        self.legend.hide()
 
         for signal in (self.shown.currentIndexChanged, self.max_chamber.valueChanged, self.max_dp.valueChanged):
             signal.connect(self._refresh)
@@ -225,6 +245,24 @@ class SweepPanel(QFrame):
         spin.setFixedWidth(64)
         return spin
 
+    def _on_throat_mode(self, index: int):
+        percent = index == 0
+        if not percent and self._center > 0:
+            u, s = self._get_units(), self.spread.value() / 100.0
+            self.throat_lo.setValue(from_si(self._center * (1 - s), u.length, "length"))
+            self.throat_hi.setValue(from_si(self._center * (1 + s), u.length, "length"))
+        for w in (self.spread, self.center_label):
+            w.setVisible(percent)
+        for w in (self.throat_lo, self.throat_to, self.throat_hi):
+            w.setVisible(not percent)
+
+    def _throat_range(self) -> tuple[float, float]:
+        if self.throat_mode.currentIndex() == 0:
+            s = self.spread.value() / 100.0
+            return self._center * (1 - s), self._center * (1 + s)
+        u = self._get_units()
+        return to_si(self.throat_lo.value(), u.length, "length"), to_si(self.throat_hi.value(), u.length, "length")
+
     def set_cd_range(self, cd: float):
         """Start the Cd range at half to one and a half times the motor's injector Cd."""
         self.cd_lo.setValue(0.5 * cd)
@@ -236,6 +274,12 @@ class SweepPanel(QFrame):
         self._center = throat
         self.run_btn.setEnabled(cfg is not None and self._thread is None)
         self.center_label.setText(f"around {u.text(throat, 'length')}" if cfg is not None else "")
+        if u.length != self._length_unit:
+            if self._length_unit:
+                for spin in (self.throat_lo, self.throat_hi):
+                    spin.setValue(from_si(to_si(spin.value(), self._length_unit, "length"), u.length, "length"))
+            self._length_unit = u.length
+            self.throat_mode.setItemText(1, u.length)
         self.pressure_unit.setText(f"{u.pressure} (absolute)")
         self.dp_unit.setText(f"{u.pressure} (burn average)")
         if cfg is None:
@@ -263,9 +307,11 @@ class SweepPanel(QFrame):
         cfg = self._get_cfg()
         if cfg is None or self._center <= 0:
             return
-        u = self._get_units()
-        spread = self.spread.value() / 100.0
-        throats = [float(t) for t in np.linspace(self._center * (1 - spread), self._center * (1 + spread), self.throat_n.value())]
+        lo, hi = self._throat_range()
+        if not 0 < lo <= hi:
+            self.answer.setText("The throat range has to start above zero and end above its start.")
+            return
+        throats = [float(t) for t in np.linspace(lo, hi, self.throat_n.value())]
         cds = [float(c) for c in np.linspace(self.cd_lo.value(), self.cd_hi.value(), self.cd_n.value())]
         self._throats = throats
         self._cells = {(t, c): (i, j) for i, t in enumerate(throats) for j, c in enumerate(cds)}
@@ -277,6 +323,8 @@ class SweepPanel(QFrame):
         self.table.setColumnCount(len(cds))
         self._label_rows()
         self.table.setHorizontalHeaderLabels([f"Cd {c:.3g}" for c in cds])
+        self.table.show()
+        self.legend.show()
         self.progress.setRange(0, len(self._cells))
         self.progress.setValue(0)
         self.progress.show()

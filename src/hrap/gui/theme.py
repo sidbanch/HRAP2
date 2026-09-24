@@ -139,6 +139,10 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border: 1px solid {colors['border']};
             border-radius: 6px;
         }}
+        QFrame#applyBar {{
+            background: {colors['base']};
+            border-top: 1px solid {colors['border']};
+        }}
         QLabel#cardTitle {{ font-weight: 700; font-size: 14px; }}
         QLabel#cardLabel {{ color: {colors['disabled']}; }}
         QLabel#cardValue {{ font-weight: 600; }}

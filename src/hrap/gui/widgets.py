@@ -96,6 +96,7 @@ class UnitRow(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         self.spin = PlainDoubleSpinBox()
         self.spin.setDecimals(decimals)
         self.spin.setRange(0.0, maximum)
