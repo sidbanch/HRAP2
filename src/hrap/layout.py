@@ -1,7 +1,8 @@
 """Tank and thrust-chamber hardware layout (SI meters).
 
 Station 0 is the user datum. Tank and chamber starts are the forward faces.
-Chamber length is the dry assembly (injector face through nozzle), not the grain.
+The chamber runs from the injector face through the nozzle: plate, pre-combustion
+chamber, grain, post-combustion chamber, nozzle.
 """
 from __future__ import annotations
 
@@ -42,11 +43,6 @@ def nozzle_cone_lengths(grn_OD: float, noz_thrt: float, noz_exit: float) -> tupl
 
 def nozzle_exit_diameter(noz_thrt: float, noz_ER: float) -> float:
     return math.sqrt(max(float(noz_ER), 0.0)) * float(noz_thrt)
-
-
-def default_chamber_length(grn_OD: float, grn_L: float, noz_thrt: float, noz_exit: float) -> float:
-    L_conv, L_div = nozzle_cone_lengths(grn_OD, noz_thrt, noz_exit)
-    return PLATE_L + max(float(grn_L), 0.0) + L_conv + L_div
 
 
 @dataclass(frozen=True)
@@ -127,7 +123,8 @@ def motor_layout(
     tnk_m: float = 0.0,
     tnk_D: float = 0.0,
     cmbr_start: float | None = None,
-    cmbr_L: float = 0.0,
+    pre_L: float = 0.0,
+    post_L: float = 0.0,
     cmbr_m: float = 0.0,
     grn_L: float,
     grn_OD: float,
@@ -143,28 +140,20 @@ def motor_layout(
         cmbr0 = float(cmbr_start)
     L_conv, L_div = nozzle_cone_lengths(grn_OD, noz_thrt, noz_exit)
     grn_L = max(float(grn_L), 1e-4)
-    auto_cmbr = PLATE_L + grn_L + L_conv + L_div
-    mass_cmbr_L = float(cmbr_L) if cmbr_L > 1e-9 else auto_cmbr
-    mass_cmbr_L = max(mass_cmbr_L, 1e-4)
-    extra = max(0.0, mass_cmbr_L - auto_cmbr)
-    cmbr1 = cmbr0 + mass_cmbr_L
     plate0 = cmbr0
     plate1 = cmbr0 + PLATE_L
     inj0 = plate0
     inj1 = plate0 + INJECTOR_L
-    # Leftover chamber length is split so the grain sits in the middle of the TCA.
-    # The nozzle cone stays at the throat / exit geometry — never stretched.
-    x_case = plate1 + grn_L + extra
-    pad = 0.5 * extra
-    grn0 = plate1 + pad
+    grn0 = plate1 + max(float(pre_L), 0.0)
     grn1 = grn0 + grn_L
+    x_case = grn1 + max(float(post_L), 0.0)
     x_th = x_case + L_conv
     x_noz = x_th + L_div
     return MotorLayout(
         tnk0=tnk0,
         tnk1=tnk1,
         cmbr0=cmbr0,
-        cmbr1=cmbr1,
+        cmbr1=x_noz,
         plate0=plate0,
         plate1=plate1,
         inj0=inj0,
@@ -177,7 +166,7 @@ def motor_layout(
         L_conv=L_conv,
         L_div=L_div,
         tnk_L=tnk_L,
-        cmbr_L=mass_cmbr_L,
+        cmbr_L=x_noz - cmbr0,
         tnk_m=max(float(tnk_m), 0.0),
         cmbr_m=max(float(cmbr_m), 0.0),
         tnk_D=max(float(tnk_D), 0.0),
@@ -189,20 +178,17 @@ def infer_component_stations(
     *,
     tnk_start: float,
     cmbr_start: float,
-    cmbr_L: float,
     tnk_L: float,
     grn_L: float,
+    pre_L: float,
     tnk_X: float,
     cmbr_X: float,
-    auto_cmbr_L: float,
-) -> tuple[float, float, float]:
+) -> tuple[float, float]:
     """Forward starts from new fields, or from MATLAB aft stations when starts are unset."""
     if abs(tnk_start) <= 1e-12 and tnk_X > tnk_L + 1e-9:
         tnk_start = tnk_X - tnk_L
-    if cmbr_L <= 1e-9:
-        cmbr_L = auto_cmbr_L
     if abs(cmbr_start) <= 1e-12 and cmbr_X > grn_L + 1e-9:
-        cmbr_start = cmbr_X - grn_L - PLATE_L
+        cmbr_start = cmbr_X - grn_L - pre_L - PLATE_L
     elif abs(cmbr_start) <= 1e-12:
         cmbr_start = tnk_start + tnk_L + FEED_GAP
-    return float(tnk_start), float(cmbr_start), float(cmbr_L)
+    return float(tnk_start), float(cmbr_start)

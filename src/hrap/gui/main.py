@@ -494,11 +494,16 @@ class MainWindow(QMainWindow):
         self.grn_ID = UnitRow(LENGTH_ITEMS, "in")
         self.grn_OD = UnitRow(LENGTH_ITEMS, "in")
         self.grn_L = UnitRow(LENGTH_ITEMS, "in")
+        self.pre_L = UnitRow(LENGTH_ITEMS, "in")
+        self.pre_L.setToolTip("Empty space between the injector plate and the front of the grain.")
+        self.post_L = UnitRow(LENGTH_ITEMS, "in")
+        self.post_L.setToolTip("Empty space between the back of the grain and the nozzle.")
         self.cmbr_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
-        self.cmbr_by_dims = QCheckBox("Chamber volume = grain envelope")
+        self.cmbr_by_dims = QCheckBox("Chamber volume from lengths")
         self.cmbr_by_dims.setChecked(True)
         self.cmbr_by_dims.setToolTip("Gas space around the grain; it sets how fast chamber pressure builds at ignition.\n"
-                                     "Checked: the grain's outer cylinder, with no pre- or post-combustion chamber.")
+                                     "Checked: a cylinder at the grain OD, as long as the pre-combustion chamber,\n"
+                                     "grain and post-combustion chamber together.")
         grain = CollapsibleBox("Propellant / grain")
         gf = grain.form()
         gf.addRow("Propellant", self.prop_combo)
@@ -512,6 +517,8 @@ class MainWindow(QMainWindow):
         gf.addRow("Port diameter", self.grn_ID)
         gf.addRow("Grain OD", self.grn_OD)
         gf.addRow("Grain length", self.grn_L)
+        gf.addRow("Pre-combustion chamber", self.pre_L)
+        gf.addRow("Post-combustion chamber", self.post_L)
         gf.addRow(self.cmbr_by_dims)
         gf.addRow("Chamber volume", self.cmbr_V)
         self.P_cmbr_max = UnitRow(PRESSURE_ITEMS, "psi", 1)
@@ -640,7 +647,6 @@ class MainWindow(QMainWindow):
         self.tnk_start = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_m = UnitRow(MASS_ITEMS, "kg")
         self.cmbr_start = UnitRow(LENGTH_ITEMS, "in")
-        self.cmbr_L = UnitRow(LENGTH_ITEMS, "in")
         self.cmbr_m = UnitRow(MASS_ITEMS, "kg")
         self.dry_OD = UnitRow(LENGTH_ITEMS, "in")
         self.dry_L = UnitRow(LENGTH_ITEMS, "in")
@@ -658,10 +664,9 @@ class MainWindow(QMainWindow):
         mf.addRow("Tank front, from datum", self.tnk_start)
         mf.addRow("Tank dry mass", self.tnk_m)
         mf.addRow("Chamber front, from datum", self.cmbr_start)
-        mf.addRow("Chamber length (injector to nozzle exit)", self.cmbr_L)
         mf.addRow("Chamber dry mass (no grain)", self.cmbr_m)
         mf.addRow(self.mass_info)
-        mass_fields = (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_L, self.cmbr_m)
+        mass_fields = (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m)
         self.mp_on.toggled.connect(lambda on: [w.setEnabled(on) for w in mass_fields])
         for w in mass_fields:
             w.setEnabled(False)
@@ -768,8 +773,10 @@ class MainWindow(QMainWindow):
             "tnk_start_unit": self.tnk_start.unit.currentText(),
             "cmbr_start": self.cmbr_start.spin.value(),
             "cmbr_start_unit": self.cmbr_start.unit.currentText(),
-            "cmbr_L": self.cmbr_L.spin.value(),
-            "cmbr_L_unit": self.cmbr_L.unit.currentText(),
+            "cmbr_pre_L": self.pre_L.spin.value(),
+            "cmbr_pre_L_unit": self.pre_L.unit.currentText(),
+            "cmbr_post_L": self.post_L.spin.value(),
+            "cmbr_post_L_unit": self.post_L.unit.currentText(),
             "tnk_m": self.tnk_m.spin.value(),
             "tnk_m_unit": self.tnk_m.unit.currentText(),
             "cmbr_m": self.cmbr_m.spin.value(),
@@ -869,7 +876,8 @@ class MainWindow(QMainWindow):
         lay = resolve_layout(cfg)
         self.tnk_start.set_display(from_si(lay.tnk0, cfg.get("tnk_start_unit") or "in", "length"), cfg.get("tnk_start_unit") or "in")
         self.cmbr_start.set_display(from_si(lay.cmbr0, cfg.get("cmbr_start_unit") or "in", "length"), cfg.get("cmbr_start_unit") or "in")
-        self.cmbr_L.set_display(from_si(lay.cmbr_L, cfg.get("cmbr_L_unit") or "in", "length"), cfg.get("cmbr_L_unit") or "in")
+        self.pre_L.set_display(cfg.get("cmbr_pre_L", 0), cfg.get("cmbr_pre_L_unit") or "in")
+        self.post_L.set_display(cfg.get("cmbr_post_L", 0), cfg.get("cmbr_post_L_unit") or "in")
         self.tnk_m.set_display(cfg.get("tnk_m", 0), cfg.get("tnk_m_unit", "kg"))
         self.cmbr_m.set_display(cfg.get("cmbr_m", 0), cfg.get("cmbr_m_unit", "kg"))
         self._set_tank_mode(cfg.get("tnk_dd") or "Starting Tank Temperature", cfg.get("T_tnk_unit") or "K")
@@ -993,9 +1001,9 @@ class MainWindow(QMainWindow):
         for w in (
             self.inj_D.spin, self.inj_Cd, self.inj_N,
             self.tnk_cond, self.fill, self.tnk_V.spin, self.tnk_D.spin, self.tnk_L.spin,
-            self.grn_ID.spin, self.grn_OD.spin, self.grn_L.spin, self.rho.spin, self.const_OF,
+            self.grn_ID.spin, self.grn_OD.spin, self.grn_L.spin, self.pre_L.spin, self.post_L.spin, self.rho.spin, self.const_OF,
             self.noz_thrt.spin, self.noz_ex, self.vnt_D.spin, self.vnt_Cd, self.P_cmbr.spin,
-            self.tnk_start.spin, self.tnk_m.spin, self.cmbr_start.spin, self.cmbr_L.spin, self.cmbr_m.spin,
+            self.tnk_start.spin, self.tnk_m.spin, self.cmbr_start.spin, self.cmbr_m.spin,
         ):
             w.valueChanged.connect(self._update_derived_labels)
         self.rho.unit.currentTextChanged.connect(self._update_derived_labels)
@@ -1009,7 +1017,8 @@ class MainWindow(QMainWindow):
         self.tnk_L.unit.currentTextChanged.connect(self._update_derived_labels)
         self.tnk_start.unit.currentTextChanged.connect(self._update_derived_labels)
         self.cmbr_start.unit.currentTextChanged.connect(self._update_derived_labels)
-        self.cmbr_L.unit.currentTextChanged.connect(self._update_derived_labels)
+        self.pre_L.unit.currentTextChanged.connect(self._update_derived_labels)
+        self.post_L.unit.currentTextChanged.connect(self._update_derived_labels)
         self.tnk_m.unit.currentTextChanged.connect(self._update_derived_labels)
         self.cmbr_m.unit.currentTextChanged.connect(self._update_derived_labels)
         self.inj_D.unit.currentTextChanged.connect(self._update_derived_labels)
@@ -1049,7 +1058,8 @@ class MainWindow(QMainWindow):
             self.tnk_L.set_display(from_si(tnk_L, self.tnk_L.unit.currentText(), "length"))
         self.cmbr_V.setEnabled(not self.cmbr_by_dims.isChecked())
         if self.cmbr_by_dims.isChecked():
-            envelope = 0.25 * math.pi * self._len_si(self.grn_OD) ** 2 * self._len_si(self.grn_L)
+            case_L = self._len_si(self.pre_L) + self._len_si(self.grn_L) + self._len_si(self.post_L)
+            envelope = 0.25 * math.pi * self._len_si(self.grn_OD) ** 2 * case_L
             self.cmbr_V.set_display(from_si(envelope, self.cmbr_V.unit.currentText(), "volume"))
         try:
             if self.tnk_dd.currentText() == "Starting Tank Temperature":
@@ -1130,7 +1140,8 @@ class MainWindow(QMainWindow):
             tnk_m=to_si(self.tnk_m.spin.value(), self.tnk_m.unit.currentText(), "mass"),
             tnk_D=_tnk_D,
             cmbr_start=self._len_si(self.cmbr_start),
-            cmbr_L=self._len_si(self.cmbr_L),
+            pre_L=self._len_si(self.pre_L),
+            post_L=self._len_si(self.post_L),
             cmbr_m=to_si(self.cmbr_m.spin.value(), self.cmbr_m.unit.currentText(), "mass"),
             grn_L=self._len_si(self.grn_L),
             grn_OD=self._len_si(self.grn_OD),
@@ -1292,7 +1303,8 @@ class MainWindow(QMainWindow):
             name=self.name.text().strip() or "motor",
             tnk_start=lay.tnk0,
             cmbr_start=lay.cmbr0,
-            cmbr_L=lay.cmbr_L,
+            pre_L=lay.grn0 - lay.plate1,
+            post_L=lay.x_case - lay.grn1,
             tnk_dry_kg=lay.tnk_m,
             cmbr_dry_kg=lay.cmbr_m,
             tank_lines=tank_lines,

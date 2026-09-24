@@ -46,7 +46,6 @@ def test_explicit_starts_open_a_feed_gap():
         fill_frac=0.9,
         tnk_start=0.05,
         cmbr_start=0.40,
-        cmbr_L=0.55,
         tnk_dry_kg=4.0,
         cmbr_dry_kg=6.0,
     )
@@ -57,31 +56,6 @@ def test_explicit_starts_open_a_feed_gap():
     assert g.x_min == g.x_tnk0
     assert abs(g.x_end - g.x_noz) < 1e-12
     assert abs((g.x_noz - g.x_th) - g.L_div) < 1e-12
-
-
-def test_chamber_leftover_is_case_not_nozzle():
-    m = MotorView(
-        tnk_L=0.20,
-        tnk_D=0.10,
-        grn_L=0.20,
-        grn_OD=0.08,
-        grn_ID=0.04,
-        inj_D=0.006,
-        inj_N=3,
-        vnt_state="None",
-        vnt_D=0.0,
-        noz_thrt=0.025,
-        noz_exit=0.05,
-        fill_frac=0.5,
-        tnk_start=0.0,
-        cmbr_start=0.25,
-        cmbr_L=0.80,
-    )
-    g = _geom(m)
-    assert abs((g.x_grn0 - g.x_plate1) - (g.x_case - g.x_grn1)) < 1e-12
-    assert g.x_grn0 - g.x_plate1 > 0.1
-    assert abs((g.x_noz - g.x_th) - g.L_div) < 1e-12
-    assert abs(g.x_cmbr1 - g.x_noz) < 1e-12
 
 
 def test_orifice_vent_stays_on_for_internal_and_nonzero_diameter():

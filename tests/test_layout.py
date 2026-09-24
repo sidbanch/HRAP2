@@ -34,7 +34,6 @@ def test_gap_between_tank_and_chamber():
         tnk_start=0.10,
         tnk_L=0.20,
         cmbr_start=0.40,
-        cmbr_L=0.50,
         tnk_m=4.0,
         cmbr_m=6.0,
         grn_L=0.30,
@@ -44,8 +43,8 @@ def test_gap_between_tank_and_chamber():
     )
     assert abs(lay.cmbr0 - lay.tnk1 - 0.10) < 1e-12
     assert abs(lay.dry_mass - 10.0) < 1e-12
-    assert abs(lay.dry_cg - (4.0 * 0.20 + 6.0 * 0.65) / 10.0) < 1e-12
-    assert abs(lay.overall_L - (0.90 - 0.10)) < 1e-9
+    assert abs(lay.dry_cg - (4.0 * 0.20 + 6.0 * (0.40 + 0.5 * lay.cmbr_L)) / 10.0) < 1e-12
+    assert abs(lay.overall_L - (lay.x_noz - 0.10)) < 1e-9
     assert abs(lay.overall_OD - 0.08) < 1e-12
 
 
@@ -106,31 +105,28 @@ def test_infer_matlab_aft_stations():
     grn_L = 0.4
     tnk_X = 1.2
     cmbr_X = 1.8
-    tnk0, cmbr0, cmbr_L = infer_component_stations(
+    tnk0, cmbr0 = infer_component_stations(
         tnk_start=0.0,
         cmbr_start=0.0,
-        cmbr_L=0.0,
         tnk_L=tnk_L,
         grn_L=grn_L,
+        pre_L=0.05,
         tnk_X=tnk_X,
         cmbr_X=cmbr_X,
-        auto_cmbr_L=0.55,
     )
     assert abs(tnk0 - (tnk_X - tnk_L)) < 1e-12
-    assert abs(cmbr0 - (cmbr_X - grn_L - PLATE_L)) < 1e-12
-    assert abs(cmbr_L - 0.55) < 1e-12
+    assert abs(cmbr0 - (cmbr_X - grn_L - 0.05 - PLATE_L)) < 1e-12
 
 
 def test_new_motor_chamber_follows_tank():
-    tnk0, cmbr0, _cmbr_L = infer_component_stations(
+    tnk0, cmbr0 = infer_component_stations(
         tnk_start=0.0,
         cmbr_start=0.0,
-        cmbr_L=0.0,
         tnk_L=0.3,
         grn_L=0.2,
+        pre_L=0.0,
         tnk_X=0.0,
         cmbr_X=0.0,
-        auto_cmbr_L=0.4,
     )
     assert tnk0 == 0.0
     assert abs(cmbr0 - (0.3 + FEED_GAP)) < 1e-12
@@ -154,8 +150,6 @@ def test_component_dry_mass_replaces_legacy_empty():
     cfg["tnk_m"] = 4.0
     cfg["cmbr_start"] = 20.0
     cfg["cmbr_start_unit"] = "in"
-    cfg["cmbr_L"] = 22.0
-    cfg["cmbr_L_unit"] = "in"
     cfg["cmbr_m"] = 6.0
     cfg["mtr_m"] = 99.0
     lay = resolve_layout(cfg)
@@ -176,12 +170,13 @@ def test_component_dry_mass_replaces_legacy_empty():
     assert cg > 0.0
 
 
-def test_long_chamber_does_not_stretch_nozzle():
+def test_pre_and_post_chambers_lengthen_the_chamber():
     lay = motor_layout(
         tnk_start=0.0,
         tnk_L=0.20,
         cmbr_start=0.25,
-        cmbr_L=0.80,
+        pre_L=0.10,
+        post_L=0.20,
         grn_L=0.20,
         grn_OD=0.08,
         noz_thrt=0.025,
@@ -190,9 +185,9 @@ def test_long_chamber_does_not_stretch_nozzle():
     L_conv, L_div = nozzle_cone_lengths(0.08, 0.025, 0.05)
     assert abs((lay.x_th - lay.x_case) - L_conv) < 1e-12
     assert abs((lay.x_noz - lay.x_th) - L_div) < 1e-12
-    assert abs((lay.grn0 - lay.plate1) - (lay.x_case - lay.grn1)) < 1e-12
-    assert lay.grn0 - lay.plate1 > 0.1
-    assert abs(lay.x_noz - (lay.cmbr0 + lay.cmbr_L)) < 1e-9
+    assert abs((lay.grn0 - lay.plate1) - 0.10) < 1e-12
+    assert abs((lay.x_case - lay.grn1) - 0.20) < 1e-12
+    assert abs(lay.cmbr_L - (PLATE_L + 0.10 + 0.20 + 0.20 + L_conv + L_div)) < 1e-12
 
 
 def test_hps01_massed_layout():
@@ -229,8 +224,6 @@ def test_rse_initwt_includes_user_dry_mass_even_if_run_omitted_it(tmp_path):
     cfg["tnk_m"] = 4.0
     cfg["cmbr_start"] = 20.0
     cfg["cmbr_start_unit"] = "in"
-    cfg["cmbr_L"] = 22.0
-    cfg["cmbr_L_unit"] = "in"
     cfg["cmbr_m"] = 6.0
     s, _x = resolve(cfg)
     assert abs(s.mtr_m - 10.0) < 1e-9

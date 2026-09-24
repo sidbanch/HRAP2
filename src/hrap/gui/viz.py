@@ -87,7 +87,8 @@ class MotorView:
     time_s: float | None = None
     tnk_start: float = 0.0
     cmbr_start: float | None = None
-    cmbr_L: float = 0.0
+    pre_L: float = 0.0
+    post_L: float = 0.0
     tnk_dry_kg: float = 0.0
     cmbr_dry_kg: float = 0.0
 
@@ -148,7 +149,8 @@ def _geom(m: MotorView) -> _Geom:
         tnk_m=float(m.tnk_dry_kg),
         tnk_D=float(m.tnk_D),
         cmbr_start=m.cmbr_start,
-        cmbr_L=float(m.cmbr_L),
+        pre_L=float(m.pre_L),
+        post_L=float(m.post_L),
         cmbr_m=float(m.cmbr_dry_kg),
         grn_L=grn_L,
         grn_OD=float(m.grn_OD),

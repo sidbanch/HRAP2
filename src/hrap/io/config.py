@@ -15,7 +15,6 @@ from hrap.engine.types import Settings, State
 from hrap.io.propellant import load_propellant
 from hrap.layout import (
     MotorLayout,
-    default_chamber_length,
     infer_component_stations,
     motor_layout,
     nozzle_exit_diameter,
@@ -51,8 +50,10 @@ def default_cfg() -> dict[str, Any]:
         "tnk_start_unit": "in",
         "cmbr_start": 0.0,
         "cmbr_start_unit": "in",
-        "cmbr_L": 0.0,
-        "cmbr_L_unit": "in",
+        "cmbr_pre_L": 0.0,
+        "cmbr_pre_L_unit": "in",
+        "cmbr_post_L": 0.0,
+        "cmbr_post_L_unit": "in",
         "tnk_m": 0.0,
         "tnk_m_unit": "kg",
         "cmbr_m": 0.0,
@@ -210,16 +211,15 @@ def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
         noz_exit = nozzle_exit_diameter(noz_thrt, float(cfg.get("noz_ex") or 1.0))
     if tnk_L <= 1e-9 and tnk_D > 0 and tnk_V > 0:
         tnk_L = tnk_V / (0.25 * math.pi * tnk_D ** 2)
-    auto_cmbr = default_chamber_length(grn_OD, grn_L, noz_thrt, noz_exit)
-    tnk_start, cmbr_start, cmbr_L = infer_component_stations(
+    pre_L = _len(cfg, "cmbr_pre_L")
+    tnk_start, cmbr_start = infer_component_stations(
         tnk_start=_len(cfg, "tnk_start"),
         cmbr_start=_len(cfg, "cmbr_start"),
-        cmbr_L=_len(cfg, "cmbr_L"),
         tnk_L=tnk_L,
         grn_L=grn_L,
+        pre_L=pre_L,
         tnk_X=_len(cfg, "tnk_X"),
         cmbr_X=_len(cfg, "cmbr_X"),
-        auto_cmbr_L=auto_cmbr,
     )
     return motor_layout(
         tnk_start=tnk_start,
@@ -227,7 +227,8 @@ def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
         tnk_m=_mass(cfg, "tnk_m"),
         tnk_D=tnk_D,
         cmbr_start=cmbr_start,
-        cmbr_L=cmbr_L,
+        pre_L=pre_L,
+        post_L=_len(cfg, "cmbr_post_L"),
         cmbr_m=_mass(cfg, "cmbr_m"),
         grn_L=grn_L,
         grn_OD=grn_OD,
@@ -273,7 +274,8 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         tnk_V = cfg["tnk_V"] * to_si(1.0, cfg["tnk_V_unit"], "volume")
 
     if int(cfg.get("cmbr_V_state", 0)):
-        cmbr_V = grn_L * 0.25 * math.pi * grn_OD ** 2
+        case_L = _len(cfg, "cmbr_pre_L") + grn_L + _len(cfg, "cmbr_post_L")
+        cmbr_V = case_L * 0.25 * math.pi * grn_OD ** 2
     else:
         cmbr_V = cfg["cmbr_V"] * to_si(1.0, cfg["cmbr_V_unit"], "volume")
 
