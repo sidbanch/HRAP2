@@ -92,11 +92,14 @@ def sweep_main(argv: list[str] | None = None) -> int:
                         help="average injector dP above which HRAP's liquid-only injector model overpredicts flow, psi")
     parser.add_argument("-o", "--output", type=Path, default=Path("HRAP_sweep.csv"))
     args = parser.parse_args(argv)
-    from hrap.engine.sweep import passing_throats, sweep
+    from hrap.engine.sweep import passing_throats, sweep, uses_spi
     from hrap.io.config import load_json, load_matlab_mat
     from hrap.units import from_si, to_si
 
     cfg = load_matlab_mat(args.motor) if args.motor.suffix.lower() == ".mat" else load_json(args.motor)
+    limits = "both limits"
+    if not uses_spi(cfg):  # HEM and Dyer model the high-ΔP flow, so the warning doesn't apply
+        args.max_dp, limits = float("inf"), "the chamber limit"
     throats = [to_si(v, args.throat_unit, "length") for v in args.throat]
     psi = lambda pa: from_si(pa, "psi", "pressure")
     unit = lambda m: from_si(m, args.throat_unit, "length")
@@ -118,9 +121,9 @@ def sweep_main(argv: list[str] | None = None) -> int:
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ok = passing_throats(cases, to_si(args.max_chamber, "psi", "pressure"), to_si(args.max_dp, "psi", "pressure"))
     if ok:
-        print(f"Throats under both limits for every Cd: {', '.join(f'{unit(t):.4g}' for t in ok)} {args.throat_unit}")
+        print(f"Throats under {limits} for every Cd: {', '.join(f'{unit(t):.4g}' for t in ok)} {args.throat_unit}")
     else:
-        print("No throat in this range stays under both limits for every Cd.")
+        print(f"No throat in this range stays under {limits} for every Cd.")
     print(f"wrote {args.output}")
     return 0
 

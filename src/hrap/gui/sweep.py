@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.engine.sweep import SweepCase, passing_throats, sweep
+from hrap.engine.sweep import SweepCase, passing_throats, sweep, uses_spi
 from hrap.units import DisplayUnits, from_si, to_si
 
 OK = QColor("#2f7d4f")
@@ -86,6 +86,8 @@ class SweepDialog(QDialog):
         self._thread: QThread | None = None
         self._worker: SweepWorker | None = None
         self._error = ""
+        self.spi = uses_spi(cfg)
+        self.limits = "both limits" if self.spi else "the chamber limit"
 
         length, pressure = units.length, units.pressure
         throat = from_si(to_si(cfg["noz_thrt"], cfg["noz_thrt_unit"], "length"), length, "length")
@@ -115,9 +117,16 @@ class SweepDialog(QDialog):
         grid.addWidget(QLabel("Chamber pressure limit"), 2, 0)
         grid.addWidget(self.max_chamber, 2, 1)
         grid.addWidget(QLabel(f"{pressure} (absolute)"), 2, 2, 1, 3)
-        grid.addWidget(QLabel("Injector ΔP warning"), 3, 0)
-        grid.addWidget(self.max_dp, 3, 1)
-        grid.addWidget(QLabel(f"{pressure} (burn average)"), 3, 2, 1, 3)
+        if self.spi:
+            grid.addWidget(QLabel("Injector ΔP warning"), 3, 0)
+            grid.addWidget(self.max_dp, 3, 1)
+            grid.addWidget(QLabel(f"{pressure} (burn average)"), 3, 2, 1, 3)
+        else:
+            adv = cfg["advanced"]
+            hem_cd = f"fixed at {adv['inj_Cd_HEM']:.3g}" if adv.get("inj_Cd_HEM") else "follows the swept Cd"
+            model = f"Dyer (κ {adv.get('dyer_kappa') or 1.0:.3g})" if adv["inj_model"] == "Dyer" else adv["inj_model"]
+            grid.addWidget(QLabel("Injector model"), 3, 0)
+            grid.addWidget(QLabel(f"{model}. HEM Cd {hem_cd}."), 3, 1, 1, 6)
         grid.setColumnStretch(7, 1)
 
         self.run_btn = QPushButton("Run sweep")
@@ -161,9 +170,10 @@ class SweepDialog(QDialog):
         self.table.verticalHeader().setHighlightSections(False)
 
         legend = QHBoxLayout()
-        legend.addWidget(_chip(OK, "Under both limits"))
+        legend.addWidget(_chip(OK, f"Under {self.limits}"))
         legend.addWidget(_chip(OVER_LIMIT, "Chamber pressure over the limit"))
-        legend.addWidget(_chip(HIGH_DP, "ΔP over the warning: HRAP's liquid-only injector model overpredicts flow"))
+        if self.spi:
+            legend.addWidget(_chip(HIGH_DP, "ΔP over the warning: HRAP's liquid-only injector model overpredicts flow"))
         legend.addStretch(1)
 
         layout = QVBoxLayout(self)
@@ -196,7 +206,8 @@ class SweepDialog(QDialog):
 
     def _limits(self) -> tuple[float, float]:
         p = self.units.pressure
-        return to_si(self.max_chamber.value(), p, "pressure"), to_si(self.max_dp.value(), p, "pressure")
+        max_dp = to_si(self.max_dp.value(), p, "pressure") if self.spi else float("inf")
+        return to_si(self.max_chamber.value(), p, "pressure"), max_dp
 
     def _run(self):
         u = self.units
@@ -270,7 +281,7 @@ class SweepDialog(QDialog):
         ok = passing_throats(self.cases, max_P, max_dP)
         if ok:
             listed = ", ".join(f"{from_si(t, u.length, 'length'):.4g}" for t in ok)
-            self.answer.setText(f"Throats under both limits for every {cd_range}: {listed} {u.length}")
+            self.answer.setText(f"Throats under {self.limits} for every {cd_range}: {listed} {u.length}")
             return
         over_P = any(c.peak_P_cmbr > max_P for c in self.cases)
         over_dP = any(c.avg_inj_dP > max_dP for c in self.cases)

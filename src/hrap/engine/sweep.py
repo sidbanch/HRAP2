@@ -60,6 +60,12 @@ def sweep(cfg: dict[str, Any], throats: Sequence[float], cds: Sequence[float]) -
         pool.shutdown(wait=False, cancel_futures=True)
 
 
+def uses_spi(cfg: dict[str, Any]) -> bool:
+    """True for HRAP's liquid-only injector model, whose flow is only trustworthy under the ΔP warning."""
+    adv = cfg.get("advanced") or {}
+    return not adv.get("enabled") or adv.get("inj_model", "SPI") == "SPI"
+
+
 def passing_throats(cases: Sequence[SweepCase], max_P_cmbr: float, max_inj_dP: float) -> list[float]:
     """Throats that stay under both limits for every Cd swept."""
     ok: dict[float, bool] = {}
