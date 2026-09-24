@@ -84,7 +84,7 @@ class Card(QFrame):
         heading.setObjectName("cardTitle")
         layout.addWidget(heading)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
+        grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(6)
         self.values: dict[str, QLabel] = {}
         self.labels: dict[str, QLabel] = {}
@@ -104,7 +104,7 @@ class Card(QFrame):
             layout.addLayout(grid)
         else:
             row = QHBoxLayout()
-            row.setSpacing(16)
+            row.setSpacing(12)
             row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
             row.addLayout(grid, 1)
             layout.addLayout(row)
@@ -115,6 +115,10 @@ class Card(QFrame):
         self.values[name].setText(text)
         self.labels[name].setToolTip(tip)
         self.values[name].setToolTip(tip)
+
+    def show_row(self, name: str, visible: bool):
+        self.labels[name].setVisible(visible)
+        self.values[name].setVisible(visible)
 
     def clear(self):
         for value in self.values.values():
@@ -175,6 +179,9 @@ class SizingPage(QWidget):
         self.propellant = PlainComboBox()
         for item in list_propellants():
             self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
+        # Long propellant names would otherwise widen the whole inputs column.
+        self.propellant.setSizeAdjustPolicy(PlainComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.propellant.setMinimumContentsLength(12)
         self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0, 100); self.cstar.setDecimals(1)
         self.noz_Cd = PlainDoubleSpinBox(); self.noz_Cd.setRange(0, 1); self.noz_Cd.setDecimals(3)
         self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
@@ -208,7 +215,8 @@ class SizingPage(QWidget):
             signal.connect(self._on_motor_edited)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
                                           "Holes", "Liquid lasts"], InjectorSketch())
-        self.nozzle = Card("Nozzle", ["Throat diameter", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
+        self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
+        self.nozzle.show_row("Sized throat", False)
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "Port at liquid burnout",
                                     "O/F at liquid burnout", "Fuel burned"], GrainSketch())
         self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
@@ -237,7 +245,7 @@ class SizingPage(QWidget):
         intro.setWordWrap(True)
 
         inputs = QWidget()
-        inputs.setFixedWidth(420)
+        inputs.setFixedWidth(380)
         left = QVBoxLayout(inputs)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
@@ -463,18 +471,16 @@ class SizingPage(QWidget):
         how = (f"Sized throat: the throat that holds {u.text(t.P_cmbr, 'pressure')} in the chamber at the starting flow.\n"
                f"throat area = total flow × C* ÷ (chamber pressure × throat Cd)\n"
                f"total flow = {u.text(z.mdot_o + z.mdot_f, 'mass_flow', 3)}, C* = {z.cstar:.0f} m/s, throat Cd = {self.noz_Cd.value():.3g}")
-        if self._picked_throat:
-            self.nozzle.set("Throat diameter", f"{u.text(throat, 'length')} (sized {u.text(z.throat_D, 'length')})",
-                            f"Picked in the Cd check below.\n{how}")
-        else:
-            self.nozzle.set("Throat diameter", u.text(throat, "length"), how)
+        self.nozzle.set("Throat diameter", u.text(throat, "length"), "Picked in the Cd check below." if self._picked_throat else how)
+        self.nozzle.set("Sized throat", u.text(z.throat_D, "length"), how)
+        self.nozzle.show_row("Sized throat", bool(self._picked_throat))
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
         bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
         self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
                                       "caption": f"{u.text(throat, 'length')} throat"})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
-                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} holes", f"port {u.text(v['port_D'], 'length')}"]
+                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} hole{'' if v['holes'] == 1 else 's'}", f"port {u.text(v['port_D'], 'length')}"]
         if math.isfinite(v["grain_L"]):
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
         self.apply_summary.setText("Applies: " + ", ".join(parts))
