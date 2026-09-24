@@ -76,7 +76,7 @@ class FieldGrid(QGridLayout):
 class Card(QFrame):
     """A titled block of label / value rows."""
 
-    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None):
+    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None, inputs: QGridLayout | None = None):
         super().__init__()
         self.setObjectName("sizingCard")
         layout = QVBoxLayout(self)
@@ -108,6 +108,15 @@ class Card(QFrame):
             row = QHBoxLayout()
             row.setSpacing(12)
             row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
+            if inputs is not None:  # editable settings between the drawing and the results they give
+                row.addLayout(inputs, 1)
+                divider = QFrame()
+                divider.setFrameShape(QFrame.Shape.VLine)
+                divider.setObjectName("cardDivider")
+                row.addSpacing(8)
+                row.addWidget(divider)
+                row.addSpacing(8)
+                grid.setAlignment(Qt.AlignmentFlag.AlignTop)
             row.addLayout(grid, 1)
             layout.addLayout(row)
         layout.addStretch(1)
@@ -166,7 +175,6 @@ class SizingPage(QWidget):
         form = FieldGrid()
         form.add("Size from", self.size_from)
         self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
-        self._holes_row = form.add("Hole count", self.holes)
         form.add("Chamber pressure", self.P_cmbr)
         form.add("O/F", self.OF)
         form.add("Starting port", self.port_D)
@@ -179,6 +187,15 @@ class SizingPage(QWidget):
         self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(3)
         self.inj_model = PlainComboBox(); self.inj_model.addItems(["SPI", "HEM", "Dyer"])
+        self.inj_type = PlainComboBox(); self.inj_type.addItems(["Holes", "Swirler"])
+        self.inj_type.setToolTip("Holes: straight drilled holes.\n"
+                                 "Swirler: tangential ports spin the nitrous in a small chamber before the exit orifice.")
+        self.sw_ports = PlainSpinBox(); self.sw_ports.setRange(1, 12)
+        self.sw_D_port = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.sw_R_in = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.sw_ports.setToolTip("Number of tangential inlet ports into the swirl chamber.")
+        self.sw_D_port.setToolTip("Diameter of each tangential inlet port.")
+        self.sw_R_in.setToolTip("Distance from the swirler's axis to each inlet port's axis.")
         self.propellant = PlainComboBox()
         for item in list_propellants():
             self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
@@ -199,9 +216,6 @@ class SizingPage(QWidget):
         mform.add("Fill", self.fill, "%")
         mform.add("Tank pressure", self.tank_P, muted=True)
         mform.add("Liquid oxidizer", self.ox_liquid, muted=True)
-        self._hole_D_label = mform.add("Injector hole", self.hole_D)[0]
-        mform.add("Injector Cd", self.inj_Cd)
-        mform.add("Injector model", self.inj_model)
         mform.add("Propellant", self.propellant)
         mform.add("C* efficiency", self.cstar, "%")
         mform.add("Throat Cd", self.noz_Cd)
@@ -212,12 +226,21 @@ class SizingPage(QWidget):
         ml.addWidget(shared)
         self.motor_fields = (self.tank_V.spin, self.tank_V.unit, self.tank_T.spin, self.tank_T.unit, self.fill,
                              self.hole_D.spin, self.hole_D.unit, self.inj_Cd, self.inj_model, self.propellant,
-                             self.cstar, self.noz_Cd)
+                             self.cstar, self.noz_Cd, self.inj_type, self.sw_ports, self.sw_D_port.spin,
+                             self.sw_D_port.unit, self.sw_R_in.spin, self.sw_R_in.unit)
         for w in self.motor_fields:
             signal = w.currentIndexChanged if isinstance(w, PlainComboBox) else w.valueChanged
             signal.connect(self._on_motor_edited)
+        inj_form = FieldGrid()
+        inj_form.add("Type", self.inj_type)
+        self._holes_row = inj_form.add("Hole count", self.holes)
+        self._hole_D_label = inj_form.add("Hole diameter", self.hole_D)[0]
+        self._swirler_rows = [*inj_form.add("Inlet ports", self.sw_ports), *inj_form.add("Inlet port diameter", self.sw_D_port),
+                              *inj_form.add("Port offset from axis", self.sw_R_in)]
+        inj_form.add("Cd", self.inj_Cd)
+        inj_form.add("Flow model", self.inj_model)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
-                                          "Holes", "Liquid lasts"], InjectorSketch())
+                                          "Holes", "Liquid lasts"], InjectorSketch(), inj_form)
         self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.nozzle.show_row("Sized throat", False)
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "Port at liquid burnout",
@@ -262,10 +285,13 @@ class SizingPage(QWidget):
         left.addStretch(1)
         results = QGridLayout()
         results.setSpacing(12)
-        results.addWidget(self.injector, 0, 0)
-        results.addWidget(self.nozzle, 0, 1)
+        results.addWidget(self.injector, 0, 0, 1, 2)
         results.addWidget(self.grain, 1, 0)
-        results.addWidget(self.performance, 1, 1)
+        nozzle_and_performance = QVBoxLayout()
+        nozzle_and_performance.setSpacing(12)
+        nozzle_and_performance.addWidget(self.nozzle)
+        nozzle_and_performance.addWidget(self.performance, 1)
+        results.addLayout(nozzle_and_performance, 1, 1)
         right = QVBoxLayout()
         right.setSpacing(12)
         right.addWidget(self.limit_warning)
@@ -306,6 +332,7 @@ class SizingPage(QWidget):
             w.setVisible(not self._by_holes())
         for w in self._holes_row:
             w.setVisible(self._by_holes())
+        self.injector.show_row("Holes", not self._by_holes())  # with a chosen count it's an input above
 
     def _on_size_from(self, *_):
         self._show_size_from_rows()
@@ -354,9 +381,17 @@ class SizingPage(QWidget):
         self.inj_Cd.setValue(values["inj_Cd"])
         self.inj_Cd.setEnabled(values["inj_Cd_editable"])
         self.inj_Cd.setToolTip("" if values["inj_Cd_editable"] else
-                               "Worked out from the swirler geometry on the Simulation tab.")
+                               "Worked out from the swirler geometry. To type a measured Cd instead,\n"
+                               "untick From geometry next to Injector Cd on the Simulation tab.")
         self._swirler = values["inj_type"] == "Swirler"
-        self._hole_D_label.setText("Swirler exit" if self._swirler else "Injector hole")
+        self.inj_type.setCurrentText(values["inj_type"])
+        self.sw_ports.setValue(values["sw_ports"])
+        self.sw_D_port.set_display(from_si(values["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
+        self.sw_R_in.set_display(from_si(values["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
+        for w in self._swirler_rows:
+            w.setVisible(self._swirler)
+        self.size_from.setItemText(1, "Swirler count" if self._swirler else "Hole count")
+        self._hole_D_label.setText("Exit diameter" if self._swirler else "Hole diameter")
         self._holes_row[0].setText("Swirler count" if self._swirler else "Hole count")
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if self._swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if self._swirler else "Holes")
@@ -381,6 +416,10 @@ class SizingPage(QWidget):
             "noz_Cd": self.noz_Cd.value(),
             "holes": self.holes.value(),
             "P_cmbr_max": self.sweep.chamber_limit(),
+            "inj_type": self.inj_type.currentText(),
+            "sw_ports": self.sw_ports.value(),
+            "sw_D_port": to_si(self.sw_D_port.spin.value(), self.sw_D_port.unit.currentText(), "length"),
+            "sw_R_in": to_si(self.sw_R_in.spin.value(), self.sw_R_in.unit.currentText(), "length"),
         }
 
     def refresh(self):
@@ -513,7 +552,7 @@ class SizingPage(QWidget):
                                       "caption": f"{u.text(throat, 'length')} throat"})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
-                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} hole{'' if v['holes'] == 1 else 's'}", f"port {u.text(v['port_D'], 'length')}"]
+                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}", f"port {u.text(v['port_D'], 'length')}"]
         if math.isfinite(v["grain_L"]):
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
         self.apply_summary.setText("Applies: " + ", ".join(parts))

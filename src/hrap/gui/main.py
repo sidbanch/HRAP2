@@ -1451,6 +1451,9 @@ class MainWindow(QMainWindow):
             "noz_Cd": self.noz_Cd.value(),
             "holes": self.inj_N.value(),
             "inj_type": self.inj_type.currentText(),
+            "sw_ports": self.sw_ports.value(),
+            "sw_D_port": self._len_si(self.sw_D_port),
+            "sw_R_in": self._len_si(self.sw_R_in),
             "inj_Cd_editable": not self._swirler_cd_from_geometry(),
             "P_cmbr_max": self._pressure_si(self.P_cmbr_max),
         })
@@ -1472,6 +1475,11 @@ class MainWindow(QMainWindow):
             m_o = v["fill"] * V * ox.rho_l + (1.0 - v["fill"]) * V * ox.rho_v
             self.fill.setValue(from_si(m_o, self.fill_unit.currentText(), "mass"))
         self.inj_D.set_display(from_si(v["hole_D"], self.inj_D.unit.currentText(), "length"))
+        self.sw_ports.setValue(v["sw_ports"])
+        self.sw_D_port.set_display(from_si(v["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
+        self.sw_R_in.set_display(from_si(v["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
+        self.inj_type.setCurrentText(v["inj_type"])
+        self._sync_swirl_cd()
         if not self._swirler_cd_from_geometry():
             self.inj_Cd.setValue(v["inj_Cd"])
         self.inj_model.setCurrentText(v["inj_model"])
