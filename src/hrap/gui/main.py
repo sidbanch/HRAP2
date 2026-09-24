@@ -500,7 +500,8 @@ class MainWindow(QMainWindow):
         self.inj_model.setToolTip(
             "SPI: pure liquid through the injector (original HRAP); overpredicts flow at high ΔP.\n"
             "HEM: liquid boils instantly in the orifice; underpredicts flow and chokes.\n"
-            "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM."
+            "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM.\n"
+            "HEM and Dyer use CoolProp nitrous properties for the tank too, whatever Oxidizer fluid says."
         )
         self.inj_Cd_HEM = PlainDoubleSpinBox(); self.inj_Cd_HEM.setRange(0.01, 1); self.inj_Cd_HEM.setDecimals(4)
         self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")

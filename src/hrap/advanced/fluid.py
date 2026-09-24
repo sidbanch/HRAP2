@@ -1,11 +1,14 @@
 """Optional CoolProp saturation properties (advanced mode, not MATLAB-identical)."""
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 from hrap.engine.types import OxProps
 
 
+@lru_cache(maxsize=None)
 def coolprop_sat(fluid: str, T_min: float | None = None, T_max: float | None = None, n: int = 80):
     import CoolProp.CoolProp as CP
 
