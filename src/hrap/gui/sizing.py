@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
+from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, UnitRow
 from hrap.io.propellant import list_propellants
@@ -69,7 +70,7 @@ class FieldGrid(QGridLayout):
 class Card(QFrame):
     """A titled block of label / value rows."""
 
-    def __init__(self, title: str, rows: list[str], tips: dict[str, str] | None = None):
+    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None):
         super().__init__()
         self.setObjectName("sizingCard")
         layout = QVBoxLayout(self)
@@ -82,6 +83,7 @@ class Card(QFrame):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(6)
         self.values: dict[str, QLabel] = {}
+        self.labels: dict[str, QLabel] = {}
         for r, name in enumerate(rows):
             label = QLabel(name)
             label.setObjectName("cardLabel")
@@ -89,22 +91,32 @@ class Card(QFrame):
             value.setObjectName("cardValue")
             value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            if tips and name in tips:
-                label.setToolTip(tips[name])
-                value.setToolTip(tips[name])
             grid.addWidget(label, r, 0)
             grid.addWidget(value, r, 1)
-            self.values[name] = value
+            self.values[name], self.labels[name] = value, label
         grid.setColumnStretch(0, 1)
-        layout.addLayout(grid)
+        self.sketch = sketch
+        if sketch is None:
+            layout.addLayout(grid)
+        else:
+            row = QHBoxLayout()
+            row.setSpacing(16)
+            row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
+            row.addLayout(grid, 1)
+            layout.addLayout(row)
         layout.addStretch(1)
 
-    def set(self, name: str, text: str):
+    def set(self, name: str, text: str, tip: str = ""):
+        """Show a value; the tooltip says how it was worked out."""
         self.values[name].setText(text)
+        self.labels[name].setToolTip(tip)
+        self.values[name].setToolTip(tip)
 
     def clear(self):
         for value in self.values.values():
             value.setText("—")
+        if self.sketch is not None:
+            self.sketch.show_data(None)
 
 
 class SizingPage(QWidget):
@@ -182,13 +194,11 @@ class SizingPage(QWidget):
         for w in self.motor_fields:
             signal = w.currentIndexChanged if isinstance(w, PlainComboBox) else w.valueChanged
             signal.connect(self._on_motor_edited)
-        self.injector = Card("Injector", ["Injector ΔP", "Oxidizer flow", "Flow per hole", "Holes", "Liquid lasts"],
-                             {"Holes": "Holes needed for the oxidizer flow, rounded to a whole number.",
-                              "Liquid lasts": "How long the liquid lasts at the starting flow with the rounded hole count."})
-        self.nozzle = Card("Nozzle", ["Throat diameter", "Expansion ratio", "Exit diameter", "C*"],
-                           {"Expansion ratio": "Sized so the exit pressure matches ambient pressure at the start of the burn."})
+        self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
+                                          "Holes", "Liquid lasts"], InjectorSketch())
+        self.nozzle = Card("Nozzle", ["Throat diameter", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "Port at liquid burnout",
-                                    "O/F at liquid burnout", "Fuel burned"])
+                                    "O/F at liquid burnout", "Fuel burned"], GrainSketch())
         self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
 
         self.error = QLabel("")
@@ -344,23 +354,57 @@ class SizingPage(QWidget):
         t = self.targets()
         holes = max(1, round(z.holes))
         lasts = z.ox_liquid / (holes * z.flow_per_hole)
-        self.injector.set("Injector ΔP", f"{u.text(z.inj_dP, 'pressure')} ({100 * z.inj_dP / t.P_cmbr:.0f}% of chamber)")
-        self.injector.set("Oxidizer flow", u.text(z.mdot_o, "mass_flow", 3))
-        self.injector.set("Flow per hole", u.text(z.flow_per_hole, "mass_flow", 3))
-        self.injector.set("Holes", f"{holes} ({z.holes:.2f} needed)")
-        self.injector.set("Liquid lasts", f"{lasts:.2f} s")
+        flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
+        dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
+        hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), float(cfg["inj_Cd"]), cfg.get("inj_model") or "SPI"
+        self.injector.set("Oxidizer flow", flow,
+                          f"The flow that empties the liquid in the burn time:\n"
+                          f"liquid oxidizer ÷ burn time = {u.text(z.ox_liquid, 'mass')} ÷ {t.burn_time:.3g} s = {flow}")
+        self.injector.set("Injector ΔP", dP,
+                          f"tank pressure − chamber pressure = {u.text(z.P_tnk, 'pressure')} − {P_cmbr} = {dP}")
+        self.injector.set("ΔP / chamber", f"{100 * z.inj_dP / t.P_cmbr:.0f}%",
+                          f"Injector ΔP as a share of chamber pressure: {dP} ÷ {P_cmbr}.\n"
+                          "Above about 20%, chamber pressure swings barely change the injector flow,\n"
+                          "which avoids feed-coupled combustion instability.")
+        self.injector.set("Flow per hole", per_hole,
+                          f"Flow through one {hole} hole at Cd {inj_Cd:.3g} with {dP} across it,\n"
+                          f"from the {model} injector model.")
+        self.injector.set("Holes", f"{z.holes:.2f} → {holes}",
+                          f"oxidizer flow ÷ flow per hole = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
+                          f"rounded to {holes}. Apply to motor uses {holes}.")
+        self.injector.set("Liquid lasts", f"{lasts:.2f} s",
+                          f"With {holes} holes the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
+                          f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
+                          "The real flow falls as the tank cools, so the full simulation runs a little longer.")
+        bore = to_si(float(cfg["grn_OD"]), cfg["grn_OD_unit"], "length")
+        self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes})
+        self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end})
 
         self._show_throat()
-        self.nozzle.set("Expansion ratio", f"{z.ER:.2f}")
-        self.nozzle.set("C*", f"{z.cstar:.0f} m/s")
+        self.nozzle.set("Expansion ratio", f"{z.ER:.2f}",
+                        f"Exit area ÷ throat area, sized so the exhaust leaves at ambient pressure\n"
+                        f"({u.text(to_si(float(cfg['Pa']), cfg['Pa_unit'], 'pressure'), 'pressure')}) when the chamber is at {P_cmbr}, with γ {z.k:.3f}.")
+        self.nozzle.set("C*", f"{z.cstar:.0f} m/s",
+                        f"Characteristic velocity from the {self.propellant.currentText()} combustion table at O/F {t.OF:.3g}\n"
+                        f"and {P_cmbr}, times the {self.cstar.value():.3g}% C* efficiency.")
 
-        self.grain.set("Fuel flow", u.text(z.mdot_f, "mass_flow", 3))
-        self.grain.set("Oxidizer flux", f"{z.ox_flux:.0f} kg/(m²·s)")
+        port = u.text(t.port_D, "length")
+        self.grain.set("Fuel flow", u.text(z.mdot_f, "mass_flow", 3),
+                       f"oxidizer flow ÷ O/F = {flow} ÷ {t.OF:.3g}")
+        self.grain.set("Oxidizer flux", f"{z.ox_flux:.0f} kg/(m²·s)",
+                       f"Oxidizer flow per unit of port area: {flow} ÷ the area of a {port} port.\n"
+                       "It sets how fast the fuel burns back.")
         if math.isfinite(z.grain_L):
-            self.grain.set("Grain length", u.text(z.grain_L, "length"))
-            self.grain.set("Port at liquid burnout", u.text(z.port_D_end, "length"))
-            self.grain.set("O/F at liquid burnout", f"{z.OF_end:.2f}")
-            self.grain.set("Fuel burned", u.text(z.fuel_burned, "mass"))
+            self.grain.set("Grain length", u.text(z.grain_L, "length"),
+                           f"The length whose burning wall gives the fuel flow for O/F {t.OF:.3g}.\n"
+                           f"burn rate = a × flux^n from the propellant, and fuel flow = density × burn rate × port wall area.")
+            self.grain.set("Port at liquid burnout", u.text(z.port_D_end, "length"),
+                           f"The port after burning back for {t.burn_time:.3g} s at the starting oxidizer flow.\n"
+                           "The dashed circle in the drawing.")
+            self.grain.set("O/F at liquid burnout", f"{z.OF_end:.2f}",
+                           "The wider port lowers the flux but adds burning wall, so the O/F drifts.")
+            self.grain.set("Fuel burned", u.text(z.fuel_burned, "mass"),
+                           "The fuel between the starting port and the port at liquid burnout.")
         else:
             for name in ("Grain length", "Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"):
                 self.grain.set(name, "needs a regression law (a > 0)")
@@ -372,17 +416,32 @@ class SizingPage(QWidget):
     def _show_throat(self):
         z, u = cast(Sizing, self._result), self._get_units()
         throat = self._picked_throat or z.throat_D
+        t = self.targets()
+        how = (f"Sized throat: the throat that holds {u.text(t.P_cmbr, 'pressure')} in the chamber at the starting flow.\n"
+               f"throat area = total flow × C* ÷ (chamber pressure × throat Cd)\n"
+               f"total flow = {u.text(z.mdot_o + z.mdot_f, 'mass_flow', 3)}, C* = {z.cstar:.0f} m/s, throat Cd = {self.noz_Cd.value():.3g}")
         if self._picked_throat:
-            self.nozzle.set("Throat diameter", f"{u.text(throat, 'length')} (sized {u.text(z.throat_D, 'length')})")
+            self.nozzle.set("Throat diameter", f"{u.text(throat, 'length')} (sized {u.text(z.throat_D, 'length')})",
+                            f"Picked in the Cd check below.\n{how}")
         else:
-            self.nozzle.set("Throat diameter", u.text(throat, "length"))
+            self.nozzle.set("Throat diameter", u.text(throat, "length"), how)
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
+        bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
+        self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER)})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
                  f"expansion ratio {v['ER']:.2f}", f"{v['holes']} holes", f"port {u.text(v['port_D'], 'length')}"]
         if math.isfinite(v["grain_L"]):
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
         self.apply_summary.setText("Applies: " + ", ".join(parts))
+
+    @staticmethod
+    def _hole_D(cfg: dict) -> float:
+        return to_si(float(cfg["inj_D"]), cfg["inj_D_unit"], "length")
+
+    def set_theme(self, name: str):
+        for card in (self.injector, self.nozzle, self.grain):
+            card.sketch.set_theme(name)
 
     def _on_pick(self, throat: float):
         self._picked_throat = throat

@@ -1684,6 +1684,8 @@ class MainWindow(QMainWindow):
         self._style_plots()
         if hasattr(self, "motor_panel"):
             self.motor_panel.set_theme(name)
+        if hasattr(self, "sizing_page"):
+            self.sizing_page.set_theme(name)
 
     def _about(self):
         QMessageBox.about(
