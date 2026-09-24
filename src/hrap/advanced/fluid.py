@@ -26,17 +26,13 @@ def coolprop_sat(fluid: str, T_min: float | None = None, T_max: float | None = N
     Cp = np.array([CP.PropsSI("CPMASS", "T", T, "Q", 0, fluid) for T in T_grid])
     Z = np.array([CP.PropsSI("Z", "T", T, "Q", 1, fluid) for T in T_grid])
 
-    # Convert J to kJ so ratios match the MATLAB tank formulas' order of magnitude
-    # when mixing is not desired: keep SI (J, J/kg-K). Tank uses Hv/Cp which is K either way.
+    rows = [tuple(map(float, r)) for r in zip(Pv, rho_l, rho_v, Hv, Cp, Z)]
+    T0, dT = float(T_grid[0]), float(T_grid[1] - T_grid[0])
+
     def get_sat_props(T: float) -> OxProps:
-        T = float(np.clip(T, T_grid[0], T_grid[-1]))
-        return OxProps(
-            Pv=float(np.interp(T, T_grid, Pv)),
-            rho_l=float(np.interp(T, T_grid, rho_l)),
-            rho_v=float(np.interp(T, T_grid, rho_v)),
-            Hv=float(np.interp(T, T_grid, Hv)),
-            Cp=float(np.interp(T, T_grid, Cp)),
-            Z=float(np.interp(T, T_grid, Z)),
-        )
+        f = min(max((float(T) - T0) / dT, 0.0), n - 1.0)
+        k = min(int(f), n - 2)
+        w = f - k
+        return OxProps(*(a + w * (b - a) for a, b in zip(rows[k], rows[k + 1])))
 
     return get_sat_props
