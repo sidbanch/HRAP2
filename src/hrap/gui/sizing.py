@@ -456,7 +456,7 @@ class SizingPage(QWidget):
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "swirler": {"exit": self._hole_D(cfg), "ports": ports, "port": D_port, "offset": R_in, "fill": fill},
-                "caption": f"{ports} ports, {hole} exit"})
+                "caption": f"{ports} tangential ports, {hole} exit"})
         else:
             self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
                                             "caption": f"{holes} × {hole} holes"})

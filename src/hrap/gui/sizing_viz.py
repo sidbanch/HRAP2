@@ -4,13 +4,13 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from hrap.gui.viz import DARK_VIZ, LIGHT_VIZ
 
 SIZE = 104  # px, square drawing area of each sketch
-CAPTION_H = 18
+CAPTION_H = 30
 
 
 class Sketch(QWidget):
@@ -40,7 +40,8 @@ class Sketch(QWidget):
         caption = data.pop("caption")
         self.draw(p, QRectF(2, 2, self.width() - 4, SIZE - 4), **data)
         p.setPen(self.color("muted"))
-        p.drawText(QRectF(0, SIZE, self.width(), CAPTION_H), Qt.AlignmentFlag.AlignCenter, caption)
+        p.drawText(QRectF(0, SIZE, self.width(), CAPTION_H),
+                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), caption)
 
     def draw(self, p: QPainter, r: QRectF, **data):
         raise NotImplementedError
@@ -61,28 +62,56 @@ class InjectorSketch(Sketch):
             self._draw_holes(p, r, **holes)
 
     def _draw_swirler(self, p: QPainter, r: QRectF, exit: float, ports: int, port: float, offset: float, fill: float):
-        """Tangential inlet ports into the swirl chamber, the exit orifice in the middle and its air core, to scale."""
+        """Looking down the swirler's axis: drilled tangential ports through the body wall into the swirl
+        chamber, the flow's spin, and the exit orifice beyond it with its air core. All to scale."""
         c = r.center()
-        chamber = offset + 0.5 * port  # swirl chamber radius: the ports enter along its wall
-        body = 1.5 * chamber
+        chamber = offset + 0.5 * port  # the ports run along the chamber wall
+        body = chamber + max(2.5 * port, 0.4 * chamber)
         px = 0.5 * min(r.width(), r.height()) / body
-        p.setPen(QPen(self.color("outline"), 1.0))
+        outline, liquid = self.color("outline"), self.color("tank")
+        rim = QPainterPath()
+        rim.addEllipse(c, body * px, body * px)
+        p.setPen(QPen(outline, 1.0))
         p.setBrush(self.color("plate"))
-        _circle(p, c, 2 * body * px)
+        p.drawPath(rim)
+
+        # Each port is a drilled channel tangent to the chamber wall, cut off at the body's rim.
+        p.save()
+        p.setClipPath(rim)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self.color("tank"))
-        _circle(p, c, 2 * chamber * px)
-        channel = QPen(self.color("tank"), max(port * px, 2.0))
-        channel.setCapStyle(Qt.PenCapStyle.FlatCap)
-        p.setPen(channel)
+        p.setBrush(liquid)
         for i in range(ports):
             a = 2 * math.pi * i / ports
-            start = QPointF(offset * math.cos(a), offset * math.sin(a))
-            run = math.sqrt(body ** 2 - offset ** 2)  # along the tangent to the body's edge
-            end = start + QPointF(-math.sin(a), math.cos(a)) * run
-            p.drawLine(c + start * px, c + end * px)
-        p.setPen(QPen(self.color("outline"), 1.0))
-        p.setBrush(self.color("inj"))
+            radial, along = QPointF(math.cos(a), math.sin(a)), QPointF(-math.sin(a), math.cos(a))
+            inner, outer = (offset - 0.5 * port) * radial, (offset + 0.5 * port) * radial
+            reach = 2 * body * along
+            p.drawPolygon(QPolygonF([c + q * px for q in (inner, outer, outer + reach, inner + reach)]))
+        p.restore()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(liquid)
+        _circle(p, c, 2 * chamber * px)
+
+        # The swirl: flow enters along each channel toward the chamber, so it turns the same way.
+        arc_r = 0.5 * (0.5 * exit + chamber) * px
+        spin = QPen(self.color("overlay"), 1.2)
+        spin.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(spin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        box = QRectF(c.x() - arc_r, c.y() - arc_r, 2 * arc_r, 2 * arc_r)
+        start, sweep = 20.0, 250.0  # degrees, counterclockwise like the entering flow
+        p.drawArc(box, int(start * 16), int(sweep * 16))
+        end = math.radians(start + sweep)
+        tip = c + QPointF(arc_r * math.cos(end), -arc_r * math.sin(end))
+        heading = QPointF(-math.sin(end), -math.cos(end))  # counterclockwise tangent on screen
+        side = QPointF(-heading.y(), heading.x())
+        head = 4.0
+        p.setBrush(self.color("overlay"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPolygon(QPolygonF([tip + heading * head, tip - heading * head + side * head, tip - heading * head - side * head]))
+
+        # The exit orifice sits beyond the chamber: dashed, with the air core the swirl leaves in it.
+        p.setPen(QPen(self.color("overlay"), 1.0, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
         _circle(p, c, exit * px)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self.color("port"))
