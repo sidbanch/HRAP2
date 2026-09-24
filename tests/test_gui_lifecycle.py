@@ -139,7 +139,7 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
     QApplication.processEvents()
     assert window.plot.currentWidget() is window._plot_widgets["pressure"]
     np.testing.assert_allclose(window._plots["pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
-    window.trace_list.item(3).setCheckState(Qt.CheckState.Checked)
+    window.trace_list.findItems("O/F", Qt.MatchFlag.MatchExactly)[0].setCheckState(Qt.CheckState.Checked)
     np.testing.assert_allclose(window._plots["ratio"].vb.viewRange()[0], [.002, .008], atol=1e-6)
     for i in range(window.trace_list.count()):
         window.trace_list.item(i).setCheckState(Qt.CheckState.Unchecked)

@@ -16,6 +16,18 @@ def _sat_props(s: Settings, T: float):
     return nox(T)
 
 
+def liquid_flow(s: Settings, T: float, rho_l: float, P_tnk: float, P_cmbr: float) -> float:
+    """Liquid oxidizer flow through all injector holes with the motor's injector model."""
+    dP = max(P_tnk - P_cmbr, 0.0)
+    spi = s.inj_CdA * s.inj_N * math.sqrt(2.0 * rho_l * dP)
+    if s.hem_flux is None:
+        return spi
+    hem = s.inj_CdA_HEM * s.inj_N * s.hem_flux(T, P_cmbr / P_tnk)
+    if s.inj_model == "HEM":
+        return hem
+    return (s.dyer_kappa * spi + hem) / (1.0 + s.dyer_kappa)
+
+
 def _solve_cooling(s: Settings, x: State, mD: float) -> None:
     """Boil and cool at the temperature the step ends at, so the liquid mass can't grow.
 
@@ -94,13 +106,7 @@ def tank(s: Settings, o: Output, x: State, t: float) -> State:
         )
 
     def liq_mdot() -> float:
-        spi = s.inj_CdA * s.inj_N * math.sqrt(2.0 * x.ox_props.rho_l * dP)
-        if s.hem_flux is None:
-            return spi
-        hem = s.inj_CdA_HEM * s.inj_N * s.hem_flux(x.T_tnk, x.P_cmbr / x.P_tnk)
-        if s.inj_model == "HEM":
-            return hem
-        return (s.dyer_kappa * spi + hem) / (1.0 + s.dyer_kappa)
+        return liquid_flow(s, x.T_tnk, x.ox_props.rho_l, x.P_tnk, x.P_cmbr)
 
     if s.tburn == 0 or t <= s.tburn:
         if s.vnt_S == 0:

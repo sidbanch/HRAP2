@@ -1,7 +1,8 @@
-"""Throat × injector Cd sweep window."""
+"""Throat × injector Cd sweep panel for the sizing page."""
 from __future__ import annotations
 
 import traceback
+from typing import Callable, cast
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -9,9 +10,9 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -75,57 +76,69 @@ def _chip(color: QColor, text: str) -> QWidget:
     return w
 
 
-class SweepDialog(QDialog):
-    def __init__(self, cfg: dict, units: DisplayUnits, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Throat / injector Cd sweep")
-        self.resize(860, 620)
-        self.cfg, self.units = cfg, units
+class SweepPanel(QFrame):
+    """Full-simulation check of a sized motor across throat diameters and injector Cds."""
+
+    finished = Signal()
+
+    def __init__(self, get_cfg: Callable[[], dict | None], get_units: Callable[[], DisplayUnits],
+                 on_pick: Callable[[float], None]):
+        super().__init__()
+        self.setObjectName("sizingCard")
+        self._get_cfg, self._get_units, self._on_pick = get_cfg, get_units, on_pick
         self.cases: list[SweepCase] = []
+        self._throats: list[float] = []
         self._cells: dict[tuple[float, float], tuple[int, int]] = {}
         self._thread: QThread | None = None
         self._worker: SweepWorker | None = None
         self._error = ""
-        self.spi = uses_spi(cfg)
-        self.limits = "both limits" if self.spi else "the chamber limit"
+        self._picked: int | None = None
+        self.spi = True
+        self._center = 0.0
 
-        length, pressure = units.length, units.pressure
-        throat = from_si(to_si(cfg["noz_thrt"], cfg["noz_thrt_unit"], "length"), length, "length")
-        cd = float(cfg["inj_Cd"])
-        self.throat_lo, self.throat_hi = self._spin(0.7 * throat, 4), self._spin(1.3 * throat, 4)
+        self.spread = self._spin(30.0, 0, suffix=" %")
         self.throat_n = self._count(7)
-        self.cd_lo, self.cd_hi = self._spin(0.5 * cd, 3), self._spin(min(1.0, 1.5 * cd), 3)
+        self.cd_lo, self.cd_hi = self._spin(0.3, 3), self._spin(0.9, 3)
         self.cd_n = self._count(6)
-        self.max_chamber = self._spin(from_si(to_si(500.0, "psi", "pressure"), pressure, "pressure"), 0)
-        self.max_dp = self._spin(from_si(to_si(300.0, "psi", "pressure"), pressure, "pressure"), 0)
+        self.max_chamber = self._spin(500.0, 0)
+        self.max_dp = self._spin(300.0, 0)
+        self.max_chamber.setToolTip("Peak chamber pressure the chamber is designed for (absolute).")
+        self.max_dp.setToolTip("Above this burn-average ΔP, the SPI injector model overpredicts oxidizer flow.")
+        self.center_label = QLabel("")
+        self.model_label = QLabel("")
+        self.model_label.setObjectName("cardLabel")
+
+        heading = QLabel("Check across injector Cd")
+        heading.setObjectName("cardTitle")
+        intro = QLabel("Runs the full simulation of the sized motor for each throat and injector Cd, since the Cd isn't "
+                       "known until the injector is flow tested. Click a row to use that throat.")
+        intro.setObjectName("cardLabel")
+        intro.setWordWrap(True)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
-        rows = [
-            ("Throat diameter", self.throat_lo, self.throat_hi, length, self.throat_n),
-            ("Injector Cd", self.cd_lo, self.cd_hi, "", self.cd_n),
-        ]
-        for r, (label, lo, hi, unit, n) in enumerate(rows):
-            grid.addWidget(QLabel(label), r, 0)
-            grid.addWidget(lo, r, 1)
-            grid.addWidget(QLabel("to"), r, 2)
-            grid.addWidget(hi, r, 3)
-            grid.addWidget(QLabel(unit), r, 4)
-            grid.addWidget(QLabel("steps"), r, 5)
-            grid.addWidget(n, r, 6)
-        grid.addWidget(QLabel("Chamber pressure limit"), 2, 0)
+        grid.addWidget(QLabel("Throat"), 0, 0)
+        grid.addWidget(self.spread, 0, 1)
+        grid.addWidget(self.center_label, 0, 2, 1, 3)
+        grid.addWidget(QLabel("steps"), 0, 5)
+        grid.addWidget(self.throat_n, 0, 6)
+        grid.addWidget(QLabel("Injector Cd"), 1, 0)
+        grid.addWidget(self.cd_lo, 1, 1)
+        grid.addWidget(QLabel("to"), 1, 2)
+        grid.addWidget(self.cd_hi, 1, 3)
+        grid.addWidget(QLabel("steps"), 1, 5)
+        grid.addWidget(self.cd_n, 1, 6)
+        grid.addWidget(QLabel("Chamber limit"), 2, 0)
         grid.addWidget(self.max_chamber, 2, 1)
-        grid.addWidget(QLabel(f"{pressure} (absolute)"), 2, 2, 1, 3)
-        if self.spi:
-            grid.addWidget(QLabel("Injector ΔP warning"), 3, 0)
-            grid.addWidget(self.max_dp, 3, 1)
-            grid.addWidget(QLabel(f"{pressure} (burn average)"), 3, 2, 1, 3)
-        else:
-            hem_cd = f"fixed at {cfg['inj_Cd_HEM']:.3g}" if cfg.get("inj_Cd_HEM") else "follows the swept Cd"
-            model = f"Dyer (κ {cfg.get('dyer_kappa') or 1.0:.3g})" if cfg["inj_model"] == "Dyer" else cfg["inj_model"]
-            grid.addWidget(QLabel("Injector model"), 3, 0)
-            grid.addWidget(QLabel(f"{model}. HEM Cd {hem_cd}."), 3, 1, 1, 6)
+        self.pressure_unit = QLabel("")
+        grid.addWidget(self.pressure_unit, 2, 2, 1, 3)
+        self.dp_label = QLabel("ΔP warning")
+        self.dp_unit = QLabel("")
+        grid.addWidget(self.dp_label, 3, 0)
+        grid.addWidget(self.max_dp, 3, 1)
+        grid.addWidget(self.dp_unit, 3, 2, 1, 3)
+        grid.addWidget(self.model_label, 4, 0, 1, 7)
         grid.setColumnStretch(7, 1)
 
         self.run_btn = QPushButton("Run sweep")
@@ -150,10 +163,9 @@ class SweepDialog(QDialog):
         buttons.addWidget(QLabel("Show"))
         buttons.addWidget(self.shown)
 
-        self.answer = QLabel("Pick ranges, then run the sweep.")
+        self.answer = QLabel("Run the sweep to see which throats stay under the limit for every Cd.")
         self.answer.setWordWrap(True)
         font = QFont(self.answer.font())
-        font.setPointSizeF(font.pointSizeF() * 1.2)
         font.setBold(True)
         self.answer.setFont(font)
 
@@ -163,20 +175,29 @@ class SweepDialog(QDialog):
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.table.setShowGrid(False)
         self.table.setCornerButtonEnabled(False)
+        self.table.setMinimumHeight(260)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setHighlightSections(False)
+        self.table.cellClicked.connect(lambda row, _col: self._pick(row))
+        self.table.verticalHeader().sectionClicked.connect(self._pick)
 
+        self.dp_chip = _chip(HIGH_DP, "ΔP over the warning: the SPI injector model overpredicts flow")
+        self.ok_chip_label = QLabel("")
         legend = QHBoxLayout()
-        legend.addWidget(_chip(OK, f"Under {self.limits}"))
+        ok_chip = _chip(OK, "")
+        ok_chip.layout().replaceWidget(ok_chip.layout().itemAt(1).widget(), self.ok_chip_label)
+        legend.addWidget(ok_chip)
         legend.addWidget(_chip(OVER_LIMIT, "Chamber pressure over the limit"))
-        if self.spi:
-            legend.addWidget(_chip(HIGH_DP, "ΔP over the warning: HRAP's liquid-only injector model overpredicts flow"))
+        legend.addWidget(self.dp_chip)
         legend.addStretch(1)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
+        layout.addWidget(heading)
+        layout.addWidget(intro)
         layout.addLayout(grid)
         layout.addLayout(buttons)
         layout.addWidget(self.answer)
@@ -187,11 +208,12 @@ class SweepDialog(QDialog):
             signal.connect(self._refresh)
 
     @staticmethod
-    def _spin(value: float, decimals: int) -> QDoubleSpinBox:
+    def _spin(value: float, decimals: int, suffix: str = "") -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
         spin.setDecimals(decimals)
         spin.setRange(0.0, 1e6)
         spin.setValue(value)
+        spin.setSuffix(suffix)
         spin.setFixedWidth(96)
         return spin
 
@@ -203,23 +225,57 @@ class SweepDialog(QDialog):
         spin.setFixedWidth(64)
         return spin
 
+    def set_cd_range(self, cd: float):
+        """Start the Cd range at half to one and a half times the motor's injector Cd."""
+        self.cd_lo.setValue(0.5 * cd)
+        self.cd_hi.setValue(min(1.0, 1.5 * cd))
+
+    def update_motor(self, cfg: dict | None, throat: float):
+        """Follow the sized motor: the throat range centre, the injector model and the units."""
+        u = self._get_units()
+        self._center = throat
+        self.run_btn.setEnabled(cfg is not None and self._thread is None)
+        self.center_label.setText(f"around {u.text(throat, 'length')}" if cfg is not None else "")
+        self.pressure_unit.setText(f"{u.pressure} (absolute)")
+        self.dp_unit.setText(f"{u.pressure} (burn average)")
+        if cfg is None:
+            return
+        self.spi = uses_spi(cfg)
+        for w in (self.dp_label, self.max_dp, self.dp_unit, self.dp_chip):
+            w.setVisible(self.spi)
+        self.ok_chip_label.setText("Under both limits" if self.spi else "Under the chamber limit")
+        if self.spi:
+            self.model_label.setText("Injector model: SPI.")
+        else:
+            hem_cd = f"fixed at {cfg['inj_Cd_HEM']:.3g}" if cfg.get("inj_Cd_HEM") else "follows the swept Cd"
+            model = f"Dyer (κ {cfg.get('dyer_kappa') or 1.0:.3g})" if cfg["inj_model"] == "Dyer" else cfg["inj_model"]
+            self.model_label.setText(f"Injector model: {model}. HEM Cd {hem_cd}.")
+
+    def busy(self) -> bool:
+        return self._thread is not None
+
     def _limits(self) -> tuple[float, float]:
-        p = self.units.pressure
+        p = self._get_units().pressure
         max_dp = to_si(self.max_dp.value(), p, "pressure") if self.spi else float("inf")
         return to_si(self.max_chamber.value(), p, "pressure"), max_dp
 
     def _run(self):
-        u = self.units
-        throats = [to_si(t, u.length, "length")
-                   for t in np.linspace(self.throat_lo.value(), self.throat_hi.value(), self.throat_n.value())]
+        cfg = self._get_cfg()
+        if cfg is None or self._center <= 0:
+            return
+        u = self._get_units()
+        spread = self.spread.value() / 100.0
+        throats = [float(t) for t in np.linspace(self._center * (1 - spread), self._center * (1 + spread), self.throat_n.value())]
         cds = [float(c) for c in np.linspace(self.cd_lo.value(), self.cd_hi.value(), self.cd_n.value())]
+        self._throats = throats
         self._cells = {(t, c): (i, j) for i, t in enumerate(throats) for j, c in enumerate(cds)}
         self.cases = []
         self._error = ""
+        self._picked = None
         self.table.clear()
         self.table.setRowCount(len(throats))
         self.table.setColumnCount(len(cds))
-        self.table.setVerticalHeaderLabels([f"  {from_si(t, u.length, 'length'):.4g} {u.length}  " for t in throats])
+        self._label_rows()
         self.table.setHorizontalHeaderLabels([f"Cd {c:.3g}" for c in cds])
         self.progress.setRange(0, len(self._cells))
         self.progress.setValue(0)
@@ -230,7 +286,7 @@ class SweepDialog(QDialog):
         self.export_btn.setEnabled(False)
 
         self._thread = QThread()
-        self._worker = SweepWorker(self.cfg, throats, cds)
+        self._worker = SweepWorker(cfg, throats, cds)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.case_done.connect(self._on_case)
@@ -240,10 +296,31 @@ class SweepDialog(QDialog):
         self._thread.finished.connect(self._on_thread_finished)
         self._thread.start()
 
-    def _stop(self):
+    def _label_rows(self):
+        u = self._get_units()
+        self.table.setVerticalHeaderLabels([
+            f"{'▶ ' if i == self._picked else '  '}{from_si(t, u.length, 'length'):.4g} {u.length}  "
+            for i, t in enumerate(self._throats)
+        ])
+
+    def _pick(self, row: int):
+        if not 0 <= row < len(self._throats):
+            return
+        self._picked = row
+        self._label_rows()
+        self._on_pick(self._throats[row])
+
+    def clear_pick(self):
+        if self._picked is not None:
+            self._picked = None
+            self._label_rows()
+
+    def stop(self):
         if self._worker is not None:
             self._worker.stop = True
         self.stop_btn.setEnabled(False)
+
+    _stop = stop
 
     def _on_case(self, case: SweepCase):
         self.cases.append(case)
@@ -251,7 +328,7 @@ class SweepDialog(QDialog):
         self._fill_cell(case)
 
     def _on_thread_finished(self):
-        thread = self._thread
+        thread = cast(QThread, self._thread)
         thread.wait()
         thread.deleteLater()
         self._thread = self._worker = None
@@ -260,6 +337,7 @@ class SweepDialog(QDialog):
         self.stop_btn.setEnabled(False)
         self.export_btn.setEnabled(bool(self.cases))
         self._update_answer()
+        self.finished.emit()
 
     def _refresh(self):
         for case in self.cases:
@@ -274,13 +352,13 @@ class SweepDialog(QDialog):
         if len(self.cases) < len(self._cells):
             self.answer.setText(f"Stopped after {len(self.cases)} of {len(self._cells)} simulations.")
             return
-        u = self.units
+        u = self._get_units()
         max_P, max_dP = self._limits()
         cd_range = f"Cd {self.cd_lo.value():.3g}–{self.cd_hi.value():.3g}"
         ok = passing_throats(self.cases, max_P, max_dP)
         if ok:
             listed = ", ".join(f"{from_si(t, u.length, 'length'):.4g}" for t in ok)
-            self.answer.setText(f"Throats under {self.limits} for every {cd_range}: {listed} {u.length}")
+            self.answer.setText(f"Throats under {'both limits' if self.spi else 'the chamber limit'} for every {cd_range}: {listed} {u.length}. Click one to use it.")
             return
         over_P = any(c.peak_P_cmbr > max_P for c in self.cases)
         over_dP = any(c.avg_inj_dP > max_dP for c in self.cases)
@@ -291,7 +369,7 @@ class SweepDialog(QDialog):
         self.answer.setText(f"No throat in this range works for every {cd_range}: {why}.")
 
     def _fill_cell(self, case: SweepCase):
-        u = self.units
+        u = self._get_units()
         _label, field, quantity = METRICS[self.shown.currentIndex()]
         value = getattr(case, field)
         item = QTableWidgetItem(u.text(value, quantity) if quantity else f"{value:.3g} s")
@@ -316,7 +394,7 @@ class SweepDialog(QDialog):
         path, _ = QFileDialog.getSaveFileName(self, "Export sweep", "HRAP_sweep.csv", "CSV (*.csv)")
         if not path:
             return
-        u = self.units
+        u = self._get_units()
         header = (f"throat_{u.length},inj_Cd,peak_P_cmbr_{u.pressure},avg_inj_dP_{u.pressure},"
                   f"total_impulse_{u.force}s,peak_thrust_{u.force},burn_time_s,end_cond")
         rows = [
@@ -327,12 +405,3 @@ class SweepDialog(QDialog):
         ]
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join([header, *rows]) + "\n")
-
-    def closeEvent(self, event):
-        if self._thread is not None:
-            self._stop()
-            event.ignore()
-            self.answer.setText("Stopping after the running simulations finish…")
-            self._thread.finished.connect(self.close)
-        else:
-            event.accept()
