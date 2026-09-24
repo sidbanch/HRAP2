@@ -51,7 +51,6 @@ from hrap.engine.types import Settings, State
 from hrap.engine.summary import format_summary, summarize
 from hrap.gui.theme import apply_theme
 from hrap.gui.sizing import SizingPage
-from hrap.gui.sweep import SweepDialog
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import bundled_motor, default_cfg, load_json, load_matlab_mat, resolve, resolve_layout, save_json
@@ -270,7 +269,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([500, 900])
-        self.sizing_page = SizingPage(self._form_to_cfg, lambda: self.display_units, self._apply_sizing, self._open_sweep)
+        self.sizing_page = SizingPage(self._form_to_cfg, lambda: self.display_units, self._apply_sizing)
         self.mass_page = self._make_mass_page()
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
@@ -1320,9 +1319,6 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._thread_finished)
         self._thread.start()
 
-    def _open_sweep(self):
-        SweepDialog(self._form_to_cfg(), self.display_units, self).exec()
-
     def _on_tab_changed(self, _index: int):
         if self.tabs.currentWidget() is self.sizing_page:
             self.sizing_page.refresh()
@@ -1360,6 +1356,13 @@ class MainWindow(QMainWindow):
             self.close()
 
     def closeEvent(self, event):
+        sweep = self.sizing_page.sweep
+        if sweep.busy():
+            sweep.stop()
+            sweep.finished.connect(self.close)
+            self.statusBar().showMessage("Closing when the running sweep simulations finish…")
+            event.ignore()
+            return
         if self._thread is not None:
             self._close_when_finished = True
             self.statusBar().showMessage("Closing when the current simulation finishes…")

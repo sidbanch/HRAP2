@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import Callable
+from typing import Callable, cast
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
+from hrap.gui.sweep import SweepPanel
 from hrap.gui.widgets import PlainDoubleSpinBox, UnitRow
 from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, DisplayUnits, from_si, to_si
 
@@ -66,11 +67,12 @@ class SizingPage(QWidget):
         get_cfg: Callable[[], dict],
         get_units: Callable[[], DisplayUnits],
         apply: Callable[[dict], None],
-        open_sweep: Callable[[], None],
     ):
         super().__init__()
         self._get_cfg, self._get_units, self._apply = get_cfg, get_units, apply
         self._result: Sizing | None = None
+        self._cfg: dict | None = None
+        self._picked_throat: float | None = None
         self._loading = False
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
@@ -116,13 +118,10 @@ class SizingPage(QWidget):
         self.apply_btn.setObjectName("runButton")
         self.apply_btn.setToolTip("Copy the throat, expansion ratio, rounded hole count, port, grain length and O/F into the motor.")
         self.apply_btn.clicked.connect(self._on_apply)
-        sweep_btn = QPushButton("Throat / Cd sweep…")
-        sweep_btn.setToolTip("Run the full simulation across a range of throat diameters and injector Cds.")
-        sweep_btn.clicked.connect(open_sweep)
         buttons = QHBoxLayout()
         buttons.addWidget(self.apply_btn)
-        buttons.addWidget(sweep_btn)
         buttons.addStretch(1)
+        self.sweep = SweepPanel(self.sized_cfg, get_units, self._on_pick)
 
         intro = QLabel("Sizes the injector, nozzle and grain for conditions at the start of the burn, using the "
                        "simulation's own injector, combustion and nozzle equations. Apply the result, then run "
@@ -157,6 +156,7 @@ class SizingPage(QWidget):
         page.setSpacing(12)
         page.addWidget(intro)
         page.addLayout(body)
+        page.addWidget(self.sweep, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(inner)
@@ -187,6 +187,7 @@ class SizingPage(QWidget):
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.port_D.set_display(from_si(port, self.port_D.unit.currentText(), "length"))
+        self.sweep.set_cd_range(float(motor_cfg.get("inj_Cd") or 0.6))
         self._loading = False
         if self.isVisible():
             self.refresh()
@@ -199,14 +200,19 @@ class SizingPage(QWidget):
         try:
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
-            self._result = None
+            self._result = self._cfg = None
+            self.sweep.update_motor(None, 0.0)
             self.error.setText(str(exc) or type(exc).__name__)
             self.error.show()
             self.apply_btn.setEnabled(False)
             for card in (self.injector, self.nozzle, self.grain, self.performance):
                 card.clear()
             return
-        self._result = z
+        if self._result is None or abs(z.throat_D - self._result.throat_D) > 1e-12:
+            self._picked_throat = None
+            self.sweep.clear_pick()
+        self._result, self._cfg = z, cfg
+        self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
         self.apply_btn.setEnabled(True)
 
@@ -226,9 +232,8 @@ class SizingPage(QWidget):
         self.injector.set("Holes needed", f"{z.holes:.2f}")
         self.injector.set("Rounded", f"{holes} holes, liquid lasts {lasts:.2f} s")
 
-        self.nozzle.set("Throat diameter", u.text(z.throat_D, "length"))
+        self._show_throat()
         self.nozzle.set("Expansion ratio", f"{z.ER:.2f} (exit at ambient pressure)")
-        self.nozzle.set("Exit diameter", u.text(z.exit_D, "length"))
         self.nozzle.set("C*", f"{z.cstar:.0f} m/s")
 
         self.grain.set("Fuel flow", u.text(z.mdot_f, "mass_flow", 3))
@@ -246,16 +251,43 @@ class SizingPage(QWidget):
         self.performance.set("Isp", f"{z.isp:.0f} s")
         self.performance.set("Impulse over the burn time", u.text(z.thrust * t.burn_time, "impulse"))
 
-    def _on_apply(self):
-        z = self._result
-        if z is None:
-            return
-        t = self.targets()
-        self._apply({
-            "throat_D": z.throat_D,
+    def _show_throat(self):
+        z, u = cast(Sizing, self._result), self._get_units()
+        throat = self._picked_throat or z.throat_D
+        if self._picked_throat:
+            self.nozzle.set("Throat diameter", f"{u.text(throat, 'length')}, picked (sized {u.text(z.throat_D, 'length')})")
+        else:
+            self.nozzle.set("Throat diameter", u.text(throat, "length"))
+        self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
+
+    def _on_pick(self, throat: float):
+        self._picked_throat = throat
+        self._show_throat()
+
+    def _values(self) -> dict:
+        z, t = cast(Sizing, self._result), self.targets()
+        return {
+            "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
             "holes": max(1, round(z.holes)),
             "port_D": t.port_D,
             "grain_L": z.grain_L,
             "OF": t.OF,
-        })
+        }
+
+    def sized_cfg(self) -> dict | None:
+        """The motor with this sizing applied, for the sweep."""
+        if self._result is None or self._cfg is None:
+            return None
+        v = self._values()
+        cfg = dict(self._cfg)
+        cfg.update(noz_thrt=v["throat_D"], noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=v["ER"],
+                   inj_N=v["holes"], grn_ID=v["port_D"], grn_ID_unit="m", const_OF=v["OF"])
+        if math.isfinite(v["grain_L"]):
+            cfg.update(grn_L=v["grain_L"], grn_L_unit="m")
+        return cfg
+
+    def _on_apply(self):
+        if self._result is None:
+            return
+        self._apply(self._values())
