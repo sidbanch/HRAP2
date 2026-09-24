@@ -105,3 +105,19 @@ def test_rattworks_k240_runs():
     assert np.all(np.isfinite(o.F_thr))
     assert np.max(o.F_thr) > 1.0
 
+
+
+def test_solved_tank_cooling_skips_the_fallback_and_stays_close():
+    from hrap.engine.summary import summarize
+
+    results = {}
+    for fix in (False, True):
+        cfg = bundled_motor("example_98mm")
+        cfg["solve_tank_cooling"] = fix
+        s, x = resolve(cfg)
+        x, o = run(s, x)
+        liquid = o.t < 8.2  # liquid runs out at about 8.25 s
+        results[fix] = (summarize(s, x, o)["total_impulse"], o.P_tnk[liquid])
+    (hrap_impulse, _), (impulse, P_tnk) = results[False], results[True]
+    assert np.all(np.diff(P_tnk) <= 0)  # a draining tank only cools
+    assert impulse == pytest.approx(hrap_impulse, rel=0.01)

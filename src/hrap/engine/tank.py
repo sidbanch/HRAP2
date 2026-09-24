@@ -7,13 +7,63 @@ import numpy as np
 
 from hrap.engine.fzero import matlab_fzero
 from hrap.engine.nox import nox, vapor_pressure
-from hrap.engine.types import Output, Settings, State
+from hrap.engine.types import Output, OxProps, Settings, State
 
 
 def _sat_props(s: Settings, T: float):
     if s.get_sat_props is not None:
         return s.get_sat_props(T)
     return nox(T)
+
+
+def _solve_cooling(s: Settings, x: State, mD: float) -> None:
+    """Boil and cool at the temperature the step ends at, so the liquid mass can't grow.
+
+    HRAP splits liquid and vapor at the start-of-step temperature and cools afterwards. When
+    the liquid runs low, that overcools the tank, the colder tank then holds more liquid than
+    it had, and HRAP falls back to an averaged pressure drop. Here the end temperature T
+    satisfies HRAP's heat balance directly: liquid(T)·Cp·(T_start - T) = boiled(T)·Hv.
+
+    The cooling barely changes between steps, so a secant solve (Newton with the slope taken
+    from the last two guesses) starts from last step's cooling and converges in a few checks.
+    """
+    T0 = x.T_tnk
+    drained = x.mLiq_new - mD
+
+    def check(T: float) -> tuple[float, float, OxProps]:
+        op = _sat_props(s, T)
+        mL = (s.tnk_V - x.m_o / op.rho_v) / (1.0 / op.rho_l - 1.0 / op.rho_v)
+        return mL * op.Cp * (T0 - T) - (drained - mL) * op.Hv, mL, op
+
+    r0, mL, op = check(T0)
+    T = T0
+    if r0 < 0.0:  # something has to boil, so the tank cools
+        Ta, ra = T0, r0
+        T = T0 - max(x.dT_cool, 1e-6)
+        for _ in range(30):
+            r, mL, op = check(T)
+            if r == ra:
+                break
+            step = r * (T - Ta) / (r - ra)
+            Ta, ra = T, r
+            T -= step
+            if not T0 - 50.0 < T <= T0:
+                break
+            if abs(step) <= 1e-9:
+                r, mL, op = check(T)
+                break
+        else:
+            T = T0 - 51.0
+        if not T0 - 50.0 < T <= T0:  # secant left the bracket; fall back to bracketing
+            from scipy.optimize import brentq
+
+            T = float(brentq(lambda T: check(T)[0], T0 - 50.0, T0, xtol=1e-12))
+            r, mL, op = check(T)
+    x.dT_cool = T0 - T
+    x.T_tnk = T
+    x.mLiq_old = drained
+    x.mLiq_new = max(mL, 0.0)
+    x.dP = op.Pv - x.P_tnk
 
 
 def tank(s: Settings, o: Output, x: State, t: float) -> State:
@@ -80,7 +130,9 @@ def tank(s: Settings, o: Output, x: State, t: float) -> State:
     m_o_old = x.m_o
     x.m_o = x.m_o - x.mdot_o * dt
 
-    if x.mLiq_new < x.mLiq_old and x.mLiq_new > 0 and x.mdot_o > 0:
+    if s.solve_tank_cooling and x.mLiq_new > 0 and x.mdot_o > 0:
+        _solve_cooling(s, x, mD)
+    elif x.mLiq_new < x.mLiq_old and x.mLiq_new > 0 and x.mdot_o > 0:
         x.mLiq_old = x.mLiq_new - mD
         x.ox_props = _sat_props(s, x.T_tnk)
         x.mLiq_new = (s.tnk_V - (x.m_o / x.ox_props.rho_v)) / (
