@@ -97,6 +97,7 @@ class State:
     F_thr: float
     k: float = 1.4
     M: float = 29.0
+    Me: float = 0.0  # nozzle exit Mach number, the next step's starting guess
     T: float = 300.0
     R: float = 287.0
     rho: float = 1.225
