@@ -377,8 +377,11 @@ class SizingPage(QWidget):
                           f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
                           "The real flow falls as the tank cools, so the full simulation runs a little longer.")
         bore = to_si(float(cfg["grn_OD"]), cfg["grn_OD_unit"], "length")
-        self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes})
-        self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end})
+        self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
+                                        "caption": f"{holes} × {hole} holes"})
+        end = f" → {from_si(z.port_D_end, u.length, 'length'):.3g}" if math.isfinite(z.port_D_end) else ""
+        self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end,
+                                     "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}"})
 
         self._show_throat()
         self.nozzle.set("Expansion ratio", f"{z.ER:.2f}",
@@ -427,7 +430,8 @@ class SizingPage(QWidget):
             self.nozzle.set("Throat diameter", u.text(throat, "length"), how)
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
         bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
-        self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER)})
+        self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
+                                      "caption": f"{u.text(throat, 'length')} throat"})
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
                  f"expansion ratio {v['ER']:.2f}", f"{v['holes']} holes", f"port {u.text(v['port_D'], 'length')}"]

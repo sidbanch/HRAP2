@@ -10,12 +10,13 @@ from PySide6.QtWidgets import QWidget
 from hrap.gui.viz import DARK_VIZ, LIGHT_VIZ
 
 SIZE = 104  # px, square drawing area of each sketch
+CAPTION_H = 18
 
 
 class Sketch(QWidget):
-    def __init__(self, width: int = SIZE):
+    def __init__(self, width: int = int(SIZE * 1.3)):
         super().__init__()
-        self.setFixedSize(width, SIZE)
+        self.setFixedSize(width, SIZE + CAPTION_H)
         self._colors = dict(DARK_VIZ)
         self._data: dict | None = None
 
@@ -35,7 +36,11 @@ class Sketch(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self.draw(p, QRectF(self.rect()).adjusted(2, 2, -2, -2), **self._data)
+        data = dict(self._data)
+        caption = data.pop("caption")
+        self.draw(p, QRectF(2, 2, self.width() - 4, SIZE - 4), **data)
+        p.setPen(self.color("muted"))
+        p.drawText(QRectF(0, SIZE, self.width(), CAPTION_H), Qt.AlignmentFlag.AlignCenter, caption)
 
     def draw(self, p: QPainter, r: QRectF, **data):
         raise NotImplementedError
@@ -90,21 +95,22 @@ class NozzleSketch(Sketch):
         l_in = rc - rt  # tan 45° = 1
         l_out = (re - rt) / math.tan(math.radians(15))
         lip = 0.15 * bore  # a short stretch of chamber wall before the converging section
-        outer = max(rc, re)
-        px = min(r.width() / (lip + l_in + l_out), r.height() / (2.3 * outer))
+        px = min(r.width() / (lip + l_in + l_out), r.height() / (2 * max(rc, re)))
         x0 = r.center().x() - 0.5 * (lip + l_in + l_out) * px
         y0 = r.center().y()
         xs = [x0, x0 + lip * px, x0 + (lip + l_in) * px, x0 + (lip + l_in + l_out) * px]
         radii = [rc, rc, rt, re]
-        wall = 0.15 * outer * px
-        for sign in (-1, 1):
-            path = QPainterPath(QPointF(xs[0], y0 + sign * (outer * px + wall)))
-            for x, rad in zip(xs, radii):
-                path.lineTo(x, y0 + sign * rad * px)
-            path.lineTo(xs[-1], y0 + sign * (outer * px + wall))
-            path.closeSubpath()
-            p.setPen(QPen(self.color("outline"), 1.0))
-            p.setBrush(self.color("plate"))
-            p.drawPath(path)
+        top = [QPointF(x, y0 - rad * px) for x, rad in zip(xs, radii)]
+        bottom = [QPointF(x, y0 + rad * px) for x, rad in zip(xs, radii)]
+        gas = QPainterPath(top[0])
+        for pt in top[1:] + bottom[::-1]:
+            gas.lineTo(pt)
+        gas.closeSubpath()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.color("tank_empty"))
+        p.drawPath(gas)
+        p.setPen(QPen(self.color("outline"), 1.6))
+        for wall in (top, bottom):
+            p.drawPolyline(wall)
         p.setPen(QPen(self.color("muted"), 1.0, Qt.PenStyle.DashLine))
         p.drawLine(QPointF(xs[0], y0), QPointF(xs[-1], y0))
