@@ -148,16 +148,16 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border: 1px solid #e06c75;
             border-radius: 6px;
         }}
-        QTabWidget#pageTabs::pane {{ border: none; border-top: 1px solid {colors['border']}; }}
+        QTabWidget#pageTabs::pane {{ border: none; }}
         QTabWidget#pageTabs > QTabBar::tab {{
             padding: 8px 22px;
             font-weight: 600;
             color: {colors['disabled']};
             background: transparent;
             border: none;
-            border-bottom: 2px solid transparent;
+            border-top: 2px solid transparent;
         }}
-        QTabWidget#pageTabs > QTabBar::tab:selected {{ color: {colors['text']}; border-bottom: 2px solid {accent}; }}
+        QTabWidget#pageTabs > QTabBar::tab:selected {{ color: {colors['text']}; border-top: 2px solid {accent}; }}
         QTabWidget#pageTabs > QTabBar::tab:hover {{ color: {colors['text']}; }}
         QStatusBar {{ background: {colors['alt']}; }}
         QProgressBar {{

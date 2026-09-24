@@ -275,6 +275,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
         self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setDrawBase(False)
         self.tabs.addTab(self.sizing_page, "Sizing")
         self.tabs.addTab(splitter, "Simulation")
         self.tabs.addTab(self.mass_page, "Mass && export")
