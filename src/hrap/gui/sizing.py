@@ -6,6 +6,7 @@ from typing import Callable, cast
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -55,14 +56,14 @@ class FieldGrid(QGridLayout):
         self.setColumnStretch(1, 1)
         self._rows = 0
 
-    def add(self, label: str, field: QWidget, unit: str = "", muted: bool = False) -> list[QWidget]:
+    def add(self, label: str, field: QWidget, unit: str = "", muted: bool = False, span: bool = False) -> list[QWidget]:
         """Add a row and return its widgets, so the row can be hidden."""
         name = QLabel(label)
         if muted:
             name.setObjectName("cardLabel")
         self.addWidget(name, self._rows, 0)
         row: list[QWidget] = [name, field]
-        if isinstance(field, (UnitRow, PlainComboBox)):
+        if span or isinstance(field, (UnitRow, PlainComboBox)):
             self.addWidget(field, self._rows, 1, 1, 2)
         else:
             self.addWidget(field, self._rows, 1)
@@ -237,7 +238,17 @@ class SizingPage(QWidget):
         self._hole_D_label = inj_form.add("Hole diameter", self.hole_D)[0]
         self._swirler_rows = [*inj_form.add("Inlet ports", self.sw_ports), *inj_form.add("Inlet port diameter", self.sw_D_port),
                               *inj_form.add("Port offset from axis", self.sw_R_in)]
-        inj_form.add("Cd", self.inj_Cd)
+        self.sw_cd_geom = QCheckBox("From geometry")
+        self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
+                                   "Untick it to type a Cd measured in a cold flow.")
+        self.sw_cd_geom.toggled.connect(self._on_motor_edited)
+        cd_row = QWidget()
+        cd_layout = QHBoxLayout(cd_row)
+        cd_layout.setContentsMargins(0, 0, 0, 0)
+        cd_layout.setSpacing(6)
+        cd_layout.addWidget(self.inj_Cd, 1)
+        cd_layout.addWidget(self.sw_cd_geom)
+        inj_form.add("Cd", cd_row, span=True)
         inj_form.add("Flow model", self.inj_model)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
                                           "Holes", "Liquid lasts"], InjectorSketch(), inj_form)
@@ -380,9 +391,9 @@ class SizingPage(QWidget):
         self.hole_D.set_display(from_si(values["hole_D"], self.hole_D.unit.currentText(), "length"))
         self.inj_Cd.setValue(values["inj_Cd"])
         self.inj_Cd.setEnabled(values["inj_Cd_editable"])
-        self.inj_Cd.setToolTip("" if values["inj_Cd_editable"] else
-                               "Worked out from the swirler geometry. To type a measured Cd instead,\n"
-                               "untick From geometry next to Injector Cd on the Simulation tab.")
+        self.inj_Cd.setToolTip("" if values["inj_Cd_editable"] else "Worked out from the swirler geometry.")
+        self.sw_cd_geom.setChecked(values["cd_from_geometry"])
+        self.sw_cd_geom.setVisible(values["inj_type"] == "Swirler")
         self._swirler = values["inj_type"] == "Swirler"
         self.inj_type.setCurrentText(values["inj_type"])
         self.sw_ports.setValue(values["sw_ports"])
@@ -417,6 +428,7 @@ class SizingPage(QWidget):
             "holes": self.holes.value(),
             "P_cmbr_max": self.sweep.chamber_limit(),
             "inj_type": self.inj_type.currentText(),
+            "cd_from_geometry": self.sw_cd_geom.isChecked(),
             "sw_ports": self.sw_ports.value(),
             "sw_D_port": to_si(self.sw_D_port.spin.value(), self.sw_D_port.unit.currentText(), "length"),
             "sw_R_in": to_si(self.sw_R_in.spin.value(), self.sw_R_in.unit.currentText(), "length"),

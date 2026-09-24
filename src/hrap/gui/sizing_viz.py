@@ -122,7 +122,7 @@ class InjectorSketch(Sketch):
         _circle(p, c, 2 * chamber * px)
 
         # The swirl: flow enters along each channel toward the chamber, so it turns the same way.
-        arc_r = 0.5 * (0.5 * exit + chamber) * px
+        arc_r = 0.5 * (math.sqrt(1.0 - fill) * 0.5 * exit + chamber) * px  # in the liquid ring around the air core
         spin = QPen(self.color("overlay"), 1.2)
         spin.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(spin)

@@ -1455,6 +1455,7 @@ class MainWindow(QMainWindow):
             "sw_D_port": self._len_si(self.sw_D_port),
             "sw_R_in": self._len_si(self.sw_R_in),
             "inj_Cd_editable": not self._swirler_cd_from_geometry(),
+            "cd_from_geometry": self.sw_cd_geom.isChecked(),
             "P_cmbr_max": self._pressure_si(self.P_cmbr_max),
         })
 
@@ -1479,6 +1480,7 @@ class MainWindow(QMainWindow):
         self.sw_D_port.set_display(from_si(v["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
         self.sw_R_in.set_display(from_si(v["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
         self.inj_type.setCurrentText(v["inj_type"])
+        self.sw_cd_geom.setChecked(v["cd_from_geometry"])
         self._sync_swirl_cd()
         if not self._swirler_cd_from_geometry():
             self.inj_Cd.setValue(v["inj_Cd"])
