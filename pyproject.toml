@@ -19,11 +19,11 @@ dependencies = [
     "scipy",
     "PySide6",
     "pyqtgraph",
+    "coolprop",
 ]
 
 [project.optional-dependencies]
 advanced = [
-    "coolprop",
     "scikit-image",
     "opencv-python",
 ]
@@ -40,6 +40,7 @@ path = "src/hrap/__init__.py"
 [project.scripts]
 hrap = "hrap.gui.main:main"
 hrap-compare = "hrap.cli:compare_main"
+hrap-sweep = "hrap.cli:sweep_main"
 
 [project.urls]
 Homepage = "https://github.com/sidbanch/HRAP2"

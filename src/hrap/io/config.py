@@ -102,6 +102,9 @@ def default_cfg() -> dict[str, Any]:
         "t_burn": 0.0,
         "dt": 0.001,
         "reg_model": "Constant OF",
+        "inj_model": "SPI",
+        "inj_Cd_HEM": 0.0,
+        "dyer_kappa": 1.0,
         "source": "hrap",
         "advanced": {
             "enabled": False,
@@ -225,12 +228,12 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     prop = load_propellant(str(prop_key))
 
     adv = cfg.get("advanced") or {}
-    if get_sat_props is None and adv.get("enabled"):
-        fluid_name = str(adv.get("ox_fluid") or "")
-        if "CoolProp" in fluid_name:
-            from hrap.advanced.fluid import coolprop_sat
-            cp_fluid = "Oxygen" if "Oxygen" in fluid_name else "NitrousOxide"
-            get_sat_props = coolprop_sat(cp_fluid)
+    fluid_name = str(adv.get("ox_fluid") or "") if adv.get("enabled") else ""
+    cp_fluid = "Oxygen" if "Oxygen" in fluid_name else "NitrousOxide"
+    # HEM and Dyer take their injector flow from CoolProp, so the tank uses CoolProp too
+    if get_sat_props is None and ("CoolProp" in fluid_name or cfg.get("inj_model", "SPI") != "SPI"):
+        from hrap.advanced.fluid import coolprop_sat
+        get_sat_props = coolprop_sat(cp_fluid)
 
     grn_OD = cfg["grn_OD"] * to_si(1.0, cfg["grn_OD_unit"], "length")
     grn_ID = cfg["grn_ID"] * to_si(1.0, cfg["grn_ID_unit"], "length")
@@ -380,6 +383,12 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     if adv.get("enabled") and adv.get("grain_shape") == "star":
         from hrap.advanced.geometry import make_star_grain_fn
         s.grain_fn = make_star_grain_fn(int(adv.get("star_tips") or 6))
+    if cfg.get("inj_model", "SPI") != "SPI":
+        from hrap.advanced.injector import hem_flux_table
+        s.inj_model = str(cfg["inj_model"])
+        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or cfg["inj_Cd"])
+        s.dyer_kappa = float(cfg.get("dyer_kappa") or 1.0)
+        s.hem_flux = hem_flux_table(cp_fluid)
     return s, x
 
 
