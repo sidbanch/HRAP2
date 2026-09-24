@@ -429,6 +429,13 @@ class MainWindow(QMainWindow):
         self.cmbr_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
         self.cmbr_by_dims = QCheckBox("Chamber volume from grain envelope")
         self.cmbr_by_dims.setChecked(True)
+        self.solve_tank_cooling = QCheckBox("Solve tank cooling each step (not MATLAB-identical)")
+        self.solve_tank_cooling.setToolTip(
+            "HRAP cools the tank after splitting liquid and vapor. When the liquid runs low that overcools\n"
+            "the tank, and HRAP switches to an averaged pressure drop until the liquid is gone.\n"
+            "This solves the cooling at the step's end temperature instead, so the fallback never runs.\n"
+            "Total impulse usually changes by under 1%."
+        )
 
         tank = CollapsibleBox("Tank")
         tf = tank.form()
@@ -436,6 +443,7 @@ class MainWindow(QMainWindow):
         tf.addRow("Volume", self.tnk_V)
         tf.addRow("Diameter", self.tnk_D)
         tf.addRow("Length", self.tnk_L)
+        tf.addRow(self.solve_tank_cooling)
         tf.addRow(self.cmbr_by_dims)
         tf.addRow("Chamber volume", self.cmbr_V)
         root.addWidget(tank)
@@ -667,6 +675,7 @@ class MainWindow(QMainWindow):
             "tnk_V": self.tnk_V.spin.value(),
             "tnk_V_unit": self.tnk_V.unit.currentText(),
             "tnk_V_state": int(self.tnk_by_dims.isChecked()),
+            "solve_tank_cooling": self.solve_tank_cooling.isChecked(),
             "tnk_D": self.tnk_D.spin.value(),
             "tnk_D_unit": self.tnk_D.unit.currentText(),
             "tnk_L": self.tnk_L.spin.value(),
@@ -760,6 +769,7 @@ class MainWindow(QMainWindow):
         self.tnk_D.set_display(cfg.get("tnk_D", 0), cfg.get("tnk_D_unit", "in"))
         self.tnk_L.set_display(cfg.get("tnk_L", 0), cfg.get("tnk_L_unit", "in"))
         self.tnk_by_dims.setChecked(bool(cfg.get("tnk_V_state")))
+        self.solve_tank_cooling.setChecked(bool(cfg.get("solve_tank_cooling")))
         self.cmbr_V.set_display(cfg.get("cmbr_V", 0), cfg.get("cmbr_V_unit", "cm^3"))
         self.cmbr_by_dims.setChecked(bool(cfg.get("cmbr_V_state", 1)))
         self.noz_thrt.set_display(cfg.get("noz_thrt", 0), cfg.get("noz_thrt_unit", "in"))

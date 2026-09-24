@@ -72,6 +72,7 @@ class Settings:
     inj_CdA_HEM: float = 0.0
     dyer_kappa: float = 1.0
     hem_flux: Optional[Callable[[float, float], float]] = None
+    solve_tank_cooling: bool = False  # cool the tank at the step's end temperature instead of HRAP's fallback
 
 
 @dataclass
@@ -104,6 +105,7 @@ class State:
     dm_g: float = 0.0
     m_t: float = 0.0
     cg: float = 0.0
+    dT_cool: float = 0.0  # last step's tank cooling (K), the next step's starting guess
 
 
 @dataclass

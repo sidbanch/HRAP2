@@ -105,6 +105,7 @@ def default_cfg() -> dict[str, Any]:
         "inj_model": "SPI",
         "inj_Cd_HEM": 0.0,
         "dyer_kappa": 1.0,
+        "solve_tank_cooling": False,
         "source": "hrap",
         "advanced": {
             "enabled": False,
@@ -383,6 +384,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     if adv.get("enabled") and adv.get("grain_shape") == "star":
         from hrap.advanced.geometry import make_star_grain_fn
         s.grain_fn = make_star_grain_fn(int(adv.get("star_tips") or 6))
+    s.solve_tank_cooling = bool(cfg.get("solve_tank_cooling"))
     if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
         s.inj_model = str(cfg["inj_model"])
