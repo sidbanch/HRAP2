@@ -40,6 +40,7 @@ class PlainSpinBox(_NoWheel, QSpinBox):
         super().__init__(parent)
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMinimumWidth(64)  # Qt otherwise reserves room for the largest allowed value
 
 
 class PlainDoubleSpinBox(_NoWheel, QDoubleSpinBox):
@@ -47,6 +48,7 @@ class PlainDoubleSpinBox(_NoWheel, QDoubleSpinBox):
         super().__init__(parent)
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMinimumWidth(64)  # Qt otherwise reserves room for the largest allowed value
 
 
 class PlainComboBox(_NoWheel, QComboBox):

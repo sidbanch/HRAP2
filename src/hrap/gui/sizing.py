@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Callable, cast
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.gui.sweep import SweepPanel
-from hrap.gui.widgets import PlainDoubleSpinBox, UnitRow
-from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, DisplayUnits, from_si, to_si
+from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, UnitRow
+from hrap.io.propellant import list_propellants
+from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
 
 
 class Card(QFrame):
@@ -62,6 +63,8 @@ class Card(QFrame):
 
 
 class SizingPage(QWidget):
+    motor_edited = Signal()  # a motor field on this page changed; the Simulation settings should follow
+
     def __init__(
         self,
         get_cfg: Callable[[], dict],
@@ -98,12 +101,54 @@ class SizingPage(QWidget):
         form.addRow("O/F", self.OF)
         form.addRow("Starting port diameter", self.port_D)
         tl.addLayout(form)
-        note = QLabel("Tank, injector hole, propellant and efficiencies come from the Simulation tab.")
-        note.setObjectName("cardLabel")
-        note.setWordWrap(True)
-        tl.addWidget(note)
 
-        self.motor = Card("From the motor", ["Tank", "Liquid oxidizer", "Injector", "Propellant"])
+        # Motor inputs that drive sizing. They mirror the Simulation tab's fields (MainWindow keeps them in step).
+        self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 1)
+        self.tank_T = UnitRow(TEMP_ITEMS, "C", 2)
+        self.fill = PlainDoubleSpinBox(); self.fill.setRange(0, 100); self.fill.setDecimals(1); self.fill.setSuffix(" %")
+        self.hole_D = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(3)
+        self.inj_model = PlainComboBox(); self.inj_model.addItems(["SPI", "HEM", "Dyer"])
+        self.propellant = PlainComboBox()
+        for item in list_propellants():
+            self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
+        self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0, 100); self.cstar.setDecimals(1); self.cstar.setSuffix(" %")
+        self.noz_Cd = PlainDoubleSpinBox(); self.noz_Cd.setRange(0, 1); self.noz_Cd.setDecimals(3)
+        self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
+        self.cstar.setToolTip("C* efficiency: how completely the propellants burn. Small hybrids are usually 85–95%.")
+        self.noz_Cd.setToolTip("Throat Cd: how much of the throat area flows, about 0.97–0.99 for a smooth throat.")
+        self.tank_P = QLabel("—")
+        self.ox_liquid = QLabel("—")
+        motor = QFrame()
+        motor.setObjectName("sizingCard")
+        ml = QVBoxLayout(motor)
+        ml.setContentsMargins(14, 12, 14, 12)
+        heading = QLabel("Motor")
+        heading.setObjectName("cardTitle")
+        ml.addWidget(heading)
+        mform = QFormLayout()
+        mform.addRow("Tank volume", self.tank_V)
+        mform.addRow("Tank temperature", self.tank_T)
+        mform.addRow("Fill", self.fill)
+        mform.addRow("Tank pressure", self.tank_P)
+        mform.addRow("Liquid oxidizer", self.ox_liquid)
+        mform.addRow("Injector hole", self.hole_D)
+        mform.addRow("Injector Cd", self.inj_Cd)
+        mform.addRow("Injector model", self.inj_model)
+        mform.addRow("Propellant", self.propellant)
+        mform.addRow("C* efficiency", self.cstar)
+        mform.addRow("Throat Cd", self.noz_Cd)
+        ml.addLayout(mform)
+        shared = QLabel("Shared with the Simulation tab, which has the rest of the motor.")
+        shared.setObjectName("cardLabel")
+        shared.setWordWrap(True)
+        ml.addWidget(shared)
+        self.motor_fields = (self.tank_V.spin, self.tank_V.unit, self.tank_T.spin, self.tank_T.unit, self.fill,
+                             self.hole_D.spin, self.hole_D.unit, self.inj_Cd, self.inj_model, self.propellant,
+                             self.cstar, self.noz_Cd)
+        for w in self.motor_fields:
+            signal = w.currentIndexChanged if isinstance(w, PlainComboBox) else w.valueChanged
+            signal.connect(self._on_motor_edited)
         self.injector = Card("Injector", ["Injector ΔP", "Oxidizer flow", "Flow per hole", "Holes needed", "Rounded"])
         self.nozzle = Card("Nozzle", ["Throat diameter", "Expansion ratio", "Exit diameter", "C*"])
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "Port at liquid burnout",
@@ -131,7 +176,7 @@ class SizingPage(QWidget):
         left = QVBoxLayout()
         left.setSpacing(12)
         left.addWidget(targets)
-        left.addWidget(self.motor)
+        left.addWidget(motor)
         left.addStretch(1)
         results = QGridLayout()
         results.setSpacing(12)
@@ -192,6 +237,38 @@ class SizingPage(QWidget):
         if self.isVisible():
             self.refresh()
 
+    def _on_motor_edited(self, *_):
+        if not self._loading:
+            self.motor_edited.emit()
+
+    def show_motor(self, values: dict):
+        """Load the Simulation tab's current values into this page's motor fields, without echoing back."""
+        self._loading = True
+        self.tank_V.set_display(from_si(values["tank_V"], self.tank_V.unit.currentText(), "volume"))
+        self.tank_V.setEnabled(values["tank_V_editable"])
+        self.tank_T.set_display(from_si(values["tank_T"], self.tank_T.unit.currentText(), "temperature"))
+        self.fill.setValue(100.0 * values["fill"])
+        self.hole_D.set_display(from_si(values["hole_D"], self.hole_D.unit.currentText(), "length"))
+        self.inj_Cd.setValue(values["inj_Cd"])
+        self.inj_model.setCurrentText(values["inj_model"])
+        self.propellant.setCurrentIndex(max(self.propellant.findData(values["prop_id"]), 0))
+        self.cstar.setValue(values["cstar"])
+        self.noz_Cd.setValue(values["noz_Cd"])
+        self._loading = False
+
+    def motor_values(self) -> dict:
+        return {
+            "tank_V": to_si(self.tank_V.spin.value(), self.tank_V.unit.currentText(), "volume"),
+            "tank_T": to_si(self.tank_T.spin.value(), self.tank_T.unit.currentText(), "temperature"),
+            "fill": self.fill.value() / 100.0,
+            "hole_D": to_si(self.hole_D.spin.value(), self.hole_D.unit.currentText(), "length"),
+            "inj_Cd": self.inj_Cd.value(),
+            "inj_model": self.inj_model.currentText(),
+            "prop_id": self.propellant.currentData(),
+            "cstar": self.cstar.value(),
+            "noz_Cd": self.noz_Cd.value(),
+        }
+
     def refresh(self):
         if self._loading:
             return
@@ -216,12 +293,8 @@ class SizingPage(QWidget):
         self.error.hide()
         self.apply_btn.setEnabled(True)
 
-        hole_D = to_si(float(cfg["inj_D"]), cfg["inj_D_unit"], "length")
-        model = cfg.get("inj_model", "SPI")
-        self.motor.set("Tank", f"{u.text(z.P_tnk, 'pressure')} at start")
-        self.motor.set("Liquid oxidizer", u.text(z.ox_liquid, "mass"))
-        self.motor.set("Injector", f"Ø{u.text(hole_D, 'length', 3)} holes, Cd {float(cfg['inj_Cd']):.2f}, {model}")
-        self.motor.set("Propellant", str(cfg.get("prop_nm") or cfg.get("prop_id")))
+        self.tank_P.setText(u.text(z.P_tnk, "pressure"))
+        self.ox_liquid.setText(u.text(z.ox_liquid, "mass"))
 
         t = self.targets()
         holes = max(1, round(z.holes))

@@ -90,7 +90,7 @@ TRACES = [
     ("CG", "cg", "length"),
 ]
 PLOT_LABELS = {
-    "force": "Thrust", "pressure": "Pressure (absolute)", "ratio": "O/F",
+    "force": "Thrust", "pressure": "Pressure", "ratio": "O/F",
     "mass_flow": "Mass flow", "speed": "Regression rate", "length": "Length", "mass": "Mass",
     "temperature": "Temperature",
 }
@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([500, 900])
         self.sizing_page = SizingPage(self._form_to_cfg, lambda: self.display_units, self._apply_sizing)
+        self.sizing_page.motor_edited.connect(self._sizing_to_form)
         self.mass_page = self._make_mass_page()
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
@@ -568,6 +569,8 @@ class MainWindow(QMainWindow):
         width = max(label.sizeHint().width() for label in labels)
         for label in labels:
             label.setMinimumWidth(width)
+        # Never let the splitter squeeze the panel narrower than its fields; there's no horizontal scrollbar.
+        scroll.setMinimumWidth(inner.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width() + 4)
         root.addStretch(1)
         scroll.setWidget(inner)
         wl.addWidget(scroll, 1)
@@ -661,15 +664,26 @@ class MainWindow(QMainWindow):
         mid.addWidget(self.trace_list)
         mid.addWidget(self.plot)
         mid.setSizes([160, 600])
-        layout.addWidget(mid, 3)
-        layout.addWidget(self.plot_readout)
+        plots = QWidget()
+        plots_l = QVBoxLayout(plots)
+        plots_l.setContentsMargins(0, 0, 0, 0)
+        plots_l.addWidget(mid, 1)
+        plots_l.addWidget(self.plot_readout)
+        plots.setMinimumHeight(260)
         self.motor_panel = MotorPanel()
         self.viz = self.motor_panel.viz
-        layout.addWidget(self.motor_panel)
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        layout.addWidget(self.summary, 2)
+        self.summary.setMinimumHeight(60)
+        # Drag the dividers to trade plot height for the diagram or the summary.
+        column = QSplitter(Qt.Orientation.Vertical)
+        column.setChildrenCollapsible(False)
+        for part, stretch in ((plots, 5), (self.motor_panel, 3), (self.summary, 2)):
+            column.addWidget(part)
+            column.setStretchFactor(column.indexOf(part), stretch)
+        column.setSizes([520, 300, 120])
+        layout.addWidget(column, 1)
         return box
 
     def _form_to_cfg(self) -> dict:
@@ -848,6 +862,7 @@ class MainWindow(QMainWindow):
         if adv.get("star_tips"):
             self.star_tips.setValue(int(adv["star_tips"]))
         self.live_chem.setChecked(bool(adv.get("live_chem")))
+        self._form_to_sizing()
         self.sizing_page.set_targets(cfg.get("sizing") or {}, cfg)
         self._update_derived_labels()
 
@@ -1321,7 +1336,51 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, _index: int):
         if self.tabs.currentWidget() is self.sizing_page:
+            self._form_to_sizing()
             self.sizing_page.refresh()
+
+    def _form_to_sizing(self):
+        fill, T, _m_o = self._initial_fill_and_T()
+        _L, _d, V = self._tank_geometry()
+        self.sizing_page.show_motor({
+            "tank_V": V,
+            "tank_V_editable": not self.tnk_by_dims.isChecked(),
+            "tank_T": T,
+            "fill": fill,
+            "hole_D": self._len_si(self.inj_D),
+            "inj_Cd": self.inj_Cd.value(),
+            "inj_model": self.inj_model.currentText(),
+            "prop_id": self.prop_combo.currentData(),
+            "cstar": self.cstar.value(),
+            "noz_Cd": self.noz_Cd.value(),
+        })
+
+    def _sizing_to_form(self):
+        """Write the Sizing page's motor fields into the Simulation settings, in whatever mode they use."""
+        v = self.sizing_page.motor_values()
+        if not self.tnk_by_dims.isChecked():
+            self.tnk_V.set_display(from_si(v["tank_V"], self.tnk_V.unit.currentText(), "volume"))
+        ox = nox(v["tank_T"])
+        if self.tnk_dd.currentText() == "Starting Tank Temperature":
+            self.tnk_cond.setValue(from_si(v["tank_T"], self.T_tnk_unit.currentText(), "temperature"))
+        else:
+            self.tnk_cond.setValue(from_si(ox.Pv, self.T_tnk_unit.currentText(), "pressure"))
+        if self.fill_dd.currentText() == "Tank Fill Percentage":
+            self.fill.setValue(100.0 * v["fill"])
+        else:
+            _L, _d, V = self._tank_geometry()
+            m_o = v["fill"] * V * ox.rho_l + (1.0 - v["fill"]) * V * ox.rho_v
+            self.fill.setValue(from_si(m_o, self.fill_unit.currentText(), "mass"))
+        self.inj_D.set_display(from_si(v["hole_D"], self.inj_D.unit.currentText(), "length"))
+        self.inj_Cd.setValue(v["inj_Cd"])
+        self.inj_model.setCurrentText(v["inj_model"])
+        self.prop_combo.setCurrentIndex(max(self.prop_combo.findData(v["prop_id"]), 0))
+        self.cstar.setValue(v["cstar"])
+        self.noz_Cd.setValue(v["noz_Cd"])
+        self._invalidate_results()
+        self._update_derived_labels()
+        self._form_to_sizing()
+        self.sizing_page.refresh()
 
     def _apply_sizing(self, values: dict):
         """Copy a sizing result into the motor: throat, exit, hole count, grain and O/F."""
@@ -1451,7 +1510,7 @@ class MainWindow(QMainWindow):
                 plot.setLabel("bottom", "Time", units="s")
                 self._plots[quantity] = plot
                 self._plot_widgets[quantity] = widget
-                self.plot.addTab(widget, PLOT_LABELS[quantity].replace(" (absolute)", ""))
+                self.plot.addTab(widget, PLOT_LABELS[quantity])
                 viewport = widget.viewport()
                 self._plot_viewports.append(viewport)
                 viewport.installEventFilter(self)

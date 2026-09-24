@@ -294,9 +294,9 @@ class MotorVizWidget(QWidget):
             noz_exit=0.04,
             fill_frac=0.95,
         )
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(300)  # below this the spec blocks leave no room for the drawing
         self.setMaximumHeight(480)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_framed(self, framed: bool) -> None:
         self._framed = framed
