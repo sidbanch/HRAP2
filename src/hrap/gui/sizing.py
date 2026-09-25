@@ -21,6 +21,7 @@ from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.engine.swirl import swirl_A, swirl_fill, swirl_port_D
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
+from hrap.gui.swirler_options import SwirlerOptions, Target
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants
@@ -312,6 +313,8 @@ class SizingPage(QWidget):
         buttons.addWidget(self.apply_summary, 1)
         buttons.addWidget(self.apply_btn)
         self.sweep = SweepPanel(self.sized_cfg, get_units, self._on_pick)
+        self.swirler_options = SwirlerOptions()
+        self.swirler_options.picked.connect(self._on_layout_picked)
         self.sweep.limit_edited.connect(self._on_motor_edited)
 
         intro = QLabel("Sizes the injector, nozzle and grain for conditions at the start of the burn, using the "
@@ -331,9 +334,10 @@ class SizingPage(QWidget):
         results = QGridLayout()
         results.setSpacing(12)
         results.addWidget(self.injector, 0, 0, 1, 2)
-        results.addWidget(self.grain, 1, 0, 1, 2)
-        results.addWidget(self.nozzle, 2, 0)
-        results.addWidget(self.performance, 2, 1)
+        results.addWidget(self.swirler_options, 1, 0, 1, 2)
+        results.addWidget(self.grain, 2, 0, 1, 2)
+        results.addWidget(self.nozzle, 3, 0)
+        results.addWidget(self.performance, 3, 1)
         right = QVBoxLayout()
         right.setSpacing(12)
         right.addWidget(self.limit_warning)
@@ -393,6 +397,7 @@ class SizingPage(QWidget):
         self.injector.show_row("Holes", not solve and not self._by_holes())  # with a chosen count it's an input
         self.injector.show_row("Inlet port diameter", solve)
         self.injector.show_row("Swirler Cd", solve)
+        self.swirler_options.setVisible(solve)
         for w in self._OF_row:
             w.setVisible(not self._by_length() or self._by_OF())
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
@@ -515,6 +520,7 @@ class SizingPage(QWidget):
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
             self._result = self._cfg = None
             self.sweep.update_motor(None, 0.0)
+            self.swirler_options.update_target(None)
             self.error.setText(str(exc) or type(exc).__name__)
             self.error.show()
             self.apply_btn.setEnabled(False)
@@ -599,6 +605,8 @@ class SizingPage(QWidget):
             R_in = to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length")
             ports = int(cfg["sw_ports"])
             if solve:
+                self.swirler_options.update_target(Target(z.inj_CdA, z.mdot_o, z.OF if t.grain_L else None, z.OF_exp,
+                                                          z.ox_liquid, holes, R_in))
                 cd = z.inj_CdA / (holes * 0.25 * math.pi * self._hole_D(cfg) ** 2)
                 self.injector.set("Swirler Cd", f"{cd:.3f}",
                                   f"Total CdA ÷ ({holes} × area of the {hole} exit), the Cd the ports have to give.")
@@ -693,6 +701,16 @@ class SizingPage(QWidget):
     def set_theme(self, name: str):
         for card in (self.injector, self.nozzle, self.grain):
             card.sketch.set_theme(name)
+
+    def _on_layout_picked(self, exit_D: float, ports: int, port_D: float):
+        """Load a swirler layout into the injector and show how that exact swirler does."""
+        self._loading = True
+        self.hole_D.set_display(from_si(exit_D, self.hole_D.unit.currentText(), "length"))
+        self.sw_ports.setValue(ports)
+        self.sw_D_port.set_display(from_si(port_D, self.sw_D_port.unit.currentText(), "length"))
+        self._loading = False
+        self.motor_edited.emit()
+        self.size_from.setCurrentIndex(1)
 
     def _on_pick(self, throat: float):
         self._picked_throat = throat

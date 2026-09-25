@@ -42,6 +42,7 @@ class Sizing:
     inj_CdA: float        # m², total injector Cd × area for mdot_o, with the motor's injector model
     holes: float          # exact number of holes for mdot_o (the fixed count when one was given)
     burn_time: float      # s, liquid burn time at the starting flow (the target when no hole count was given)
+    OF_exp: float         # with the grain length fixed, O/F grows as oxidizer flow^OF_exp (1 − regression exponent)
     k: float              # ratio of specific heats from the combustion table
     cstar: float          # m/s, including C* efficiency
     throat_D: float       # m
@@ -125,6 +126,7 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         inj_CdA=s.inj_CdA * mdot_o / flow_per_hole,  # the flow is proportional to CdA in every injector model
         holes=mdot_o / flow_per_hole,
         burn_time=burn_time,
+        OF_exp=1.0 - n,
         k=k,
         cstar=x.cstar,
         throat_D=throat_D,
