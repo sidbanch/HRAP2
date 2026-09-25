@@ -1557,11 +1557,13 @@ class MainWindow(QMainWindow):
         self.sizing_page.refresh()
 
     def _apply_sizing(self, values: dict):
-        """Copy a sizing result into the motor: throat, exit, hole count, grain length and O/F."""
+        """Copy a sizing result into the motor: throat, exit, hole count, swirler port size, grain length and O/F."""
         self.noz_thrt.set_display(from_si(values["throat_D"], self.noz_thrt.unit.currentText(), "length"))
         self.noz_mode.setCurrentText("Nozzle Expansion Ratio")
         self.noz_ex.setValue(values["ER"])
         self.inj_N.setValue(values["holes"])
+        if values["sw_D_port"]:
+            self.sw_D_port.set_display(from_si(values["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
         if values.get("grain_L") and math.isfinite(values["grain_L"]):
             self.grn_L.set_display(from_si(values["grain_L"], self.grn_L.unit.currentText(), "length"))
         self.const_OF.setValue(values["OF"])

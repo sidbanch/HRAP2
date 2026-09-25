@@ -32,3 +32,10 @@ def swirl_fill(A: float) -> float:
 def swirl_cd(D_exit: float, ports: int, D_port: float, R_in: float) -> float:
     phi = swirl_fill(swirl_A(D_exit, ports, D_port, R_in))
     return phi * math.sqrt(phi / (2.0 - phi))
+
+
+def swirl_port_D(D_exit: float, ports: int, R_in: float, cd: float) -> float:
+    """Inlet port diameter that gives a Cd of cd. The ports can be at most twice their offset across."""
+    if swirl_cd(D_exit, ports, 2.0 * R_in, R_in) < cd:
+        raise ValueError("No port size reaches this flow. Widen the exit, add ports or move them toward the axis.")
+    return brentq(lambda d: swirl_cd(D_exit, ports, d, R_in) - cd, 1e-4 * R_in, 2.0 * R_in)

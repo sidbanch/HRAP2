@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
-from hrap.engine.swirl import swirl_A, swirl_fill
+from hrap.engine.swirl import swirl_A, swirl_fill, swirl_port_D
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
@@ -151,6 +151,8 @@ class SizingPage(QWidget):
         self._result: Sizing | None = None
         self._cfg: dict | None = None
         self._picked_throat: float | None = None
+        self._port_D: float | None = None  # swirler inlet port size solved for the flow
+        self._port_error = ""
         self._loading = False
         self._swirler = False
 
@@ -260,7 +262,9 @@ class SizingPage(QWidget):
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
         self._hole_D_row = inj_form.add("Hole diameter", self.hole_D)
-        self._swirler_rows = [*inj_form.add("Inlet ports", self.sw_ports), *inj_form.add("Inlet port diameter", self.sw_D_port),
+        ports_row = inj_form.add("Inlet ports", self.sw_ports)
+        self._sw_D_port_row = inj_form.add("Inlet port diameter", self.sw_D_port)
+        self._swirler_rows = [*ports_row,
                               *inj_form.add("Port offset from axis", self.sw_R_in)]
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
@@ -275,7 +279,8 @@ class SizingPage(QWidget):
         self._cd_row = inj_form.add("Cd", cd_row, span=True)
         inj_form.add("Flow model", self.inj_model)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
-                                          "Holes", "Total CdA", "Liquid lasts"], InjectorSketch(), inj_form)
+                                          "Holes", "Total CdA", "Inlet port diameter", "Swirler Cd", "Liquid lasts"],
+                             InjectorSketch(), inj_form)
         self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.nozzle.show_row("Sized throat", False)
         grain_form = FieldGrid()
@@ -368,23 +373,26 @@ class SizingPage(QWidget):
     def _by_OF(self) -> bool:
         return self.size_from.currentIndex() == 2
 
-    def _geometry_used(self) -> bool:
-        """A burn time or O/F sets the flow, and a swirler's geometry then only matters for its count."""
-        return self._by_holes() or not self._swirler
+    def _solve_port(self) -> bool:
+        """A burn time or O/F sets the flow, and the swirler's inlet port size is sized to it."""
+        return self._swirler and not self._by_holes()
 
     def _show_size_from_rows(self):
-        geometry = self._geometry_used()
+        solve = self._solve_port()
         for w in self._burn_time_row:
             w.setVisible(self.size_from.currentIndex() == 0)
         for w in self._holes_row:
             w.setVisible(self._by_holes())
         for w in self._swirler_rows:
-            w.setVisible(self._swirler and geometry)
-        for w in (*self._hole_D_row, *self._cd_row):
-            w.setVisible(geometry)
-        self.injector.sketch.setVisible(geometry)
-        self.injector.show_row("Flow per hole", geometry)
-        self.injector.show_row("Holes", geometry and not self._by_holes())  # with a chosen count it's an input
+            w.setVisible(self._swirler)
+        for w in self._sw_D_port_row:
+            w.setVisible(self._swirler and not solve)
+        for w in self._cd_row:
+            w.setVisible(not solve)
+        self.injector.show_row("Flow per hole", not solve)
+        self.injector.show_row("Holes", not solve and not self._by_holes())  # with a chosen count it's an input
+        self.injector.show_row("Inlet port diameter", solve)
+        self.injector.show_row("Swirler Cd", solve)
         for w in self._OF_row:
             w.setVisible(not self._by_length() or self._by_OF())
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
@@ -518,6 +526,14 @@ class SizingPage(QWidget):
             self._picked_throat = None
             self.sweep.clear_pick()
         self._result, self._cfg = z, cfg
+        self._port_D = None
+        if self._solve_port():
+            exit_D = self._hole_D(cfg)
+            try:
+                self._port_D = swirl_port_D(exit_D, int(cfg["sw_ports"]), to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length"),
+                                            z.inj_CdA / (self.holes.value() * 0.25 * math.pi * exit_D ** 2))
+            except ValueError as exc:
+                self._port_error = str(exc)
         self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
         self.apply_btn.setEnabled(True)
@@ -527,8 +543,8 @@ class SizingPage(QWidget):
 
         t = self.targets()
         holes = self._values()["holes"]
-        geometry = self._geometry_used()
-        lasts = z.ox_liquid / (holes * z.flow_per_hole) if geometry else z.burn_time
+        solve = self._solve_port()
+        lasts = z.burn_time if solve else z.ox_liquid / (holes * z.flow_per_hole)
         flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
         dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
         hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), injector_cd(cfg), cfg.get("inj_model") or "SPI"
@@ -562,14 +578,13 @@ class SizingPage(QWidget):
         cda, cda_now = u.text(z.inj_CdA, "area"), u.text(z.inj_CdA * holes / z.holes, "area")
         if t.holes:
             self.injector.set("Total CdA", cda, f"Cd × area over all your {noun}s. A cold flow measures this directly.")
-        elif not geometry:
-            self.injector.set("Total CdA", cda, "The Cd × area that gives the oxidizer flow. A cold flow measures this directly.\n"
-                                                "Pick Swirler count to size a swirler's geometry against it.")
+        elif solve:
+            self.injector.set("Total CdA", cda, "The Cd × area that gives the oxidizer flow. A cold flow measures this directly.")
         else:
             self.injector.set("Total CdA", cda,
                               f"The Cd × area over all {noun}s that gives the oxidizer flow. A cold flow measures this directly.\n"
                               f"{holes} of your {noun}s give {cda_now}.")
-        if not geometry:
+        if solve:
             self.injector.set("Liquid lasts", f"{lasts:.2f} s",
                               f"liquid oxidizer ÷ oxidizer flow = {u.text(z.ox_liquid, 'mass')} ÷ {flow} = {lasts:.2f} s.\n"
                               "The real flow falls as the tank cools, so the full simulation runs a little longer.")
@@ -583,6 +598,19 @@ class SizingPage(QWidget):
             D_port = to_si(float(cfg["sw_D_port"]), cfg["sw_D_port_unit"], "length")
             R_in = to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length")
             ports = int(cfg["sw_ports"])
+            if solve:
+                cd = z.inj_CdA / (holes * 0.25 * math.pi * self._hole_D(cfg) ** 2)
+                self.injector.set("Swirler Cd", f"{cd:.3f}",
+                                  f"Total CdA ÷ ({holes} × area of the {hole} exit), the Cd the ports have to give.")
+                if self._port_D is None:
+                    self.injector.set("Inlet port diameter", "none fits", self._port_error)
+                else:
+                    D_port = self._port_D
+                    self.injector.set("Inlet port diameter", u.text(D_port, "length"),
+                                      f"The port size that gives Cd {cd:.3f} with {ports} ports {u.text(R_in, 'length')} off the axis,\n"
+                                      "from the swirl theory for an ideal liquid (Abramovich). Measured swirlers have flowed less\n"
+                                      "than this theory, so a part drilled to this size will likely flow a little under the target.\n"
+                                      "Apply to motor copies it into the swirler.")
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "bore": bore,
@@ -651,6 +679,8 @@ class SizingPage(QWidget):
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
                  f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}"]
+        if v["sw_D_port"]:
+            parts.append(f"inlet ports {u.text(v['sw_D_port'], 'length')}")
         if math.isfinite(v["grain_L"]) and not self._by_length():
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
         parts.append(f"O/F {v['OF']:.2f}")
@@ -673,7 +703,8 @@ class SizingPage(QWidget):
         return {
             "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
-            "holes": t.holes or (max(1, round(z.holes)) if self._geometry_used() else self.holes.value()),
+            "holes": t.holes or (self.holes.value() if self._solve_port() else max(1, round(z.holes))),
+            "sw_D_port": self._port_D if self._solve_port() else None,
             "grain_L": z.grain_L,
             "OF": z.OF,
         }
@@ -686,6 +717,8 @@ class SizingPage(QWidget):
         cfg = dict(self._cfg)
         cfg.update(noz_thrt=v["throat_D"], noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=v["ER"],
                    inj_N=v["holes"], const_OF=v["OF"])
+        if v["sw_D_port"]:
+            cfg.update(sw_D_port=v["sw_D_port"], sw_D_port_unit="m")
         if math.isfinite(v["grain_L"]):
             cfg.update(grn_L=v["grain_L"], grn_L_unit="m")
         return cfg
