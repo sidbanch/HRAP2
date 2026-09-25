@@ -259,7 +259,7 @@ class SizingPage(QWidget):
         inj_form.add("Size from", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
-        self._hole_D_label = inj_form.add("Hole diameter", self.hole_D)[0]
+        self._hole_D_row = inj_form.add("Hole diameter", self.hole_D)
         self._swirler_rows = [*inj_form.add("Inlet ports", self.sw_ports), *inj_form.add("Inlet port diameter", self.sw_D_port),
                               *inj_form.add("Port offset from axis", self.sw_R_in)]
         self.sw_cd_geom = QCheckBox("From geometry")
@@ -272,7 +272,7 @@ class SizingPage(QWidget):
         cd_layout.setSpacing(6)
         cd_layout.addWidget(self.inj_Cd, 1)
         cd_layout.addWidget(self.sw_cd_geom)
-        inj_form.add("Cd", cd_row, span=True)
+        self._cd_row = inj_form.add("Cd", cd_row, span=True)
         inj_form.add("Flow model", self.inj_model)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
                                           "Holes", "Total CdA", "Liquid lasts"], InjectorSketch(), inj_form)
@@ -368,12 +368,23 @@ class SizingPage(QWidget):
     def _by_OF(self) -> bool:
         return self.size_from.currentIndex() == 2
 
+    def _geometry_used(self) -> bool:
+        """A burn time or O/F sets the flow, and a swirler's geometry then only matters for its count."""
+        return self._by_holes() or not self._swirler
+
     def _show_size_from_rows(self):
+        geometry = self._geometry_used()
         for w in self._burn_time_row:
             w.setVisible(self.size_from.currentIndex() == 0)
         for w in self._holes_row:
             w.setVisible(self._by_holes())
-        self.injector.show_row("Holes", not self._by_holes())  # with a chosen count it's an input
+        for w in self._swirler_rows:
+            w.setVisible(self._swirler and geometry)
+        for w in (*self._hole_D_row, *self._cd_row):
+            w.setVisible(geometry)
+        self.injector.sketch.setVisible(geometry)
+        self.injector.show_row("Flow per hole", geometry)
+        self.injector.show_row("Holes", geometry and not self._by_holes())  # with a chosen count it's an input
         for w in self._OF_row:
             w.setVisible(not self._by_length() or self._by_OF())
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
@@ -442,10 +453,9 @@ class SizingPage(QWidget):
         self.sw_ports.setValue(values["sw_ports"])
         self.sw_D_port.set_display(from_si(values["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
         self.sw_R_in.set_display(from_si(values["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
-        for w in self._swirler_rows:
-            w.setVisible(self._swirler)
+        self._show_size_from_rows()
         self.size_from.setItemText(1, "Swirler count" if self._swirler else "Hole count")
-        self._hole_D_label.setText("Exit diameter" if self._swirler else "Hole diameter")
+        self._hole_D_row[0].setText("Exit diameter" if self._swirler else "Hole diameter")
         self._holes_row[0].setText("Swirler count" if self._swirler else "Hole count")
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if self._swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if self._swirler else "Holes")
@@ -517,7 +527,8 @@ class SizingPage(QWidget):
 
         t = self.targets()
         holes = self._values()["holes"]
-        lasts = z.ox_liquid / (holes * z.flow_per_hole)
+        geometry = self._geometry_used()
+        lasts = z.ox_liquid / (holes * z.flow_per_hole) if geometry else z.burn_time
         flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
         dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
         hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), injector_cd(cfg), cfg.get("inj_model") or "SPI"
@@ -551,14 +562,22 @@ class SizingPage(QWidget):
         cda, cda_now = u.text(z.inj_CdA, "area"), u.text(z.inj_CdA * holes / z.holes, "area")
         if t.holes:
             self.injector.set("Total CdA", cda, f"Cd × area over all your {noun}s. A cold flow measures this directly.")
+        elif not geometry:
+            self.injector.set("Total CdA", cda, "The Cd × area that gives the oxidizer flow. A cold flow measures this directly.\n"
+                                                "Pick Swirler count to size a swirler's geometry against it.")
         else:
             self.injector.set("Total CdA", cda,
                               f"The Cd × area over all {noun}s that gives the oxidizer flow. A cold flow measures this directly.\n"
                               f"{holes} of your {noun}s give {cda_now}.")
-        self.injector.set("Liquid lasts", f"{lasts:.2f} s",
-                          f"With {holes} {noun}s the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
-                          f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
-                          "The real flow falls as the tank cools, so the full simulation runs a little longer.")
+        if not geometry:
+            self.injector.set("Liquid lasts", f"{lasts:.2f} s",
+                              f"liquid oxidizer ÷ oxidizer flow = {u.text(z.ox_liquid, 'mass')} ÷ {flow} = {lasts:.2f} s.\n"
+                              "The real flow falls as the tank cools, so the full simulation runs a little longer.")
+        else:
+            self.injector.set("Liquid lasts", f"{lasts:.2f} s",
+                              f"With {holes} {noun}s the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
+                              f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
+                              "The real flow falls as the tank cools, so the full simulation runs a little longer.")
         bore = to_si(float(cfg["grn_OD"]), cfg["grn_OD_unit"], "length")
         if self._swirler:
             D_port = to_si(float(cfg["sw_D_port"]), cfg["sw_D_port_unit"], "length")
@@ -654,7 +673,7 @@ class SizingPage(QWidget):
         return {
             "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
-            "holes": t.holes or max(1, round(z.holes)),
+            "holes": t.holes or (max(1, round(z.holes)) if self._geometry_used() else self.holes.value()),
             "grain_L": z.grain_L,
             "OF": z.OF,
         }
