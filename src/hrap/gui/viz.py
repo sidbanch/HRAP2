@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.layout import INJECTOR_L, PLATE_L, motor_layout
+from hrap.layout import motor_layout
 from hrap.units import DisplayUnits, LENGTH
 
 SPEC_GAP = 6.0

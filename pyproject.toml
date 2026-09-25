@@ -29,6 +29,7 @@ advanced = [
 ]
 dev = [
     "pytest",
+    "ruff",
 ]
 build = [
     "pyinstaller>=6.0",
@@ -53,6 +54,16 @@ include = [
     "src/hrap/**",
     "LICENSE",
     "README.md",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
+ignore = [
+    "B007",  # loop counters like `it` in chem.py are read after the loop
+    "B905",  # zip(strict=) would be noise on paired arrays
 ]
 
 [tool.pytest.ini_options]

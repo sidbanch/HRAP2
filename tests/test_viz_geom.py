@@ -1,6 +1,7 @@
 from PySide6.QtCore import QRectF
 
-from hrap.gui.viz import INJECTOR_L, PLATE_L, MotorView, _geom, _vent_visible, liquid_rect, pack_hrects
+from hrap.gui.viz import MotorView, _geom, _vent_visible, liquid_rect, pack_hrects
+from hrap.layout import INJECTOR_L, PLATE_L
 
 
 def test_plate_and_injector_lengths():

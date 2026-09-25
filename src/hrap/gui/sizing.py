@@ -7,7 +7,6 @@ from typing import Callable, cast
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,

@@ -15,7 +15,6 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, QEvent, QObject, QSettings, QThread, Signal
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -35,7 +34,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStatusBar,
