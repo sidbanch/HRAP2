@@ -22,8 +22,9 @@ G0 = 9.80665
 @dataclass(frozen=True)
 class SizingTargets:
     P_cmbr: float     # Pa absolute
-    burn_time: float  # s, time to use the liquid at the starting oxidizer flow; ignored when holes is set
-    OF: float         # ignored when grain_L is set
+    burn_time: float | None  # s, time to use the liquid at the starting oxidizer flow; ignored when holes is set.
+                             # With neither, the oxidizer flow is solved from OF and grain_L.
+    OF: float         # ignored when grain_L is set, unless it sets the oxidizer flow
     port_D: float     # m, starting port diameter
     holes: int | None = None  # a fixed injector hole count; the burn time then follows from it
     grain_L: float | None = None  # m, a fixed grain length; the starting O/F then follows from it
@@ -38,6 +39,7 @@ class Sizing:
     mdot_f: float         # kg/s
     OF: float             # at the start (the target when no grain length was given)
     flow_per_hole: float  # kg/s through one injector hole of the motor's diameter and Cd
+    inj_CdA: float        # m², total injector Cd × area for mdot_o, with the motor's injector model
     holes: float          # exact number of holes for mdot_o (the fixed count when one was given)
     burn_time: float      # s, liquid burn time at the starting flow (the target when no hole count was given)
     k: float              # ratio of specific heats from the combustion table
@@ -64,14 +66,19 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         raise ValueError("The chamber pressure target has to be above ambient pressure.")
 
     flow_per_hole = liquid_flow(s, x.T_tnk, op.rho_l, P_tnk, t.P_cmbr) / s.inj_N
-    if t.holes:
-        mdot_o = t.holes * flow_per_hole
-        burn_time = x.mLiq_new / mdot_o
-    else:
-        burn_time = t.burn_time
-        mdot_o = x.mLiq_new / burn_time
     a, n, m = (float(v) for v in s.prop_Reg[:3])
     rho = s.prop_Rho
+    if t.holes:
+        mdot_o = t.holes * flow_per_hole
+    elif t.burn_time:
+        mdot_o = x.mLiq_new / t.burn_time
+    else:
+        if not t.grain_L or a <= 0.0 or n >= 1.0:
+            raise ValueError("Sizing the oxidizer flow from O/F needs a grain length and the propellant's regression law.")
+        # fuel flow = K · mdot_o^n, so O/F = mdot_o^(1−n) / K
+        K = rho * 0.001 * a * (0.25 * math.pi * t.port_D ** 2) ** -n * t.grain_L ** m * math.pi * t.port_D * t.grain_L
+        mdot_o = (t.OF * K) ** (1.0 / (1.0 - n))
+    burn_time = t.burn_time if t.burn_time and not t.holes else x.mLiq_new / mdot_o
     ox_flux = mdot_o / (0.25 * math.pi * t.port_D ** 2)
     if t.grain_L:
         if a <= 0.0:
@@ -115,6 +122,7 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         mdot_f=mdot_f,
         OF=OF,
         flow_per_hole=flow_per_hole,
+        inj_CdA=s.inj_CdA * mdot_o / flow_per_hole,  # the flow is proportional to CdA in every injector model
         holes=mdot_o / flow_per_hole,
         burn_time=burn_time,
         k=k,

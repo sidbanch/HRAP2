@@ -166,12 +166,14 @@ class SizingPage(QWidget):
                                   "and the hole count follows from it. The real flow falls during the burn, so the\n"
                                   "liquid lasts somewhat longer. A weak vapor tail follows once the liquid runs out.")
         self.size_from = PlainComboBox()
-        self.size_from.addItems(["Liquid burn time", "Hole count"])
-        self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.")
+        self.size_from.addItems(["Liquid burn time", "Hole count", "O/F"])
+        self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.\n"
+                                  "O/F picks the oxidizer flow that gives the starting O/F with your grain length.")
         self.holes = PlainSpinBox()
         self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count, shared with the Simulation tab. The oxidizer flow and burn time follow from it.")
-        self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length.\n"
+        self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length,\n"
+                           "or the oxidizer flow when the injector is sized from O/F.\n"
                            "With a regression law it drifts during the burn.")
         self.grain_from = PlainComboBox()
         self.grain_from.addItems(["O/F", "Grain length"])
@@ -273,7 +275,7 @@ class SizingPage(QWidget):
         inj_form.add("Cd", cd_row, span=True)
         inj_form.add("Flow model", self.inj_model)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
-                                          "Holes", "Liquid lasts"], InjectorSketch(), inj_form)
+                                          "Holes", "Total CdA", "Liquid lasts"], InjectorSketch(), inj_form)
         self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.nozzle.show_row("Sized throat", False)
         grain_form = FieldGrid()
@@ -363,14 +365,18 @@ class SizingPage(QWidget):
     def _by_holes(self) -> bool:
         return self.size_from.currentIndex() == 1
 
+    def _by_OF(self) -> bool:
+        return self.size_from.currentIndex() == 2
+
     def _show_size_from_rows(self):
         for w in self._burn_time_row:
-            w.setVisible(not self._by_holes())
+            w.setVisible(self.size_from.currentIndex() == 0)
         for w in self._holes_row:
             w.setVisible(self._by_holes())
         self.injector.show_row("Holes", not self._by_holes())  # with a chosen count it's an input
         for w in self._OF_row:
-            w.setVisible(not self._by_length())
+            w.setVisible(not self._by_length() or self._by_OF())
+        self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
         for w in self._grain_L_row:
             w.setVisible(self._by_length())
         self.grain.show_row("Grain length", not self._by_length())
@@ -380,13 +386,15 @@ class SizingPage(QWidget):
         return self.grain_from.currentIndex() == 1
 
     def _on_size_from(self, *_):
+        if self._by_OF():
+            self.grain_from.setCurrentIndex(1)
         self._show_size_from_rows()
         self.refresh()
 
     def targets(self) -> SizingTargets:
         return SizingTargets(
             P_cmbr=to_si(self.P_cmbr.spin.value(), self.P_cmbr.unit.currentText(), "pressure"),
-            burn_time=self.burn_time.value(),
+            burn_time=self.burn_time.value() if self.size_from.currentIndex() == 0 else None,
             OF=self.OF.value(),
             port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
             holes=self.holes.value() if self._by_holes() else None,
@@ -395,16 +403,17 @@ class SizingPage(QWidget):
 
     def targets_cfg(self) -> dict:
         t = self.targets()
-        return {"size_from": "holes" if self._by_holes() else "burn_time", "grain_from": "grain_L" if self._by_length() else "OF",
-                "P_cmbr": t.P_cmbr, "burn_time": t.burn_time, "OF": t.OF}
+        return {"size_from": ("burn_time", "holes", "OF")[self.size_from.currentIndex()],
+                "grain_from": "grain_L" if self._by_length() else "OF",
+                "P_cmbr": t.P_cmbr, "burn_time": self.burn_time.value(), "OF": t.OF}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
         """Load saved targets, or start from the motor's own O/F."""
         self._loading = True
         self.P_cmbr.set_display(from_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), self.P_cmbr.unit.currentText(), "pressure"))
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
-        self.size_from.setCurrentIndex(1 if saved.get("size_from") == "holes" else 0)
         self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
+        self.size_from.setCurrentIndex({"holes": 1, "OF": 2}.get(saved.get("size_from"), 0))
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
@@ -516,6 +525,10 @@ class SizingPage(QWidget):
         if t.holes:
             self.injector.set("Oxidizer flow", flow,
                               f"The flow through your {noun}s:\n{noun} count × flow per {noun} = {holes} × {per_hole} = {flow}")
+        elif t.burn_time is None:
+            self.injector.set("Oxidizer flow", flow,
+                              f"The flow that gives O/F {t.OF:.3g} with the {u.text(cast(float, t.grain_L), 'length')} grain.\n"
+                              "The fuel flow grows as oxidizer flow^n, so O/F grows as oxidizer flow^(1 − n), solved for the flow.")
         else:
             self.injector.set("Oxidizer flow", flow,
                               f"The flow that empties the liquid in the burn time:\n"
@@ -535,6 +548,13 @@ class SizingPage(QWidget):
             self.injector.set("Holes", f"{z.holes:.2f} → {holes}",
                               f"oxidizer flow ÷ flow per {noun} = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
                               f"rounded to {holes}. Apply to motor uses {holes}.")
+        cda, cda_now = u.text(z.inj_CdA, "area"), u.text(z.inj_CdA * holes / z.holes, "area")
+        if t.holes:
+            self.injector.set("Total CdA", cda, f"Cd × area over all your {noun}s. A cold flow measures this directly.")
+        else:
+            self.injector.set("Total CdA", cda,
+                              f"The Cd × area over all {noun}s that gives the oxidizer flow. A cold flow measures this directly.\n"
+                              f"{holes} of your {noun}s give {cda_now}.")
         self.injector.set("Liquid lasts", f"{lasts:.2f} s",
                           f"With {holes} {noun}s the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
                           f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
