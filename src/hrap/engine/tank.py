@@ -134,6 +134,9 @@ def tank(s: Settings, o: Output, x: State, t: float) -> State:
         mD = 0.0
 
     m_o_old = x.m_o
+    if x.mdot_o * dt > x.m_o:  # the last step can't drain more than the tank holds
+        x.mdot_o = x.m_o / dt
+        mD = min(mD, x.m_o)
     x.m_o = x.m_o - x.mdot_o * dt
 
     if s.solve_tank_cooling and x.mLiq_new > 0 and x.mdot_o > 0:
@@ -175,7 +178,7 @@ def tank(s: Settings, o: Output, x: State, t: float) -> State:
             (1.0 / x.ox_props.rho_l) - (1.0 / x.ox_props.rho_v)
         )
         x.mLiq_old = 0.0
-    elif x.mLiq_new <= 0 and x.mdot_o > 0:
+    elif x.mLiq_new <= 0 and x.mdot_o > 0 and x.m_o > 0:  # an empty tank ends the run in sim_loop
         if x.mLiq_new != 0:
             x.mLiq_new = 0.0
         Z_old = x.ox_props.Z
