@@ -26,7 +26,6 @@ from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants
 from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
 
-
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
 
@@ -156,8 +155,12 @@ class SizingPage(QWidget):
         self._swirler = False
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
-        self.burn_time = PlainDoubleSpinBox(); self.burn_time.setRange(0.1, 120); self.burn_time.setDecimals(2)
-        self.OF = PlainDoubleSpinBox(); self.OF.setRange(0.1, 50); self.OF.setDecimals(2)
+        self.burn_time = PlainDoubleSpinBox()
+        self.burn_time.setRange(0.1, 120)
+        self.burn_time.setDecimals(2)
+        self.OF = PlainDoubleSpinBox()
+        self.OF.setRange(0.1, 50)
+        self.OF.setDecimals(2)
         self.P_cmbr.setToolTip("Chamber pressure at the start of the burn (absolute). It falls as the tank cools.")
         self.burn_time.setToolTip("How long the liquid lasts at the starting oxidizer flow. It sets the oxidizer flow,\n"
                                   "and the hole count follows from it. The real flow falls during the burn, so the\n"
@@ -165,7 +168,8 @@ class SizingPage(QWidget):
         self.size_from = PlainComboBox()
         self.size_from.addItems(["Liquid burn time", "Hole count"])
         self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.")
-        self.holes = PlainSpinBox(); self.holes.setRange(1, 200)
+        self.holes = PlainSpinBox()
+        self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count, shared with the Simulation tab. The oxidizer flow and burn time follow from it.")
         self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length.\n"
                            "With a regression law it drifts during the burn.")
@@ -189,14 +193,21 @@ class SizingPage(QWidget):
         # Motor inputs that drive sizing. They mirror the Simulation tab's fields (MainWindow keeps them in step).
         self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 1)
         self.tank_T = UnitRow(TEMP_ITEMS, "C", 2)
-        self.fill = PlainDoubleSpinBox(); self.fill.setRange(0, 100); self.fill.setDecimals(1)
+        self.fill = PlainDoubleSpinBox()
+        self.fill.setRange(0, 100)
+        self.fill.setDecimals(1)
         self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
-        self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(3)
-        self.inj_model = PlainComboBox(); self.inj_model.addItems(["SPI", "HEM", "Dyer"])
-        self.inj_type = PlainComboBox(); self.inj_type.addItems(["Holes", "Swirler"])
+        self.inj_Cd = PlainDoubleSpinBox()
+        self.inj_Cd.setRange(0, 1)
+        self.inj_Cd.setDecimals(3)
+        self.inj_model = PlainComboBox()
+        self.inj_model.addItems(["SPI", "HEM", "Dyer"])
+        self.inj_type = PlainComboBox()
+        self.inj_type.addItems(["Holes", "Swirler"])
         self.inj_type.setToolTip("Holes: straight drilled holes.\n"
                                  "Swirler: tangential ports spin the nitrous in a small chamber before the exit orifice.")
-        self.sw_ports = PlainSpinBox(); self.sw_ports.setRange(1, 12)
+        self.sw_ports = PlainSpinBox()
+        self.sw_ports.setRange(1, 12)
         self.sw_D_port = UnitRow(LENGTH_ITEMS, "in", 4)
         self.sw_R_in = UnitRow(LENGTH_ITEMS, "in", 4)
         self.sw_ports.setToolTip("Number of tangential inlet ports into the swirl chamber.")
@@ -208,8 +219,12 @@ class SizingPage(QWidget):
         # Long propellant names would otherwise widen the whole inputs column.
         self.propellant.setSizeAdjustPolicy(PlainComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.propellant.setMinimumContentsLength(12)
-        self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0, 100); self.cstar.setDecimals(1)
-        self.noz_Cd = PlainDoubleSpinBox(); self.noz_Cd.setRange(0, 1); self.noz_Cd.setDecimals(3)
+        self.cstar = PlainDoubleSpinBox()
+        self.cstar.setRange(0, 100)
+        self.cstar.setDecimals(1)
+        self.noz_Cd = PlainDoubleSpinBox()
+        self.noz_Cd.setRange(0, 1)
+        self.noz_Cd.setDecimals(3)
         self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
         self.cstar.setToolTip("C* efficiency: how completely the propellants burn. Small hybrids are usually 85–95%.")
         self.noz_Cd.setToolTip("Throat Cd: how much of the throat area flows, about 0.97–0.99 for a smooth throat.")

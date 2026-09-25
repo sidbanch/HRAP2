@@ -6,7 +6,15 @@ from hrap.engine.mass import mass_properties
 from hrap.engine.types import Output
 from hrap.io.config import apply_layout_mass, bundled_motor, default_cfg, load_json, resolve, resolve_layout
 from hrap.io.export import export_eng, export_rse
-from hrap.layout import FEED_GAP, INCH, PLATE_L, infer_component_stations, motor_layout, nozzle_cone_lengths, nozzle_exit_diameter
+from hrap.layout import (
+    FEED_GAP,
+    INCH,
+    PLATE_L,
+    infer_component_stations,
+    motor_layout,
+    nozzle_cone_lengths,
+    nozzle_exit_diameter,
+)
 from hrap.units import to_si
 
 HPS01_MASSED = Path(__file__).resolve().parent / "fixtures" / "HPS01-01_Massed.json"

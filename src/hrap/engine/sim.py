@@ -22,7 +22,8 @@ def _nsteps(s: Settings) -> int:
 
 def _blank_output(s: Settings) -> Output:
     n = _nsteps(s)
-    z = lambda: np.zeros(n, dtype=float)
+    def z():
+        return np.zeros(n, dtype=float)
     o = Output(
         t=z(),
         m_o=z(),

@@ -58,9 +58,10 @@ include = [
 
 [tool.ruff]
 target-version = "py310"
+line-length = 120
 
 [tool.ruff.lint]
-select = ["E9", "F", "B"]
+select = ["E4", "E7", "E9", "F", "B", "I"]
 ignore = [
     "B007",  # loop counters like `it` in chem.py are read after the loop
     "B905",  # zip(strict=) would be noise on paired arrays

@@ -4,7 +4,6 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
-
 DARK = {
     "window": "#16181d",
     "base": "#1e222a",

@@ -12,15 +12,15 @@ from typing import cast
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QEvent, QObject, QSettings, QThread, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -45,27 +45,34 @@ from PySide6.QtWidgets import (
 from hrap import APP_NAME, __version__
 from hrap.engine.nox import nox
 from hrap.engine.sim import run
-from hrap.engine.types import Settings, State
 from hrap.engine.summary import format_summary, summarize
-from hrap.gui.theme import apply_theme
+from hrap.engine.swirl import swirl_cd
+from hrap.engine.types import Settings, State
 from hrap.gui.sizing import SizingPage
+from hrap.gui.theme import apply_theme
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
-from hrap.engine.swirl import swirl_cd
 from hrap.io.config import (
-    bundled_motor, chamber_limit, default_cfg, load_json, load_matlab_mat, resolve, resolve_layout, save_json,
+    bundled_motor,
+    chamber_limit,
+    default_cfg,
+    load_json,
+    load_matlab_mat,
+    resolve,
+    resolve_layout,
+    save_json,
 )
 from hrap.io.export import export_csv, export_eng, export_rse
 from hrap.io.propellant import list_propellants, load_propellant
 from hrap.layout import motor_layout
 from hrap.units import (
     DENSITY_ITEMS,
-    DisplayUnits,
     LENGTH_ITEMS,
     MASS_ITEMS,
     PRESSURE_ITEMS,
     TEMP_ITEMS,
     VOLUME_ITEMS,
+    DisplayUnits,
     compatible_units,
     convert,
     from_si,
@@ -109,8 +116,9 @@ DISPLAY_UNIT_OPTIONS = {
 
 def _t_sat(P: float) -> float | None:
     """Invert N2O Wagner Pv(T) for display. None if out of range."""
-    from hrap.engine.nox import TC, vapor_pressure
     from scipy.optimize import brentq
+
+    from hrap.engine.nox import TC, vapor_pressure
 
     if not math.isfinite(P) or P <= 1.0 or P >= 7.2e6:
         return None
@@ -329,12 +337,22 @@ class MainWindow(QMainWindow):
         self.tnk_D = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_L = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_by_dims = QCheckBox("Tank volume from diameter × length")
-        self.tnk_dd = PlainComboBox(); self.tnk_dd.addItems(["Starting Tank Temperature", "Starting Tank Pressure"])
-        self.tnk_cond = PlainDoubleSpinBox(); self.tnk_cond.setDecimals(4); self.tnk_cond.setRange(0, 1e8); self.tnk_cond.setValue(293.15)
-        self.T_tnk_unit = PlainComboBox(); self.T_tnk_unit.addItems(TEMP_ITEMS)
-        self.fill_dd = PlainComboBox(); self.fill_dd.addItems(["Tank Fill Percentage", "Starting Oxidizer Mass"])
-        self.fill = PlainDoubleSpinBox(); self.fill.setDecimals(4); self.fill.setRange(0, 1e6); self.fill.setValue(95)
-        self.fill_unit = PlainComboBox(); self.fill_unit.addItems(["%"])
+        self.tnk_dd = PlainComboBox()
+        self.tnk_dd.addItems(["Starting Tank Temperature", "Starting Tank Pressure"])
+        self.tnk_cond = PlainDoubleSpinBox()
+        self.tnk_cond.setDecimals(4)
+        self.tnk_cond.setRange(0, 1e8)
+        self.tnk_cond.setValue(293.15)
+        self.T_tnk_unit = PlainComboBox()
+        self.T_tnk_unit.addItems(TEMP_ITEMS)
+        self.fill_dd = PlainComboBox()
+        self.fill_dd.addItems(["Tank Fill Percentage", "Starting Oxidizer Mass"])
+        self.fill = PlainDoubleSpinBox()
+        self.fill.setDecimals(4)
+        self.fill.setRange(0, 1e6)
+        self.fill.setValue(95)
+        self.fill_unit = PlainComboBox()
+        self.fill_unit.addItems(["%"])
         self._tnk_mode = self.tnk_dd.currentText()
         self._fill_mode = self.fill_dd.currentText()
         self.tnk_dd.currentTextChanged.connect(self._on_tank_mode)
@@ -355,11 +373,19 @@ class MainWindow(QMainWindow):
         tf.addRow("Diameter", self.tnk_D)
         tf.addRow("Length", self.tnk_L)
         tf.addRow("Starting condition", self.tnk_dd)
-        trow = QWidget(); tl = QHBoxLayout(trow); tl.setContentsMargins(0, 0, 0, 0); tl.addWidget(self.tnk_cond, 1); tl.addWidget(self.T_tnk_unit)
+        trow = QWidget()
+        tl = QHBoxLayout(trow)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.addWidget(self.tnk_cond, 1)
+        tl.addWidget(self.T_tnk_unit)
         self.T_tnk_unit.setFixedWidth(72)
         tf.addRow("Temperature", trow)
         tf.addRow("Oxidizer amount", self.fill_dd)
-        frow = QWidget(); fl = QHBoxLayout(frow); fl.setContentsMargins(0, 0, 0, 0); fl.addWidget(self.fill, 1); fl.addWidget(self.fill_unit)
+        frow = QWidget()
+        fl = QHBoxLayout(frow)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(self.fill, 1)
+        fl.addWidget(self.fill_unit)
         self.fill_unit.setFixedWidth(72)
         tf.addRow("Fill", frow)
         tf.addRow(self.sat_info)
@@ -369,15 +395,20 @@ class MainWindow(QMainWindow):
 
         # Injector / vent
         self.inj_D = UnitRow(LENGTH_ITEMS, "in", 5)
-        self.inj_Cd = PlainDoubleSpinBox(); self.inj_Cd.setRange(0, 1); self.inj_Cd.setDecimals(4)
-        self.inj_N = PlainSpinBox(); self.inj_N.setRange(1, 200)
-        self.inj_type = PlainComboBox(); self.inj_type.addItems(["Holes", "Swirler"])
+        self.inj_Cd = PlainDoubleSpinBox()
+        self.inj_Cd.setRange(0, 1)
+        self.inj_Cd.setDecimals(4)
+        self.inj_N = PlainSpinBox()
+        self.inj_N.setRange(1, 200)
+        self.inj_type = PlainComboBox()
+        self.inj_type.addItems(["Holes", "Swirler"])
         self.inj_type.setToolTip(
             "Holes: straight drilled holes. Cd is about 0.6 for a sharp edge, 0.8 or more for a chamfered or rounded one.\n"
             "Swirler: nitrous enters a small chamber through tangential ports, spins, and leaves the exit orifice as a\n"
             "hollow cone. The spin leaves an air core, so only a ring of liquid flows and the Cd is low (about 0.15–0.4)."
         )
-        self.sw_ports = PlainSpinBox(); self.sw_ports.setRange(1, 12)
+        self.sw_ports = PlainSpinBox()
+        self.sw_ports.setRange(1, 12)
         self.sw_ports.setToolTip("Number of tangential inlet ports into the swirl chamber.")
         self.sw_D_port = UnitRow(LENGTH_ITEMS, "in", 4)
         self.sw_D_port.setToolTip("Diameter of each tangential inlet port.")
@@ -401,7 +432,9 @@ class MainWindow(QMainWindow):
             "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM.\n"
             "HEM and Dyer use CoolProp nitrous properties for the tank too, whatever Oxidizer fluid says."
         )
-        self.inj_Cd_HEM = PlainDoubleSpinBox(); self.inj_Cd_HEM.setRange(0.01, 1); self.inj_Cd_HEM.setDecimals(4)
+        self.inj_Cd_HEM = PlainDoubleSpinBox()
+        self.inj_Cd_HEM.setRange(0.01, 1)
+        self.inj_Cd_HEM.setDecimals(4)
         self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")
         self.hem_same = QCheckBox("Same as Cd")
         self.hem_same.setChecked(True)
@@ -412,16 +445,21 @@ class MainWindow(QMainWindow):
         hem_layout.addWidget(self.hem_same)
         self.hem_same.toggled.connect(self._sync_hem_cd)
         self.inj_Cd.valueChanged.connect(self._sync_hem_cd)
-        self.dyer_kappa = PlainDoubleSpinBox(); self.dyer_kappa.setRange(0.01, 100); self.dyer_kappa.setDecimals(2)
+        self.dyer_kappa = PlainDoubleSpinBox()
+        self.dyer_kappa.setRange(0.01, 100)
+        self.dyer_kappa.setDecimals(2)
         self.dyer_kappa.setValue(1.0)
         self.dyer_kappa.setToolTip("Dyer weighting. 1 = the formula's value for a tank at its own vapor pressure (even blend). Larger leans toward SPI.")
-        self.vnt_state = PlainComboBox(); self.vnt_state.addItems(["None", "External", "Internal"])
+        self.vnt_state = PlainComboBox()
+        self.vnt_state.addItems(["None", "External", "Internal"])
         self.vnt_state.setToolTip(
             "External: an orifice at the top of the tank vents vapor overboard.\n"
             "Internal: the vent flow goes into the chamber along with the injector flow."
         )
         self.vnt_D = UnitRow(LENGTH_ITEMS, "mm", 4)
-        self.vnt_Cd = PlainDoubleSpinBox(); self.vnt_Cd.setRange(0, 1); self.vnt_Cd.setDecimals(3)
+        self.vnt_Cd = PlainDoubleSpinBox()
+        self.vnt_Cd.setRange(0, 1)
+        self.vnt_Cd.setDecimals(3)
         inj = CollapsibleBox("Injector / vent")
         iff = inj.form()
         iff.addRow("Injector type", self.inj_type)
@@ -471,20 +509,31 @@ class MainWindow(QMainWindow):
         root.addWidget(inj)
 
         # Propellant / grain
-        self.reg_model = PlainComboBox(); self.reg_model.addItems(["Shifting OF", "Constant OF"])
+        self.reg_model = PlainComboBox()
+        self.reg_model.addItems(["Shifting OF", "Constant OF"])
         self.reg_model.setToolTip(
             "Shifting OF: fuel burns back at a × G^n × L^m (G = oxidizer flux through the port), so O/F drifts as the port opens.\n"
             "Constant OF: fuel flow is oxidizer flow ÷ a fixed O/F. Use it when you have no regression data."
         )
         self.rho = UnitRow(DENSITY_ITEMS, "kg/m^3", 4)
-        self.prop_a = PlainDoubleSpinBox(); self.prop_a.setDecimals(5); self.prop_a.setRange(0, 1e3)
-        self.prop_n = PlainDoubleSpinBox(); self.prop_n.setDecimals(5); self.prop_n.setRange(-2, 5)
-        self.prop_m = PlainDoubleSpinBox(); self.prop_m.setDecimals(5); self.prop_m.setRange(-2, 5)
+        self.prop_a = PlainDoubleSpinBox()
+        self.prop_a.setDecimals(5)
+        self.prop_a.setRange(0, 1e3)
+        self.prop_n = PlainDoubleSpinBox()
+        self.prop_n.setDecimals(5)
+        self.prop_n.setRange(-2, 5)
+        self.prop_m = PlainDoubleSpinBox()
+        self.prop_m.setDecimals(5)
+        self.prop_m.setRange(-2, 5)
         self.prop_a.setToolTip("Scales the whole burn rate. In mm/s with G in kg/(m²·s) and L in m.")
         self.prop_n.setToolTip("How strongly the burn rate follows oxidizer flux. Usually 0.3–0.8.")
         self.prop_m.setToolTip("Grain-length effect. Almost always 0.")
-        self.const_OF = PlainDoubleSpinBox(); self.const_OF.setDecimals(4); self.const_OF.setRange(0.01, 100)
-        self.cstar = PlainDoubleSpinBox(); self.cstar.setRange(0.0, 100.0); self.cstar.setValue(100.0)
+        self.const_OF = PlainDoubleSpinBox()
+        self.const_OF.setDecimals(4)
+        self.const_OF.setRange(0.01, 100)
+        self.cstar = PlainDoubleSpinBox()
+        self.cstar.setRange(0.0, 100.0)
+        self.cstar.setValue(100.0)
         self.cstar.setToolTip(
             "How completely the propellants burn compared with the combustion table. Small hybrids are usually 85–95%.\n"
             "From a hot fire: chamber pressure × throat area ÷ total mass flow, divided by the table's C*."
@@ -577,10 +626,16 @@ class MainWindow(QMainWindow):
         root.addWidget(noz)
 
         # Simulation
-        self.tmax = PlainDoubleSpinBox(); self.tmax.setRange(0.01, 120); self.tmax.setValue(10)
-        self.tburn = PlainDoubleSpinBox(); self.tburn.setRange(0.0, 120)
+        self.tmax = PlainDoubleSpinBox()
+        self.tmax.setRange(0.01, 120)
+        self.tmax.setValue(10)
+        self.tburn = PlainDoubleSpinBox()
+        self.tburn.setRange(0.0, 120)
         self.tburn.setToolTip("Closes the oxidizer valve at this time. 0 = never.")
-        self.dt = PlainDoubleSpinBox(); self.dt.setDecimals(3); self.dt.setRange(0.01, 100); self.dt.setValue(1.0)
+        self.dt = PlainDoubleSpinBox()
+        self.dt.setDecimals(3)
+        self.dt.setRange(0.01, 100)
+        self.dt.setValue(1.0)
         self.dt.setToolTip("1 ms is usually within 0.1% of finer steps. Check a new motor by comparing with 0.2 ms.")
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
         self.Pa = UnitRow(PRESSURE_ITEMS, "atm")
@@ -605,7 +660,9 @@ class MainWindow(QMainWindow):
                                  "HEM and Dyer always use CoolProp.")
         self.grain_shape = PlainComboBox()
         self.grain_shape.addItems(["cylindrical", "star"])
-        self.star_tips = PlainSpinBox(); self.star_tips.setRange(3, 16); self.star_tips.setValue(6)
+        self.star_tips = PlainSpinBox()
+        self.star_tips.setRange(3, 16)
+        self.star_tips.setValue(6)
         af.addRow(self.adv_on)
         af.addRow(self.live_chem)
         af.addRow("Oxidizer fluid", self.ox_fluid)

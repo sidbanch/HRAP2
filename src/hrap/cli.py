@@ -101,8 +101,10 @@ def sweep_main(argv: list[str] | None = None) -> int:
     if not uses_spi(cfg):  # HEM and Dyer model the high-ΔP flow, so the warning doesn't apply
         args.max_dp = float("inf")
     throats = [to_si(v, args.throat_unit, "length") for v in args.throat]
-    psi = lambda pa: from_si(pa, "psi", "pressure")
-    unit = lambda m: from_si(m, args.throat_unit, "length")
+    def psi(pa):
+        return from_si(pa, "psi", "pressure")
+    def unit(m):
+        return from_si(m, args.throat_unit, "length")
     total = len(throats) * len(args.cd)
     cases = []
     for c in sweep(cfg, throats, args.cd):

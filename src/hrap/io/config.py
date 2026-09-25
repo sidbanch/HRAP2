@@ -352,9 +352,10 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     # Tank temperature
     if cfg.get("tnk_dd") == "Starting Tank Pressure":
         P_targ = cfg["tnk_cond"] * to_si(1.0, cfg["T_tnk_unit"], "pressure")
+        from scipy.optimize import brentq
+
         from hrap.engine.fzero import matlab_fzero
         from hrap.engine.nox import vapor_pressure
-        from scipy.optimize import brentq
 
         def residual(T: float) -> float:
             if get_sat_props is not None:

@@ -96,6 +96,7 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
     import numpy as np
     from PySide6.QtCore import QPointF, QSettings, Qt
     from PySide6.QtWidgets import QApplication
+
     from hrap.units import DisplayUnits
 
     window._prefs = QSettings(str(tmp_path / "units.ini"), QSettings.Format.IniFormat)

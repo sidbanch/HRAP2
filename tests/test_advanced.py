@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from hrap.advanced.geometry import star_vertices
-from hrap.io.config import bundled_motor, resolve
 from hrap.engine.sim import run
+from hrap.io.config import bundled_motor, resolve
 
 
 def test_star_vertices_closed():

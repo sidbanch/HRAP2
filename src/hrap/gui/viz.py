@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.layout import motor_layout
-from hrap.units import DisplayUnits, LENGTH
+from hrap.units import LENGTH, DisplayUnits
 
 SPEC_GAP = 6.0
 SPEC_MIN_W = 56.0

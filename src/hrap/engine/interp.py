@@ -42,7 +42,7 @@ def interp2x(X, Y, Z, xi: float, yi: float):
     X = np.asarray(X, dtype=float).ravel()
     Y = np.asarray(Y, dtype=float).ravel()
 
-    # k indexes X (OF); l indexes Y (Pc). MATLAB 1-based.
+    # k indexes X (OF); j indexes Y (Pc). MATLAB 1-based.
     if xi >= X[-1]:
         k = X.size
     elif xi <= X[0]:
@@ -51,14 +51,14 @@ def interp2x(X, Y, Z, xi: float, yi: float):
         k = _histc_bin(xi, X)
 
     if yi >= Y[-1]:
-        l = Y.size
+        j = Y.size
     elif yi <= Y[0]:
-        l = 1
+        j = 1
     else:
-        l = _histc_bin(yi, Y)
+        j = _histc_bin(yi, Y)
 
     k0 = k - 1
-    l0 = l - 1
+    j0 = j - 1
 
     def one(Z) -> float:
         Z = np.asarray(Z, dtype=float)
@@ -73,11 +73,11 @@ def interp2x(X, Y, Z, xi: float, yi: float):
             Z1 = Z[:, k0]
 
         if yi >= Y[-1]:
-            zi1 = float(Z1[l0])
+            zi1 = float(Z1[j0])
         elif yi <= Y[0]:
             zi1 = float(Z1[0])
         else:
-            zi1 = float(((Z1[l0 + 1] - Z1[l0]) / (Y[l0 + 1] - Y[l0])) * (yi - Y[l0]) + Z1[l0])
+            zi1 = float(((Z1[j0 + 1] - Z1[j0]) / (Y[j0 + 1] - Y[j0])) * (yi - Y[j0]) + Z1[j0])
 
         if xi >= X[-1]:
             Z2 = Z[:, X.size - 1]
@@ -87,13 +87,13 @@ def interp2x(X, Y, Z, xi: float, yi: float):
             Z2 = Z[:, k0 + 1] if k0 + 1 < Z.shape[1] else Z[:, k0]
 
         if yi >= Y[-1]:
-            zi2 = float(Z2[l0])
+            zi2 = float(Z2[j0])
         else:
             # MATLAB does not special-case yi <= Y(1) here
-            if l0 + 1 >= Z2.size:
-                zi2 = float(Z2[l0])
+            if j0 + 1 >= Z2.size:
+                zi2 = float(Z2[j0])
             else:
-                zi2 = float(((Z2[l0 + 1] - Z2[l0]) / (Y[l0 + 1] - Y[l0])) * (yi - Y[l0]) + Z2[l0])
+                zi2 = float(((Z2[j0 + 1] - Z2[j0]) / (Y[j0 + 1] - Y[j0])) * (yi - Y[j0]) + Z2[j0])
 
         if xi >= X[-1]:
             return zi2

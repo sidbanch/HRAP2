@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from hrap.units import DisplayUnits
 from hrap.engine.impulse import impulse_class
 from hrap.engine.types import Output, Settings, State
+from hrap.units import DisplayUnits
 
 
 def summarize(s: Settings, x: State, o: Output) -> dict:
