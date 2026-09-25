@@ -65,9 +65,11 @@ def uses_spi(cfg: dict[str, Any]) -> bool:
     return cfg.get("inj_model", "SPI") == "SPI"
 
 
-def passing_throats(cases: Sequence[SweepCase], max_P_cmbr: float, max_inj_dP: float) -> list[float]:
-    """Throats that stay under both limits for every Cd swept."""
+def passing_throats(cases: Sequence[SweepCase], min_P_cmbr: float, max_P_cmbr: float,
+                    max_inj_dP: float) -> list[float]:
+    """Throats that stay in the chamber pressure range and under the ΔP warning for every Cd swept."""
     ok: dict[float, bool] = {}
     for c in cases:
-        ok[c.throat] = ok.get(c.throat, True) and c.peak_P_cmbr <= max_P_cmbr and c.avg_inj_dP <= max_inj_dP
+        ok[c.throat] = (ok.get(c.throat, True) and min_P_cmbr <= c.peak_P_cmbr <= max_P_cmbr
+                        and c.avg_inj_dP <= max_inj_dP)
     return sorted(t for t, passed in ok.items() if passed)

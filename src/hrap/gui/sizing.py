@@ -392,7 +392,7 @@ class SizingPage(QWidget):
         self.size_from.setCurrentIndex(1 if saved.get("size_from") == "holes" else 0)
         self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
-        self.sweep.set_cd_range(float(motor_cfg.get("inj_Cd") or 0.6))
+        self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
         if self.isVisible():
             self.refresh()
