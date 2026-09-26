@@ -17,19 +17,40 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
-from hrap.engine.swirl import swirl_A, swirl_fill, swirl_sensitivity
+from hrap.engine.swirl import swirl_A, swirl_cd, swirl_fill, swirl_sensitivity
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import chamber_limit, injector_cd
-from hrap.io.propellant import list_propellants
-from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
+from hrap.io.propellant import list_propellants, load_propellant
+from hrap.units import (
+    DENSITY_ITEMS,
+    LENGTH_ITEMS,
+    PRESSURE_ITEMS,
+    TEMP_ITEMS,
+    VOLUME_ITEMS,
+    DisplayUnits,
+    from_si,
+    to_si,
+)
 
 STOCK_PTC_BORE = 0.188 * 0.0254  # m, the hex inside a stock 1/4 in PTC (HPS01 notes), taken as a round hole
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
+
+
+def _beside(field: QWidget, box: QCheckBox) -> QWidget:
+    """A field with a checkbox after it, on one row."""
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    layout.addWidget(field, 1)
+    layout.addWidget(box)
+    return row
 
 
 def card_frame(title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -150,16 +171,13 @@ class Card(QFrame):
 
 
 class SizingPage(QWidget):
-    motor_edited = Signal()  # a motor field on this page changed; the Simulation settings should follow
+    motor_edited = Signal()  # a motor setting on this page changed
+    sized = Signal()  # the sizing was worked out again, so what Apply to motor would change may differ
+    applied = Signal()
 
-    def __init__(
-        self,
-        get_cfg: Callable[[], dict],
-        get_units: Callable[[], DisplayUnits],
-        apply: Callable[[dict], None],
-    ):
+    def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits]):
         super().__init__()
-        self._get_cfg, self._get_units, self._apply = get_cfg, get_units, apply
+        self._get_cfg, self._get_units = get_cfg, get_units
         self._result: Sizing | None = None
         self._cfg: dict | None = None
         self._picked_throat: float | None = None
@@ -185,7 +203,7 @@ class SizingPage(QWidget):
                                   "O/F picks the oxidizer flow that gives the starting O/F with your grain length.")
         self.holes = PlainSpinBox()
         self.holes.setRange(1, 200)
-        self.holes.setToolTip("Injector hole count, shared with the Simulation tab. The oxidizer flow and burn time follow from it.")
+        self.holes.setToolTip("Injector hole count. The oxidizer flow and burn time follow from it.")
         self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length,\n"
                            "or the oxidizer flow when the injector is sized from O/F.\n"
                            "With a regression law it drifts during the burn.")
@@ -194,30 +212,108 @@ class SizingPage(QWidget):
         self.grain_from.setToolTip("Pick the starting O/F and get the grain length, or pick the grain length and get the O/F.")
         self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_OD = UnitRow(LENGTH_ITEMS, "in", 4)
-        self.grain_L = UnitRow(LENGTH_ITEMS, "in", 3)
-        self.port_D.setToolTip("Starting port diameter, shared with the Simulation tab.")
-        self.grain_OD.setToolTip("Grain outer diameter, shared with the Simulation tab. It's also the chamber bore in the drawings.")
-        self.grain_L.setToolTip("Grain length, shared with the Simulation tab. The fuel flow and starting O/F follow from it.")
+        self.grain_L = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.port_D.setToolTip("Starting port diameter.")
+        self.grain_OD.setToolTip("Grain outer diameter. It's also the chamber bore in the drawings.")
+        self.grain_L.setToolTip("Grain length. The fuel flow and starting O/F follow from it.")
+
+        self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
+        self.P_limit.setToolTip("The chamber's design pressure (absolute). Sizing, runs and the Cd check warn above it.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
         form.add("Chamber pressure", self.P_cmbr)
         self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
         self._OF_row = form.add("O/F", self.OF)
+        form.add("Pressure limit", self.P_limit)
         tl.addLayout(form)
 
-        # Motor inputs that drive sizing. They mirror the Simulation tab's fields (MainWindow keeps them in step).
-        self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 1)
-        self.tank_T = UnitRow(TEMP_ITEMS, "C", 2)
+        # The motor's physical settings live on this page; the Simulation tab only picks models and run settings.
+        self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
+        self.tank_D = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.tank_T = UnitRow(TEMP_ITEMS, "C", 3)
         self.fill = PlainDoubleSpinBox()
         self.fill.setRange(0, 100)
-        self.fill.setDecimals(1)
+        self.fill.setDecimals(3)
+        self.tank_D.setToolTip("Inside diameter. It only sets the tank's length in the drawings and mass properties.")
+        self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
+        self.fill.setToolTip("Share of the tank volume that starts as liquid. The dip tube's length sets it.")
+        self.tank_P = QLabel("—")
+        self.ox_liquid = QLabel("—")
+        self.tank_L = QLabel("—")
+        self.vent = PlainComboBox()
+        self.vent.addItems(["None", "External", "Internal"])
+        self.vent.setToolTip("External: an orifice at the top of the tank vents vapor overboard.\n"
+                             "Internal: the vent flow goes into the chamber along with the injector flow.")
+        self.vent_D = UnitRow(LENGTH_ITEMS, "mm", 4)
+        self.vent_Cd = PlainDoubleSpinBox()
+        self.vent_Cd.setRange(0, 1)
+        self.vent_Cd.setDecimals(3)
+        tank, tank_layout = card_frame("Tank")
+        tank_form = FieldGrid()
+        tank_form.add("Volume", self.tank_V)
+        tank_form.add("Diameter", self.tank_D)
+        tank_form.add("Temperature", self.tank_T)
+        tank_form.add("Fill", self.fill, "%")
+        tank_form.add("Tank pressure", self.tank_P, muted=True)
+        tank_form.add("Liquid oxidizer", self.ox_liquid, muted=True)
+        tank_form.add("Length", self.tank_L, muted=True)
+        tank_form.add("Vent", self.vent)
+        self._vent_rows = [*tank_form.add("Vent diameter", self.vent_D), *tank_form.add("Vent Cd", self.vent_Cd)]
+        tank_layout.addLayout(tank_form)
+
+        self.propellant = PlainComboBox()
+        for item in list_propellants():
+            self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
+        # Long propellant names would otherwise widen the whole inputs column.
+        self.propellant.setSizeAdjustPolicy(PlainComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.propellant.setMinimumContentsLength(12)
+        self.propellant.setToolTip("Picks the combustion table, and fills in the fuel's density and burn rate.")
+        self.propellant.currentIndexChanged.connect(self._on_propellant)
+        self.rho = UnitRow(DENSITY_ITEMS, "kg/m^3", 1)
+        self.rho.setToolTip("Fuel density. A 3D-printed grain can be lighter than solid plastic, so weigh one.")
+        self.prop_a, self.prop_n, self.prop_m = PlainDoubleSpinBox(), PlainDoubleSpinBox(), PlainDoubleSpinBox()
+        for spin, low in ((self.prop_a, 0.0), (self.prop_n, -2.0), (self.prop_m, -2.0)):
+            spin.setDecimals(5)
+            spin.setRange(low, 1e3)
+        self.prop_a.setToolTip("Burn rate = a × G^n × L^m, in mm/s with the oxidizer flux G in kg/(m²·s) and L in m.\n"
+                               "a scales the whole burn rate.")
+        self.prop_n.setToolTip("How strongly the burn rate follows oxidizer flux. Usually 0.3–0.8.")
+        self.prop_m.setToolTip("Grain-length effect. Almost always 0.")
+        self.cstar = PlainDoubleSpinBox()
+        self.cstar.setRange(0, 100)
+        self.cstar.setDecimals(1)
+        self.cstar.setToolTip("C* efficiency: how completely the propellants burn. Small hybrids are usually 85–95%.")
+        fuel, fuel_layout = card_frame("Fuel")
+        fuel_form = FieldGrid()
+        fuel_form.add("Propellant", self.propellant)
+        fuel_form.add("Density", self.rho)
+        fuel_form.add("Burn rate a", self.prop_a)
+        fuel_form.add("Burn rate n", self.prop_n)
+        fuel_form.add("Burn rate m", self.prop_m)
+        fuel_form.add("C* efficiency", self.cstar, "%")
+        fuel_layout.addLayout(fuel_form)
+
         self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_Cd = PlainDoubleSpinBox()
         self.inj_Cd.setRange(0, 1)
-        self.inj_Cd.setDecimals(3)
+        self.inj_Cd.setDecimals(4)
         self.inj_model = PlainComboBox()
         self.inj_model.addItems(["SPI", "HEM", "Dyer"])
+        self.inj_model.setToolTip("SPI: pure liquid through the injector (original HRAP); overpredicts flow at high ΔP.\n"
+                                  "HEM: liquid boils instantly in the orifice; underpredicts flow and chokes.\n"
+                                  "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM.\n"
+                                  "HEM and Dyer use CoolProp nitrous properties for the tank too.")
+        self.inj_Cd_HEM = PlainDoubleSpinBox()
+        self.inj_Cd_HEM.setRange(0.01, 1)
+        self.inj_Cd_HEM.setDecimals(3)
+        self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")
+        self.hem_same = QCheckBox("Same as Cd")
+        self.dyer_kappa = PlainDoubleSpinBox()
+        self.dyer_kappa.setRange(0.01, 100)
+        self.dyer_kappa.setDecimals(2)
+        self.dyer_kappa.setToolTip("Dyer weighting. 1 = the formula's value for a tank at its own vapor pressure (even blend). "
+                                   "Larger leans toward SPI.")
         self.inj_type = PlainComboBox()
         self.inj_type.addItems(["Holes", "Swirler"])
         self.inj_type.setToolTip("Holes: straight drilled holes.\n"
@@ -233,73 +329,21 @@ class SizingPage(QWidget):
         self.ptc_stock = QCheckBox("Stock")
         self.ptc_stock.setToolTip("A stock 1/4 in PTC, with a 0.188 in hex inside. Untick it to bore the PTC out.")
         self.ptc_stock.toggled.connect(self._on_ptc_stock)
-        self.propellant = PlainComboBox()
-        for item in list_propellants():
-            self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
-        # Long propellant names would otherwise widen the whole inputs column.
-        self.propellant.setSizeAdjustPolicy(PlainComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.propellant.setMinimumContentsLength(12)
-        self.cstar = PlainDoubleSpinBox()
-        self.cstar.setRange(0, 100)
-        self.cstar.setDecimals(1)
-        self.noz_Cd = PlainDoubleSpinBox()
-        self.noz_Cd.setRange(0, 1)
-        self.noz_Cd.setDecimals(3)
-        self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
-        self.cstar.setToolTip("C* efficiency: how completely the propellants burn. Small hybrids are usually 85–95%.")
-        self.noz_Cd.setToolTip("Throat Cd: how much of the throat area flows, about 0.97–0.99 for a smooth throat.")
-        self.tank_P = QLabel("—")
-        self.ox_liquid = QLabel("—")
-        motor, ml = card_frame("Motor")
-        mform = FieldGrid()
-        mform.add("Tank volume", self.tank_V)
-        mform.add("Tank temperature", self.tank_T)
-        mform.add("Fill", self.fill, "%")
-        mform.add("Tank pressure", self.tank_P, muted=True)
-        mform.add("Liquid oxidizer", self.ox_liquid, muted=True)
-        mform.add("Propellant", self.propellant)
-        mform.add("C* efficiency", self.cstar, "%")
-        mform.add("Throat Cd", self.noz_Cd)
-        ml.addLayout(mform)
-        shared = QLabel("Shared with the Simulation tab, which has the rest of the motor.")
-        shared.setObjectName("cardLabel")
-        shared.setWordWrap(True)
-        ml.addWidget(shared)
-        ml.addStretch(1)  # the card fills down to the grain; its fields stay at the top
-        self.motor_fields = (self.tank_V.spin, self.tank_V.unit, self.tank_T.spin, self.tank_T.unit, self.fill,
-                             self.hole_D.spin, self.hole_D.unit, self.inj_Cd, self.inj_model, self.propellant,
-                             self.cstar, self.noz_Cd, self.inj_type, self.sw_ports, self.sw_D_port.spin,
-                             self.sw_D_port.unit, self.sw_R_in.spin, self.sw_R_in.unit, self.port_D.spin, self.port_D.unit,
-                             self.grain_OD.spin, self.grain_OD.unit, self.grain_L.spin, self.grain_L.unit)
-        for w in self.motor_fields:
-            signal = w.currentIndexChanged if isinstance(w, PlainComboBox) else w.valueChanged
-            signal.connect(self._on_motor_edited)
+        self.sw_cd_geom = QCheckBox("From geometry")
+        self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
+                                   "Untick it to type a Cd measured in a cold flow.")
         inj_form = FieldGrid()
         inj_form.add("Size from", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
-        bore_row = QWidget()
-        bore_layout = QHBoxLayout(bore_row)
-        bore_layout.setContentsMargins(0, 0, 0, 0)
-        bore_layout.setSpacing(6)
-        bore_layout.addWidget(self.hole_D, 1)
-        bore_layout.addWidget(self.ptc_stock)
-        self._hole_D_row = inj_form.add("Hole diameter", bore_row, span=True)
+        self._hole_D_row = inj_form.add("Hole diameter", _beside(self.hole_D, self.ptc_stock), span=True)
         ports_row = inj_form.add("Swirler holes", self.sw_ports)
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
         self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in)]
-        self.sw_cd_geom = QCheckBox("From geometry")
-        self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
-                                   "Untick it to type a Cd measured in a cold flow.")
-        self.sw_cd_geom.toggled.connect(self._on_motor_edited)
-        cd_row = QWidget()
-        cd_layout = QHBoxLayout(cd_row)
-        cd_layout.setContentsMargins(0, 0, 0, 0)
-        cd_layout.setSpacing(6)
-        cd_layout.addWidget(self.inj_Cd, 1)
-        cd_layout.addWidget(self.sw_cd_geom)
-        self._cd_row = inj_form.add("Cd", cd_row, span=True)
+        self._cd_row = inj_form.add("Cd", _beside(self.inj_Cd, self.sw_cd_geom), span=True)
         inj_form.add("Flow model", self.inj_model)
+        self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
+        self._dyer_row = inj_form.add("Dyer κ", self.dyer_kappa)
         self.show_layouts = QPushButton("Show")
         self.show_layouts.setCheckable(True)
         self.show_layouts.setToolTip("Swirler hole drills that give the target flow through this PTC bore.")
@@ -309,13 +353,41 @@ class SizingPage(QWidget):
                                           "Holes", "Total CdA", "Hole drill", "Swirler Cd", "Limits the flow",
                                           "Liquid lasts"],
                              InjectorSketch(), inj_form, sketch_over_results=True)
-        self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
+
+        self.noz_Cd = PlainDoubleSpinBox()
+        self.noz_Cd.setRange(0, 1)
+        self.noz_Cd.setDecimals(3)
+        self.noz_Cd.setToolTip("How much of the throat area actually flows. About 0.97–0.99 for a smooth, rounded throat.\n"
+                               "Acts like a smaller throat. Put combustion losses in C* efficiency instead.")
+        self.noz_eff = PlainDoubleSpinBox()
+        self.noz_eff.setRange(0, 100)
+        self.noz_eff.setDecimals(1)
+        self.noz_eff.setToolTip("Thrust lost to the nozzle's cone angle and friction; scales thrust only.\n"
+                                "A 15° cone loses about 2% to the angle alone. 92–97% is typical.")
+        self.Pa = UnitRow(PRESSURE_ITEMS, "atm", 3)
+        self.Pa.setToolTip("Outside pressure. The expansion ratio is sized to it. Lower it to model a motor at altitude.")
+        noz_form = FieldGrid()
+        noz_form.add("Throat Cd", self.noz_Cd)
+        noz_form.add("Efficiency", self.noz_eff, "%")
+        noz_form.add("Ambient pressure", self.Pa)
+        self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"],
+                           NozzleSketch(), noz_form)
         self.nozzle.show_row("Sized throat", False)
+        # The motor's throat and expansion ratio. Apply to motor sets them to the sized ones.
+        self._throat, self._ER, self._throat_unit = 0.0, 1.0, "in"
+
+        self.pre_L = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.post_L = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.pre_L.setToolTip("Empty space between the injector plate and the front of the grain.\n"
+                              "The chamber's gas volume sets how fast its pressure builds at ignition.")
+        self.post_L.setToolTip("Empty space between the back of the grain and the nozzle.")
         grain_form = FieldGrid()
         grain_form.add("Size from", self.grain_from)
         self._grain_L_row = grain_form.add("Grain length", self.grain_L)
         grain_form.add("Starting port", self.port_D)
         grain_form.add("Outer diameter", self.grain_OD)
+        grain_form.add("Pre-combustion", self.pre_L)
+        grain_form.add("Post-combustion", self.post_L)
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "O/F", "Port at liquid burnout",
                                     "O/F at liquid burnout", "Fuel burned"], GrainSketch(), grain_form)
         self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
@@ -330,8 +402,8 @@ class SizingPage(QWidget):
         self.error.hide()
         self.apply_btn = QPushButton("Apply to motor")
         self.apply_btn.setObjectName("runButton")
-        self.apply_btn.setToolTip("Copy the throat, expansion ratio, rounded hole count, grain length and O/F into the motor.")
-        self.apply_btn.clicked.connect(self._on_apply)
+        self.apply_btn.setToolTip("Set the motor's throat, expansion ratio, hole count, swirler holes and grain length to the sized ones.")
+        self.apply_btn.clicked.connect(self.apply)
         self.apply_summary = QLabel("")
         bar = QFrame()
         bar.setObjectName("applyBar")
@@ -344,37 +416,35 @@ class SizingPage(QWidget):
         self.swirler_options.picked.connect(self._on_layout_picked)
         injector_layout = self.injector.layout()
         injector_layout.insertWidget(injector_layout.count() - 1, self.swirler_options)  # above the card's closing stretch
-        self.sweep.limit_edited.connect(self._on_motor_edited)
 
-        intro = QLabel("Sizes the injector, nozzle and grain for conditions at the start of the burn, using the "
-                       "simulation's own injector, combustion and nozzle equations. Apply the result, then run "
-                       "the simulation to see the whole burn.")
+        intro = QLabel("The whole motor is set here. Sizing works out the injector, nozzle and grain for the conditions "
+                       "at the start of the burn; Apply to motor makes them the motor's, and the Simulation tab runs the "
+                       "whole burn.")
         intro.setObjectName("cardLabel")
         intro.setWordWrap(True)
 
-        inputs = QWidget()
-        inputs.setFixedWidth(380)
-        left = QVBoxLayout(inputs)
+        # Two columns of about the same height; the last card in each takes up any difference.
+        left_column = QWidget()
+        left_column.setFixedWidth(380)
+        left = QVBoxLayout(left_column)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
-        left.addWidget(targets)
-        left.addWidget(motor, 1)
-        # Targets and Motor sit beside the injector and grain; everything below them runs the full width.
+        for card in (targets, tank, fuel):
+            left.addWidget(card)
+        left.addWidget(self.performance, 1)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        right.addWidget(self.injector)
+        right.addWidget(self.grain)
+        right.addWidget(self.nozzle, 1)
         body = QGridLayout()
         body.setHorizontalSpacing(16)
         body.setVerticalSpacing(12)
         body.addWidget(self.limit_warning, 0, 0, 1, 2)
         body.addWidget(self.error, 1, 0, 1, 2)
-        body.addWidget(inputs, 2, 0, 2, 1)
-        body.addWidget(self.injector, 2, 1)
-        body.addWidget(self.grain, 3, 1)
-        lower = QHBoxLayout()
-        lower.setSpacing(12)
-        lower.addWidget(self.nozzle, 1)
-        lower.addWidget(self.performance, 1)
-        body.addLayout(lower, 4, 0, 1, 2)
-        body.addWidget(self.sweep, 5, 0, 1, 2)
-        body.setRowStretch(3, 1)
+        body.addWidget(left_column, 2, 0)
+        body.addLayout(right, 2, 1)
+        body.addWidget(self.sweep, 3, 0, 1, 2)
         body.setColumnStretch(1, 1)
 
         inner = QWidget()
@@ -394,10 +464,21 @@ class SizingPage(QWidget):
 
         for spin in (self.P_cmbr.spin, self.burn_time, self.OF):
             spin.valueChanged.connect(self.refresh)
-        self.holes.valueChanged.connect(self._on_motor_edited)
+        self.P_cmbr.unit.currentTextChanged.connect(self.refresh)
+        for w in (self.P_limit, self.tank_V, self.tank_D, self.tank_T, self.vent_D, self.rho, self.hole_D, self.sw_D_port, self.sw_R_in,
+                  self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa):
+            w.spin.valueChanged.connect(self._on_motor_edited)
+            w.unit.currentTextChanged.connect(self._on_motor_edited)
+        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.cstar, self.inj_Cd,
+                     self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff):
+            spin.valueChanged.connect(self._on_motor_edited)
+        for combo in (self.vent, self.inj_type, self.inj_model):
+            combo.currentIndexChanged.connect(self._on_motor_edited)
+        for box in (self.sw_cd_geom, self.hem_same):
+            box.toggled.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
         self.grain_from.currentIndexChanged.connect(self._on_size_from)
-        self._show_size_from_rows()
+        self._sync_motor_rows()
 
     def _by_holes(self) -> bool:
         return self.size_from.currentIndex() == 1
@@ -473,88 +554,198 @@ class SizingPage(QWidget):
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
-        if self.isVisible():
-            self.refresh()
 
     def _on_motor_edited(self, *_):
-        if not self._loading:
-            self.motor_edited.emit()
+        if self._loading:
+            return
+        self._sync_motor_rows()
+        self.refresh()
+        self.motor_edited.emit()
 
-    def show_motor(self, values: dict):
-        """Load the Simulation tab's current values into this page's motor fields, without echoing back."""
-        self._loading = True
-        self.tank_V.set_display(from_si(values["tank_V"], self.tank_V.unit.currentText(), "volume"))
-        self.tank_V.setEnabled(values["tank_V_editable"])
-        self.tank_T.set_display(from_si(values["tank_T"], self.tank_T.unit.currentText(), "temperature"))
-        self.fill.setValue(100.0 * values["fill"])
-        self.hole_D.set_display(from_si(values["hole_D"], self.hole_D.unit.currentText(), "length"))
-        self.inj_Cd.setValue(values["inj_Cd"])
-        self.inj_Cd.setEnabled(values["inj_Cd_editable"])
-        self.inj_Cd.setToolTip("" if values["inj_Cd_editable"] else "Worked out from the swirler geometry.")
-        self.sw_cd_geom.setChecked(values["cd_from_geometry"])
-        self.sw_cd_geom.setVisible(values["inj_type"] == "Swirler")
-        self._swirler = values["inj_type"] == "Swirler"
-        self.inj_type.setCurrentText(values["inj_type"])
-        self.sw_ports.setValue(values["sw_ports"])
-        self.sw_D_port.set_display(from_si(values["sw_D_port"], self.sw_D_port.unit.currentText(), "length"))
-        self.sw_R_in.set_display(from_si(values["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
-        self._show_size_from_rows()
-        self.size_from.setItemText(1, "Swirler count" if self._swirler else "Hole count")
-        self._hole_D_row[0].setText("PTC bore" if self._swirler else "Hole diameter")
+    def _sync_motor_rows(self):
+        """Show the rows the injector type, flow model and vent use, and fill in the Cds that follow from others."""
+        self._swirler = swirler = self.inj_type.currentText() == "Swirler"
+        self.size_from.setItemText(1, "Swirler count" if swirler else "Hole count")
+        self._holes_row[0].setText("Swirler count" if swirler else "Hole count")
+        self._hole_D_row[0].setText("PTC bore" if swirler else "Hole diameter")
         self.hole_D.setToolTip("The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through."
-                               if self._swirler else "Diameter of each injector hole.")
-        stock = self._swirler and abs(values["hole_D"] - STOCK_PTC_BORE) < 1e-6
-        self.ptc_stock.blockSignals(True)
-        self.ptc_stock.setChecked(stock)
-        self.ptc_stock.blockSignals(False)
-        self.ptc_stock.setVisible(self._swirler)
-        self.hole_D.setEnabled(not stock)
-        self._holes_row[0].setText("Swirler count" if self._swirler else "Hole count")
-        self.injector.labels["Flow per hole"].setText("Flow per swirler" if self._swirler else "Flow per hole")
-        self.injector.labels["Holes"].setText("Swirlers" if self._swirler else "Holes")
-        self.sweep.set_chamber_limit(values["P_cmbr_max"])
-        self.inj_model.setCurrentText(values["inj_model"])
-        self.propellant.setCurrentIndex(max(self.propellant.findData(values["prop_id"]), 0))
-        self.cstar.setValue(values["cstar"])
-        self.noz_Cd.setValue(values["noz_Cd"])
-        self.holes.setValue(values["holes"])
-        self.port_D.set_display(from_si(values["port_D"], self.port_D.unit.currentText(), "length"))
-        self.grain_OD.set_display(from_si(values["grain_OD"], self.grain_OD.unit.currentText(), "length"))
-        self.grain_L.set_display(from_si(values["grain_L"], self.grain_L.unit.currentText(), "length"))
-        self._loading = False
+                               if swirler else "Diameter of each injector hole.")
+        self.ptc_stock.setVisible(swirler)
+        self.hole_D.setEnabled(not (swirler and self.ptc_stock.isChecked()))
+        self.injector.labels["Flow per hole"].setText("Flow per swirler" if swirler else "Flow per hole")
+        self.injector.labels["Holes"].setText("Swirlers" if swirler else "Holes")
+        self.sw_cd_geom.setVisible(swirler)
+        geometry = swirler and self.sw_cd_geom.isChecked()
+        self.inj_Cd.setEnabled(not geometry)
+        self.inj_Cd.setToolTip("Worked out from the swirler geometry." if geometry else "")
+        D_port = self.sw_D_port.si("length")
+        if geometry and D_port > 0:
+            self.inj_Cd.blockSignals(True)
+            self.inj_Cd.setValue(swirl_cd(self.hole_D.si("length"), self.sw_ports.value(), D_port, self.sw_R_in.si("length")))
+            self.inj_Cd.blockSignals(False)
+        model = self.inj_model.currentText()
+        for w in self._hem_row:
+            w.setVisible(model != "SPI")
+        for w in self._dyer_row:
+            w.setVisible(model == "Dyer")
+        self.inj_Cd_HEM.setEnabled(not self.hem_same.isChecked())
+        if self.hem_same.isChecked():
+            self.inj_Cd_HEM.blockSignals(True)
+            self.inj_Cd_HEM.setValue(self.inj_Cd.value())
+            self.inj_Cd_HEM.blockSignals(False)
+        for w in self._vent_rows:
+            w.setVisible(self.vent.currentText() != "None")
+        self._show_size_from_rows()
 
-    def motor_values(self) -> dict:
+    def _on_propellant(self):
+        """Fill in the propellant's own density and burn rate."""
+        if self._loading or not self.propellant.currentData():
+            return
+        p = load_propellant(self.propellant.currentData())
+        self._loading = True
+        self.rho.set_si(p.rho, "density")
+        self.prop_a.setValue(float(p.reg[0]))
+        self.prop_n.setValue(float(p.reg[1]))
+        self.prop_m.setValue(float(p.reg[2]) if p.reg.size > 2 else 0.0)
+        self._loading = False
+        self._on_motor_edited()
+
+    def load_motor(self, cfg: dict):
+        """Show a motor. A tank set by its length, starting pressure or oxidizer mass, a nozzle set by its exit
+        diameter, and a typed-in chamber volume are shown as their equivalents in this page's fields."""
+        def si(name: str, quantity: str = "length") -> float:
+            return to_si(float(cfg[name] or 0.0), cfg[f"{name}_unit"], quantity)
+
+        def show(row: UnitRow, name: str):  # in the file's own unit, so saving it again keeps its numbers
+            row.set_display(float(cfg[name] or 0.0), cfg[f"{name}_unit"])
+
+        self._loading = True
+        show(self.tank_D, "tnk_D")
+        if int(cfg.get("tnk_V_state", 0)):
+            self.tank_V.set_si(si("tnk_L") * 0.25 * math.pi * si("tnk_D") ** 2, "volume")
+        else:
+            show(self.tank_V, "tnk_V")
+        if cfg.get("tnk_dd") == "Starting Tank Pressure":
+            P = to_si(float(cfg["tnk_cond"]), cfg["T_tnk_unit"], "pressure")
+            self.tank_T.set_si(saturation_temperature(P) or 293.15, "temperature")
+        else:
+            self.tank_T.set_display(float(cfg["tnk_cond"]), cfg["T_tnk_unit"])
+        if cfg.get("fill_dd") == "Tank Fill Percentage" or cfg.get("fill_unit") == "%":
+            self.fill.setValue(float(cfg["fill"]))
+        else:
+            ox, V = nox(self.tank_T.si("temperature")), self.tank_V.si("volume")
+            m_o = to_si(float(cfg["fill"]), cfg["fill_unit"], "mass")
+            self.fill.setValue(100.0 * (m_o / max(V, 1e-12) - ox.rho_v) / (ox.rho_l - ox.rho_v))
+        self.vent.setCurrentText(str(cfg.get("vnt_state") or "None"))
+        show(self.vent_D, "vnt_D")
+        self.vent_Cd.setValue(float(cfg.get("vnt_Cd") or 0.0))
+
+        self.propellant.setCurrentIndex(max(self.propellant.findData(cfg.get("prop_id") or "ABS"), 0))
+        show(self.rho, "prop_rho")
+        self.prop_a.setValue(float(cfg.get("prop_a") or 0.0))
+        self.prop_n.setValue(float(cfg.get("prop_n") or 0.0))
+        self.prop_m.setValue(float(cfg.get("prop_m") or 0.0))
+        self.cstar.setValue(float(cfg.get("cstar_eff") or 100.0))
+
+        self.inj_type.setCurrentText(str(cfg["inj_type"]))
+        show(self.hole_D, "inj_D")
+        self.ptc_stock.blockSignals(True)
+        self.ptc_stock.setChecked(self.inj_type.currentText() == "Swirler" and abs(si("inj_D") - STOCK_PTC_BORE) < 1e-6)
+        self.ptc_stock.blockSignals(False)
+        self.holes.setValue(int(cfg.get("inj_N") or 1))
+        self.sw_ports.setValue(int(cfg["sw_ports"]))
+        show(self.sw_D_port, "sw_D_port")
+        show(self.sw_R_in, "sw_R_in")
+        self.sw_cd_geom.setChecked(bool(cfg["sw_cd_from_geometry"]))
+        self.inj_Cd.setValue(float(cfg.get("inj_Cd") or 1.0))
+        self.inj_model.setCurrentText(str(cfg.get("inj_model") or "SPI"))
+        hem_cd = float(cfg.get("inj_Cd_HEM") or 0.0)
+        self.hem_same.setChecked(not hem_cd)
+        if hem_cd:
+            self.inj_Cd_HEM.setValue(hem_cd)
+        self.dyer_kappa.setValue(float(cfg.get("dyer_kappa") or 1.0))
+
+        for row, name in ((self.port_D, "grn_ID"), (self.grain_OD, "grn_OD"), (self.grain_L, "grn_L"),
+                          (self.pre_L, "cmbr_pre_L"), (self.post_L, "cmbr_post_L")):
+            show(row, name)
+        if not int(cfg.get("cmbr_V_state", 1)):  # extra chamber volume becomes post-combustion length
+            area = 0.25 * math.pi * si("grn_OD") ** 2
+            extra = si("cmbr_V", "volume") / area - si("cmbr_pre_L") - si("grn_L") - si("cmbr_post_L")
+            if extra > 0:
+                self.post_L.set_si(si("cmbr_post_L") + extra, "length")
+
+        self._throat, self._throat_unit = si("noz_thrt"), cfg["noz_thrt_unit"]
+        exit_D = si("noz_ex") if cfg.get("noz_def") == "Nozzle Exit Diameter" else 0.0
+        self._ER = (exit_D / self._throat) ** 2 if exit_D and self._throat else float(cfg.get("noz_ex") or 1.0)
+        self.noz_Cd.setValue(float(cfg.get("noz_Cd") or 1.0))
+        self.noz_eff.setValue(float(cfg.get("noz_eff") or 100.0))
+        show(self.Pa, "Pa")
+        show(self.P_limit, "P_cmbr_max")
+        self._loading = False
+        self._sync_motor_rows()
+
+    def motor_cfg(self) -> dict:
+        """The motor's settings as config fields."""
+        def field(name: str, row: UnitRow) -> dict:
+            return {name: row.spin.value(), f"{name}_unit": row.unit.currentText()}
+
+        L, _D, _V = self.tank_geometry()
         return {
-            "tank_V": to_si(self.tank_V.spin.value(), self.tank_V.unit.currentText(), "volume"),
-            "tank_T": to_si(self.tank_T.spin.value(), self.tank_T.unit.currentText(), "temperature"),
-            "fill": self.fill.value() / 100.0,
-            "hole_D": to_si(self.hole_D.spin.value(), self.hole_D.unit.currentText(), "length"),
-            "inj_Cd": self.inj_Cd.value(),
+            **field("tnk_V", self.tank_V), "tnk_V_state": 0, **field("tnk_D", self.tank_D),
+            "tnk_L": from_si(L, self.tank_D.unit.currentText(), "length"), "tnk_L_unit": self.tank_D.unit.currentText(),
+            "tnk_dd": "Starting Tank Temperature", "tnk_cond": self.tank_T.spin.value(),
+            "T_tnk_unit": self.tank_T.unit.currentText(),
+            "fill_dd": "Tank Fill Percentage", "fill": self.fill.value(), "fill_unit": "%",
+            "vnt_state": self.vent.currentText(), **field("vnt_D", self.vent_D), "vnt_Cd": self.vent_Cd.value(),
+            "prop_id": self.propellant.currentData() or "ABS",
+            "prop_nm": (self.propellant.currentText() or "ABS").split(" (")[0],
+            **field("prop_rho", self.rho), "prop_a": self.prop_a.value(), "prop_n": self.prop_n.value(),
+            "prop_m": self.prop_m.value(), "cstar_eff": self.cstar.value(),
+            "inj_type": self.inj_type.currentText(), **field("inj_D", self.hole_D), "inj_N": self.holes.value(),
+            "inj_Cd": self.inj_Cd.value(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
+            **field("sw_R_in", self.sw_R_in), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
             "inj_model": self.inj_model.currentText(),
-            "prop_id": self.propellant.currentData(),
-            "cstar": self.cstar.value(),
-            "noz_Cd": self.noz_Cd.value(),
-            "holes": self.holes.value(),
-            "P_cmbr_max": self.sweep.chamber_limit(),
-            "inj_type": self.inj_type.currentText(),
-            "cd_from_geometry": self.sw_cd_geom.isChecked(),
-            "sw_ports": self.sw_ports.value(),
-            "sw_D_port": to_si(self.sw_D_port.spin.value(), self.sw_D_port.unit.currentText(), "length"),
-            "sw_R_in": to_si(self.sw_R_in.spin.value(), self.sw_R_in.unit.currentText(), "length"),
-            "port_D": to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
-            "grain_OD": to_si(self.grain_OD.spin.value(), self.grain_OD.unit.currentText(), "length"),
-            "grain_L": to_si(self.grain_L.spin.value(), self.grain_L.unit.currentText(), "length"),
+            "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
+            "dyer_kappa": self.dyer_kappa.value(),
+            **field("P_cmbr_max", self.P_limit),
+            **field("grn_ID", self.port_D), **field("grn_OD", self.grain_OD), **field("grn_L", self.grain_L),
+            **field("cmbr_pre_L", self.pre_L), **field("cmbr_post_L", self.post_L), "cmbr_V_state": 1,
+            "noz_thrt": from_si(self._throat, self._throat_unit, "length"), "noz_thrt_unit": self._throat_unit,
+            "noz_def": "Nozzle Expansion Ratio", "noz_ex": self._ER, "noz_Cd": self.noz_Cd.value(),
+            "noz_eff": self.noz_eff.value(), **field("Pa", self.Pa),
         }
+
+    def tank_geometry(self) -> tuple[float, float, float]:
+        """Tank length, diameter and volume in SI. The length follows from the volume and diameter."""
+        D = self.tank_D.si("length") or self.grain_OD.si("length") or 0.05
+        V = self.tank_V.si("volume")
+        return max(V / (0.25 * math.pi * D ** 2), 1e-4), D, V
+
+    def tank_state(self) -> tuple[float, float, float]:
+        """Starting fill fraction, temperature [K] and oxidizer mass [kg]."""
+        fill, T = self.fill.value() / 100.0, self.tank_T.si("temperature")
+        try:
+            ox = nox(T)
+        except Exception:  # outside the nitrous fit
+            return fill, T, 0.0
+        V = self.tank_V.si("volume")
+        return fill, T, fill * V * ox.rho_l + (1.0 - fill) * V * ox.rho_v
+
+    def nozzle_size(self) -> tuple[float, float, float]:
+        """The motor's throat and exit diameters [m] and expansion ratio."""
+        return self._throat, self._throat * math.sqrt(self._ER), self._ER
 
     def refresh(self):
         if self._loading:
             return
         u = self._get_units()
         cfg = self._get_cfg()
+        self.tank_L.setText(u.text(self.tank_geometry()[0], "length"))
         target, limit = self.targets().P_cmbr, chamber_limit(cfg)
         self.limit_warning.setText(f"The {u.text(target, 'pressure')} chamber pressure target is above the "
                                    f"{u.text(limit, 'pressure')} chamber pressure limit.")
         self.limit_warning.setVisible(target > limit)
+        self.sweep.set_chamber_limit(limit)
         try:
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
@@ -563,10 +754,9 @@ class SizingPage(QWidget):
             self.swirler_options.update_target(None)
             self.error.setText(str(exc) or type(exc).__name__)
             self.error.show()
-            self.apply_btn.setEnabled(False)
-            self.apply_summary.setText("")
             for card in (self.injector, self.nozzle, self.grain, self.performance):
                 card.clear()
+            self._show_apply()
             return
         if self._result is None or abs(z.throat_D - self._result.throat_D) > 1e-12:
             self._picked_throat = None
@@ -583,7 +773,6 @@ class SizingPage(QWidget):
             self.swirler_options.update_target(target)
         self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
-        self.apply_btn.setEnabled(True)
 
         self.tank_P.setText(u.text(z.P_tnk, "pressure"))
         self.ox_liquid.setText(u.text(z.ox_liquid, "mass"))
@@ -717,6 +906,7 @@ class SizingPage(QWidget):
         self.performance.set("Thrust", u.text(z.thrust, "force"))
         self.performance.set("Isp", f"{z.isp:.0f} s")
         self.performance.set("Impulse over the burn time", u.text(z.thrust * z.burn_time, "impulse"))
+        self._show_apply()
 
     def _show_throat(self):
         z, u = cast(Sizing, self._result), self._get_units()
@@ -732,15 +922,27 @@ class SizingPage(QWidget):
         bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
         self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
                                       "caption": f"{u.text(throat, 'length')} throat"})
-        v = self._values()
-        parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
-                 f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}"]
-        if self._layout:
-            parts.append(f"{self._layout.ports} × #{self._layout.drill} ports ({u.text(self._layout.port_D, 'length')})")
+
+    def unapplied(self) -> list[str]:
+        """What Apply to motor would change, as "old → new"."""
+        if self._result is None:
+            return []
+        u, v = self._get_units(), self._values()
+        pairs = [("throat", u.text(self._throat, "length"), u.text(v["throat_D"], "length")),
+                 ("expansion ratio", f"{self._ER:.2f}", f"{v['ER']:.2f}"),
+                 ("swirlers" if self._swirler else "holes", str(self.holes.value()), str(v["holes"]))]
+        if v["sw_D_port"]:
+            pairs.append(("swirler holes", u.text(self.sw_D_port.si("length"), "length"), u.text(v["sw_D_port"], "length")))
         if math.isfinite(v["grain_L"]) and not self._by_length():
-            parts.append(f"grain {u.text(v['grain_L'], 'length')}")
-        parts.append(f"O/F {v['OF']:.2f}")
-        self.apply_summary.setText("Applies: " + ", ".join(parts))
+            pairs.append(("grain", u.text(self.grain_L.si("length"), "length"), u.text(v["grain_L"], "length")))
+        return [f"{name} {old} → {new}" for name, old, new in pairs if old != new]
+
+    def _show_apply(self):
+        changes = self.unapplied()
+        self.apply_btn.setEnabled(bool(changes))
+        self.apply_summary.setText("Applies: " + ", ".join(changes) if changes else
+                                   "The motor matches this sizing." if self._result else "")
+        self.sized.emit()
 
     @staticmethod
     def _hole_D(cfg: dict) -> float:
@@ -762,6 +964,7 @@ class SizingPage(QWidget):
     def _on_pick(self, throat: float):
         self._picked_throat = throat
         self._show_throat()
+        self._show_apply()
 
     def _values(self) -> dict:
         z, t = cast(Sizing, self._result), self.targets()
@@ -771,7 +974,6 @@ class SizingPage(QWidget):
             "holes": t.holes or (self.holes.value() if self._solve_port() else max(1, round(z.holes))),
             "sw_D_port": self._layout.port_D if self._layout else None,
             "grain_L": z.grain_L,
-            "OF": z.OF,
         }
 
     def sized_cfg(self) -> dict | None:
@@ -781,14 +983,25 @@ class SizingPage(QWidget):
         v = self._values()
         cfg = dict(self._cfg)
         cfg.update(noz_thrt=v["throat_D"], noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=v["ER"],
-                   inj_N=v["holes"], const_OF=v["OF"])
+                   inj_N=v["holes"])
         if v["sw_D_port"]:
             cfg.update(sw_D_port=v["sw_D_port"], sw_D_port_unit="m")
         if math.isfinite(v["grain_L"]):
             cfg.update(grn_L=v["grain_L"], grn_L_unit="m")
         return cfg
 
-    def _on_apply(self):
+    def apply(self):
+        """Make the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's."""
         if self._result is None:
             return
-        self._apply(self._values())
+        v = self._values()
+        self._loading = True
+        self._throat, self._ER = v["throat_D"], v["ER"]
+        self.holes.setValue(v["holes"])
+        if v["sw_D_port"]:
+            self.sw_D_port.set_si(v["sw_D_port"], "length")
+        if math.isfinite(v["grain_L"]) and not self._by_length():
+            self.grain_L.set_si(v["grain_L"], "length")
+        self._loading = False
+        self._on_motor_edited()
+        self.applied.emit()

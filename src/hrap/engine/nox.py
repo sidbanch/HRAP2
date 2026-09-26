@@ -88,6 +88,20 @@ def vapor_pressure(T: float) -> float:
     )
 
 
+def saturation_temperature(P: float) -> float | None:
+    """The temperature whose vapor pressure is P, or None outside the fit."""
+    import math
+
+    from scipy.optimize import brentq
+
+    if not math.isfinite(P) or P <= 1.0 or P >= 7.2e6:
+        return None
+    try:
+        return float(brentq(lambda T: vapor_pressure(T) - P, 183.15, TC - 0.05, xtol=1e-9))
+    except ValueError:
+        return None
+
+
 def _pow(base: float, exp: float) -> float:
     """Real power. Negative bases with fractional exponents are complex in MATLAB."""
     if base < 0.0:

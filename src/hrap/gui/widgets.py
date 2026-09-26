@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.units import convert
+from hrap.units import convert, from_si, to_si
 
 
 class _NoWheel:
@@ -133,3 +133,10 @@ class UnitRow(QWidget):
         self.spin.blockSignals(True)
         self.spin.setValue(float(value or 0.0))
         self.spin.blockSignals(False)
+
+    def si(self, quantity: str) -> float:
+        return to_si(self.spin.value(), self.unit.currentText(), quantity)
+
+    def set_si(self, value: float, quantity: str):
+        """Show an SI value in the row's current unit, without emitting a change."""
+        self.set_display(from_si(value, self.unit.currentText(), quantity))

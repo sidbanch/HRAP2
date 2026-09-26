@@ -14,7 +14,9 @@ Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow s
 
 ## Sizing tab
 
-Works out a motor from start-of-burn targets, using the same injector, combustion and nozzle math as the simulation. **Apply to motor** copies the result into the Simulation tab.
+Holds the whole motor: tank, fuel, injector, grain and nozzle. It also works out the injector, throat and grain for start-of-burn targets, using the same injector, combustion and nozzle math as the simulation. **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's.
+
+Motor files that give the tank by length, starting pressure or oxidizer mass, or the nozzle by exit diameter, load as the equivalent volume, temperature, fill and expansion ratio.
 
 **Injector: Size from** decides what sets the oxidizer flow:
 
@@ -43,17 +45,22 @@ The theory ignores losses entering the ports, so real swirlers probably flow les
 
 ## Simulation tab
 
-Enter the motor on the left, press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
+Runs the motor from the Sizing page. The **Motor** line at the top says which motor that is, and lists anything the Sizing page calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
+
+The left side only holds how to simulate the motor:
+
+- **Fuel flow:** **Burn-rate law** (HRAP's Shifting OF) burns the grain back at the fuel's burn rate, so the O/F drifts as the port opens. **Fixed O/F** (Constant OF) skips the grain and holds the O/F you type. Use it only without burn-rate data.
+- **Run:** run time, when the valve closes, timestep, and chamber pressure before ignition.
 
 Options that change the default MATLAB model:
 
-- **Injector model** (Injector / vent section):
+- **Flow model** (Sizing page, Injector card):
   - **SPI** (default): pure liquid through the injector, as in original HRAP. Overpredicts flow above about 250–300 psi ΔP.
   - **HEM:** the nitrous boils instantly in the orifice. Underpredicts flow.
   - **Dyer:** a blend of the two, weighted by κ (default 1).
 
   HEM and Dyer use CoolProp nitrous properties for the injector and the tank.
-- **Solve tank cooling each step** (Tank section): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
+- **Solve tank cooling each step:** replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
 - **Enable advanced options:** live chemistry and experimental fluid and grain models.
 
 ## Mass & export tab

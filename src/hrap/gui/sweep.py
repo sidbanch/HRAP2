@@ -82,7 +82,6 @@ class SweepPanel(QFrame):
     """Full-simulation check of a sized motor across throat diameters and injector Cds."""
 
     finished = Signal()
-    limit_edited = Signal()  # the chamber limit is a motor setting, shared with the Simulation tab
 
     def __init__(self, get_cfg: Callable[[], dict | None], get_units: Callable[[], DisplayUnits],
                  on_pick: Callable[[float], None]):
@@ -105,13 +104,13 @@ class SweepPanel(QFrame):
         self.throat_step.setMinimum(0.001)
         self.cd_lo, self.cd_hi = self._spin(0.3, 3), self._spin(0.9, 3)
         self.cd_n = self._count(6)
-        self.min_chamber, self.max_chamber = self._spin(0.0, 0), self._spin(500.0, 0)
+        self.min_chamber = self._spin(0.0, 0)
+        self._limit = 0.0  # Pa, the chamber pressure limit from Targets
+        self.max_chamber = QLabel("")
         self.max_dp = self._spin(300.0, 0)
         self.min_chamber.setToolTip("Lowest acceptable peak chamber pressure (absolute). Below it the throat is too big:\n"
                                     "the nozzle over-expands and the motor loses thrust and Isp.")
-        self.max_chamber.setToolTip("Peak chamber pressure the chamber is designed for (absolute).\n"
-                                    "Shared with the chamber pressure limit on the Simulation tab.")
-        self.max_chamber.valueChanged.connect(self.limit_edited)
+        self.max_chamber.setToolTip("The chamber pressure limit, set in Targets.")
         self.max_dp.setToolTip("Above this burn-average ΔP, the SPI injector model overpredicts oxidizer flow.")
         self.sized_label = QLabel("")
         self.sized_label.setObjectName("cardLabel")
@@ -225,8 +224,7 @@ class SweepPanel(QFrame):
         self.table.hide()  # shown once a sweep runs
         self.legend.hide()
 
-        for signal in (self.shown.currentIndexChanged, self.min_chamber.valueChanged, self.max_chamber.valueChanged,
-                       self.max_dp.valueChanged):
+        for signal in (self.shown.currentIndexChanged, self.min_chamber.valueChanged, self.max_dp.valueChanged):
             signal.connect(self._refresh)
 
     @staticmethod
@@ -312,20 +310,16 @@ class SweepPanel(QFrame):
     def busy(self) -> bool:
         return self._thread is not None
 
-    def chamber_limit(self) -> float:
-        return self._limits()[1]
-
     def set_chamber_limit(self, limit: float):
-        self.max_chamber.blockSignals(True)
-        self.max_chamber.setValue(from_si(limit, self._get_units().pressure, "pressure"))
-        self.max_chamber.blockSignals(False)
+        self._limit = limit
+        self.max_chamber.setText(f"{from_si(limit, self._get_units().pressure, 'pressure'):.0f}")
         self._refresh()
 
     def _limits(self) -> tuple[float, float, float]:
         """Lowest and highest peak chamber pressure, and the ΔP warning (infinite outside SPI)."""
         p = self._get_units().pressure
         max_dp = to_si(self.max_dp.value(), p, "pressure") if self.spi else float("inf")
-        return to_si(self.min_chamber.value(), p, "pressure"), to_si(self.max_chamber.value(), p, "pressure"), max_dp
+        return to_si(self.min_chamber.value(), p, "pressure"), self._limit, max_dp
 
     def _run(self):
         cfg = self._get_cfg()
@@ -428,7 +422,7 @@ class SweepPanel(QFrame):
             return
         u = self._get_units()
         cd_range = f"Cd {self.cd_lo.value():.3g}–{self.cd_hi.value():.3g}"
-        band = f"{self.min_chamber.value():.0f}–{self.max_chamber.value():.0f} {u.pressure}"
+        band = f"{self.min_chamber.value():.0f}–{self.max_chamber.text()} {u.pressure}"
         ok = passing_throats(self.cases, *self._limits())
         if ok:
             listed = ", ".join(self._throat_text(t) for t in ok)

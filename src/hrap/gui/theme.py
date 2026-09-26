@@ -146,6 +146,7 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
         QLabel#cardTitle {{ font-weight: 700; font-size: 14px; }}
         QLabel#cardLabel {{ color: {colors['disabled']}; }}
         QLabel#cardValue {{ font-weight: 600; }}
+        QLabel#notApplied {{ color: #e5c07b; }}
         QLabel#sizingError {{
             color: #e06c75;
             padding: 8px 12px;

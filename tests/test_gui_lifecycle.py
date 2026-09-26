@@ -58,7 +58,8 @@ def test_editing_inputs_invalidates_completed_results(window):
     assert window._output is not None
     assert window._form.isEnabled()
     assert window._result_cfg["mtr_nm"] == window._settings.mtr_nm
-    window.grn_L.spin.setValue(window.grn_L.spin.value() + 1)
+    grain_L = window.sizing_page.grain_L.spin
+    grain_L.setValue(grain_L.value() + 1)
     assert window._output is None
     assert window._result_cfg is None
     assert not window.summary.toPlainText()
