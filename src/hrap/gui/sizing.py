@@ -18,10 +18,10 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
-from hrap.engine.swirl import swirl_A, swirl_fill, swirl_port_D
+from hrap.engine.swirl import swirl_A, swirl_fill
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
-from hrap.gui.swirler_options import SwirlerOptions, Target
+from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants
@@ -152,7 +152,7 @@ class SizingPage(QWidget):
         self._result: Sizing | None = None
         self._cfg: dict | None = None
         self._picked_throat: float | None = None
-        self._port_D: float | None = None  # swirler inlet port size solved for the flow
+        self._layout: Layout | None = None  # the swirler drilled for the flow, when a burn time or O/F sets it
         self._port_error = ""
         self._loading = False
         self._swirler = False
@@ -532,14 +532,15 @@ class SizingPage(QWidget):
             self._picked_throat = None
             self.sweep.clear_pick()
         self._result, self._cfg = z, cfg
-        self._port_D = None
+        self._layout = None
         if self._solve_port():
-            exit_D = self._hole_D(cfg)
+            target = Target(z.inj_CdA, z.mdot_o, z.OF if self._by_length() else None, z.OF_exp, z.ox_liquid, self.holes.value(),
+                            to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length"), self._hole_D(cfg), int(cfg["sw_ports"]))
             try:
-                self._port_D = swirl_port_D(exit_D, int(cfg["sw_ports"]), to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length"),
-                                            z.inj_CdA / (self.holes.value() * 0.25 * math.pi * exit_D ** 2))
+                self._layout = drilled_layout(target, target.exit_D, target.ports)
             except ValueError as exc:
                 self._port_error = str(exc)
+            self.swirler_options.update_target(target)
         self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
         self.apply_btn.setEnabled(True)
@@ -605,20 +606,19 @@ class SizingPage(QWidget):
             R_in = to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length")
             ports = int(cfg["sw_ports"])
             if solve:
-                self.swirler_options.update_target(Target(z.inj_CdA, z.mdot_o, z.OF if t.grain_L else None, z.OF_exp,
-                                                          z.ox_liquid, holes, R_in))
                 cd = z.inj_CdA / (holes * 0.25 * math.pi * self._hole_D(cfg) ** 2)
-                self.injector.set("Swirler Cd", f"{cd:.3f}",
-                                  f"Total CdA ÷ ({holes} × area of the {hole} exit), the Cd the ports have to give.")
-                if self._port_D is None:
+                if self._layout is None:
                     self.injector.set("Inlet port diameter", "none fits", self._port_error)
+                    self.injector.set("Swirler Cd", "—")
                 else:
-                    D_port = self._port_D
-                    self.injector.set("Inlet port diameter", u.text(D_port, "length"),
-                                      f"The port size that gives Cd {cd:.3f} with {ports} ports {u.text(R_in, 'length')} off the axis,\n"
-                                      "from the swirl theory for an ideal liquid (Abramovich). Measured swirlers have flowed less\n"
-                                      "than this theory, so a part drilled to this size will likely flow a little under the target.\n"
+                    D_port = self._layout.port_D
+                    self.injector.set("Inlet port diameter", f"#{self._layout.drill} ({u.text(D_port, 'length')})",
+                                      f"The number drill nearest the port size that gives Cd {cd:.3f} with {ports} ports\n"
+                                      f"{u.text(R_in, 'length')} off the axis, from the swirl theory for an ideal liquid (Abramovich).\n"
+                                      "Measured swirlers have flowed less than this theory, so expect a little less flow.\n"
                                       "Apply to motor copies it into the swirler.")
+                    self.injector.set("Swirler Cd", f"{self._layout.cd:.3f}",
+                                      f"The drilled swirler's Cd on its {hole} exit. The flow needs {cd:.3f}.")
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "bore": bore,
@@ -687,8 +687,8 @@ class SizingPage(QWidget):
         v = self._values()
         parts = [f"Throat {u.text(v['throat_D'], 'length')}{' (picked)' if self._picked_throat else ''}",
                  f"expansion ratio {v['ER']:.2f}", f"{v['holes']} {'swirler' if self._swirler else 'hole'}{'' if v['holes'] == 1 else 's'}"]
-        if v["sw_D_port"]:
-            parts.append(f"inlet ports {u.text(v['sw_D_port'], 'length')}")
+        if self._layout:
+            parts.append(f"{self._layout.ports} × #{self._layout.drill} ports ({u.text(self._layout.port_D, 'length')})")
         if math.isfinite(v["grain_L"]) and not self._by_length():
             parts.append(f"grain {u.text(v['grain_L'], 'length')}")
         parts.append(f"O/F {v['OF']:.2f}")
@@ -702,15 +702,13 @@ class SizingPage(QWidget):
         for card in (self.injector, self.nozzle, self.grain):
             card.sketch.set_theme(name)
 
-    def _on_layout_picked(self, exit_D: float, ports: int, port_D: float):
-        """Load a swirler layout into the injector and show how that exact swirler does."""
+    def _on_layout_picked(self, exit_D: float, ports: int):
+        """Use a layout's exit and port count; the injector then shows its drill."""
         self._loading = True
         self.hole_D.set_display(from_si(exit_D, self.hole_D.unit.currentText(), "length"))
         self.sw_ports.setValue(ports)
-        self.sw_D_port.set_display(from_si(port_D, self.sw_D_port.unit.currentText(), "length"))
         self._loading = False
         self.motor_edited.emit()
-        self.size_from.setCurrentIndex(1)
 
     def _on_pick(self, throat: float):
         self._picked_throat = throat
@@ -722,7 +720,7 @@ class SizingPage(QWidget):
             "throat_D": self._picked_throat or z.throat_D,
             "ER": z.ER,
             "holes": t.holes or (self.holes.value() if self._solve_port() else max(1, round(z.holes))),
-            "sw_D_port": self._port_D if self._solve_port() else None,
+            "sw_D_port": self._layout.port_D if self._layout else None,
             "grain_L": z.grain_L,
             "OF": z.OF,
         }
