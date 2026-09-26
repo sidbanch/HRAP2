@@ -5,14 +5,13 @@ import math
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -22,7 +21,7 @@ from hrap.engine.swirl import nearest_drill, swirl_A, swirl_cd, swirl_port_D
 from hrap.gui.widgets import PlainDoubleSpinBox, PlainSpinBox
 
 IN = 0.0254
-COLUMNS = ["Ports", "Drill", "Start O/F", "Flow vs target", "Liquid lasts"]
+COLUMNS = ["Holes", "Drill", "Start O/F", "Flow vs target", "Liquid lasts"]
 ON_TARGET = QColor("#3f9e62")  # flow within 3% of the target
 
 
@@ -73,19 +72,15 @@ def layouts(t: Target, exits: list[float], counts: range, min_drill: float) -> l
 
 
 class SwirlerOptions(QFrame):
-    """Drillable swirler layouts grouped by exit, shown inside the injector card; clicking one loads its exit and port count."""
+    """Swirler hole layouts for the injector's PTC bore, shown inside the injector card; clicking one loads its hole count."""
 
-    picked = Signal(float, int)  # exit diameter (m), port count
+    picked = Signal(int)  # hole count
 
     def __init__(self):
         super().__init__()
         self._target: Target | None = None
         self._rows: dict[int, Layout] = {}
 
-        self.exits = QLineEdit("0.188, 0.25")
-        self.exits.setFixedWidth(120)
-        self.exits.setToolTip("Exit diameters to try, in inches, separated by commas.\n"
-                              "The exit is the narrowest point after the swirler, e.g. 0.188 for a stock 1/4\" PTC.")
         self.ports_lo, self.ports_hi = PlainSpinBox(), PlainSpinBox()
         for spin, value in ((self.ports_lo, 3), (self.ports_hi, 8)):
             spin.setRange(1, 24)
@@ -97,11 +92,10 @@ class SwirlerOptions(QFrame):
         self.min_drill.setSingleStep(0.001)
         self.min_drill.setValue(0.030)
         self.min_drill.setFixedWidth(72)
-        self.min_drill.setToolTip("Smallest port you're willing to drill. Tiny drills break and tiny ports clog.")
+        self.min_drill.setToolTip("Smallest hole you're willing to drill. Tiny drills break and tiny holes clog.")
         inputs = QHBoxLayout()
         inputs.setSpacing(8)
-        for label, widget in (("Exits (in)", self.exits), ("Ports", self.ports_lo), ("to", self.ports_hi),
-                              ("Smallest drill (in)", self.min_drill)):
+        for label, widget in (("Holes", self.ports_lo), ("to", self.ports_hi), ("Smallest drill (in)", self.min_drill)):
             inputs.addWidget(QLabel(label))
             inputs.addWidget(widget)
             inputs.addSpacing(8)
@@ -133,7 +127,6 @@ class SwirlerOptions(QFrame):
         layout.addWidget(self.note)
         layout.addWidget(self.table)
 
-        self.exits.editingFinished.connect(self._refresh)
         for spin in (self.ports_lo, self.ports_hi, self.min_drill):
             spin.valueChanged.connect(self._refresh)
 
@@ -142,59 +135,39 @@ class SwirlerOptions(QFrame):
         self._refresh()
 
     def _refresh(self, *_):
-        self.table.clearSpans()
         self.table.setRowCount(0)
         self._rows = {}
         t = self._target
         if t is None:
             return
-        try:
-            exits = [float(v) * IN for v in self.exits.text().replace(";", ",").split(",") if v.strip()]
-        except ValueError:
-            self.note.setText("Exits need to be numbers in inches, separated by commas.")
-            return
-        found = layouts(t, exits, range(self.ports_lo.value(), self.ports_hi.value() + 1), self.min_drill.value() * IN)
-        self.note.setText("Number-drill port sizes for the target flow. Click a row to use it. The swirl theory has run high "
-                          "on measured swirlers, so expect a little less flow and open the ports up a size after a flow test."
-                          + ("" if found else " Nothing fits: try other exits, more ports or a smaller drill."))
-        group_bg = self.table.palette().color(QPalette.ColorRole.AlternateBase)
-        bold = QFont(self.table.font())
-        bold.setBold(True)
+        found = layouts(t, [t.exit_D], range(self.ports_lo.value(), self.ports_hi.value() + 1), self.min_drill.value() * IN)
+        cd_needed = t.CdA / (t.swirlers * 0.25 * math.pi * t.exit_D ** 2)
+        self.note.setText(f"Hole drills for the target flow through the {t.exit_D / IN:.3f} in PTC bore, which needs a swirler Cd of "
+                          f"{cd_needed:.3f}. Click a row to use it. The swirl theory has run high on measured swirlers, so expect "
+                          "a little less flow and open the holes up a size after a flow test."
+                          + ("" if found else " Nothing fits: bore the PTC differently, allow more holes or a smaller drill."))
         selected = None
-        for exit_D in exits:
-            group = [lay for lay in found if lay.exit_D == exit_D]
-            if not group:
-                continue
+        for lay in found:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            cd_needed = t.CdA / (t.swirlers * 0.25 * math.pi * exit_D ** 2)
-            header = QTableWidgetItem(f"{exit_D / IN:.3f} in exit  ·  needs Cd {cd_needed:.3f}  ·  swirl A ≈ {group[0].A:.1f}")
-            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            header.setFont(bold)
-            header.setBackground(group_bg)
-            self.table.setItem(row, 0, header)
-            self.table.setSpan(row, 0, 1, len(COLUMNS))
-            for lay in group:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                self._rows[row] = lay
-                ratio = lay.CdA / t.CdA  # the flow is proportional to CdA
-                mdot = t.mdot_o * ratio
-                error = round(100 * (ratio - 1))
-                cells = [str(lay.ports), f"#{lay.drill}  ({lay.port_D / IN:.4f} in)",
-                         "—" if t.OF is None else f"{t.OF * ratio ** t.OF_exp:.2f}",
-                         "on target" if error == 0 else f"{error:+d}%", f"{t.ox_liquid / mdot:.2f} s"]
-                tip = (f"{lay.ports} × #{lay.drill} ({lay.port_D / IN:.4f} in) ports in a {exit_D / IN:.3f} in exit\n"
-                       f"swirl A {lay.A:.2f}, Cd {lay.cd:.3f}, total CdA {lay.CdA / IN ** 2:.5f} in², oxidizer flow {mdot:.3f} kg/s")
-                for col, text in enumerate(cells):
-                    item = QTableWidgetItem(text)
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item.setToolTip(tip)
-                    if col == 3 and abs(ratio - 1) <= 0.03:
-                        item.setForeground(ON_TARGET)
-                    self.table.setItem(row, col, item)
-                if abs(lay.exit_D - t.exit_D) < 1e-6 and lay.ports == t.ports:
-                    selected = row
+            self._rows[row] = lay
+            ratio = lay.CdA / t.CdA  # the flow is proportional to CdA
+            mdot = t.mdot_o * ratio
+            error = round(100 * (ratio - 1))
+            cells = [str(lay.ports), f"#{lay.drill}  ({lay.port_D / IN:.4f} in)",
+                     "—" if t.OF is None else f"{t.OF * ratio ** t.OF_exp:.2f}",
+                     "on target" if error == 0 else f"{error:+d}%", f"{t.ox_liquid / mdot:.2f} s"]
+            tip = (f"{lay.ports} × #{lay.drill} ({lay.port_D / IN:.4f} in) holes, {t.exit_D / IN:.3f} in PTC bore\n"
+                   f"swirl A {lay.A:.2f}, Cd {lay.cd:.3f}, total CdA {lay.CdA / IN ** 2:.5f} in², oxidizer flow {mdot:.3f} kg/s")
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setToolTip(tip)
+                if col == 3 and abs(ratio - 1) <= 0.03:
+                    item.setForeground(ON_TARGET)
+                self.table.setItem(row, col, item)
+            if lay.ports == t.ports:
+                selected = row
         if selected is None:
             self.table.clearSelection()
         else:
@@ -203,6 +176,4 @@ class SwirlerOptions(QFrame):
                                   + self.table.rowCount() * self.table.verticalHeader().defaultSectionSize())
 
     def _pick(self, row: int, _col: int):
-        lay = self._rows.get(row)
-        if lay is not None:
-            self.picked.emit(lay.exit_D, lay.ports)
+        self.picked.emit(self._rows[row].ports)

@@ -34,6 +34,17 @@ def swirl_cd(D_exit: float, ports: int, D_port: float, R_in: float) -> float:
     return phi * math.sqrt(phi / (2.0 - phi))
 
 
+def swirl_sensitivity(D_exit: float, ports: int, D_port: float, R_in: float) -> tuple[float, float]:
+    """The % flow change per % more total port area, and per % more exit area. Whichever is bigger limits the flow."""
+    def log_cda(De: float, Dp: float) -> float:
+        return math.log(swirl_cd(De, ports, Dp, R_in) * De ** 2)
+
+    step = 1.01  # a 1% larger area
+    base = log_cda(D_exit, D_port)
+    return ((log_cda(D_exit, D_port * math.sqrt(step)) - base) / math.log(step),
+            (log_cda(D_exit * math.sqrt(step), D_port) - base) / math.log(step))
+
+
 def swirl_port_D(D_exit: float, ports: int, R_in: float, cd: float) -> float:
     """Inlet port diameter that gives a Cd of cd. The ports can be at most twice their offset across."""
     if swirl_cd(D_exit, ports, 2.0 * R_in, R_in) < cd:

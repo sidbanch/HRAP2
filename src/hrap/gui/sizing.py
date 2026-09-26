@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
-from hrap.engine.swirl import swirl_A, swirl_fill
+from hrap.engine.swirl import swirl_A, swirl_fill, swirl_sensitivity
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
@@ -27,6 +27,7 @@ from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants
 from hrap.units import LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, VOLUME_ITEMS, DisplayUnits, from_si, to_si
 
+STOCK_PTC_BORE = 0.188 * 0.0254  # m, the hex inside a stock 1/4 in PTC (HPS01 notes), taken as a round hole
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
 
@@ -76,7 +77,8 @@ class FieldGrid(QGridLayout):
 class Card(QFrame):
     """A titled block of label / value rows."""
 
-    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None, inputs: QGridLayout | None = None):
+    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None, inputs: QGridLayout | None = None,
+                 sketch_over_results: bool = False):
         super().__init__()
         self.setObjectName("sizingCard")
         layout = QVBoxLayout(self)
@@ -107,7 +109,8 @@ class Card(QFrame):
         else:
             row = QHBoxLayout()
             row.setSpacing(12)
-            row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
+            if not sketch_over_results:  # otherwise it tops the results column, keeping a wide sketch from widening the card
+                row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
             if inputs is not None:  # editable settings between the drawing and the results they give
                 row.addLayout(inputs, 1)
                 divider = QFrame()
@@ -117,7 +120,15 @@ class Card(QFrame):
                 row.addWidget(divider)
                 row.addSpacing(8)
                 grid.setAlignment(Qt.AlignmentFlag.AlignTop)
-            row.addLayout(grid, 1)
+            if sketch_over_results:
+                column = QVBoxLayout()
+                column.setSpacing(10)
+                column.addWidget(sketch, 0, Qt.AlignmentFlag.AlignHCenter)
+                column.addLayout(grid)
+                column.addStretch(1)
+                row.addLayout(column, 1)
+            else:
+                row.addLayout(grid, 1)
             layout.addLayout(row)
         layout.addStretch(1)
 
@@ -215,9 +226,13 @@ class SizingPage(QWidget):
         self.sw_ports.setRange(1, 12)
         self.sw_D_port = UnitRow(LENGTH_ITEMS, "in", 4)
         self.sw_R_in = UnitRow(LENGTH_ITEMS, "in", 4)
-        self.sw_ports.setToolTip("Number of tangential inlet ports into the swirl chamber.")
-        self.sw_D_port.setToolTip("Diameter of each tangential inlet port.")
-        self.sw_R_in.setToolTip("Distance from the swirler's axis to each inlet port's axis.")
+        self.sw_ports.setToolTip("Holes drilled tangentially into the swirler plug.")
+        self.sw_D_port.setToolTip("Drill size of each swirler hole.")
+        self.sw_R_in.setToolTip("Distance from the swirler's axis to each hole's axis. For holes tangent to the\n"
+                                "plug's bore, it's the bore radius minus half a hole.")
+        self.ptc_stock = QCheckBox("Stock")
+        self.ptc_stock.setToolTip("A stock 1/4 in PTC, with a 0.188 in hex inside. Untick it to bore the PTC out.")
+        self.ptc_stock.toggled.connect(self._on_ptc_stock)
         self.propellant = PlainComboBox()
         for item in list_propellants():
             self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
@@ -263,11 +278,16 @@ class SizingPage(QWidget):
         inj_form.add("Size from", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
-        self._hole_D_row = inj_form.add("Hole diameter", self.hole_D)
-        ports_row = inj_form.add("Inlet ports", self.sw_ports)
-        self._sw_D_port_row = inj_form.add("Inlet port diameter", self.sw_D_port)
-        self._swirler_rows = [*ports_row,
-                              *inj_form.add("Port offset from axis", self.sw_R_in)]
+        bore_row = QWidget()
+        bore_layout = QHBoxLayout(bore_row)
+        bore_layout.setContentsMargins(0, 0, 0, 0)
+        bore_layout.setSpacing(6)
+        bore_layout.addWidget(self.hole_D, 1)
+        bore_layout.addWidget(self.ptc_stock)
+        self._hole_D_row = inj_form.add("Hole diameter", bore_row, span=True)
+        ports_row = inj_form.add("Swirler holes", self.sw_ports)
+        self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
+        self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in)]
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
                                    "Untick it to type a Cd measured in a cold flow.")
@@ -282,12 +302,13 @@ class SizingPage(QWidget):
         inj_form.add("Flow model", self.inj_model)
         self.show_layouts = QPushButton("Show")
         self.show_layouts.setCheckable(True)
-        self.show_layouts.setToolTip("Number-drill port sizes that give the target flow, for a few exits and port counts.")
+        self.show_layouts.setToolTip("Swirler hole drills that give the target flow through this PTC bore.")
         self.show_layouts.toggled.connect(lambda _on: self._show_size_from_rows())
         self._layouts_row = inj_form.add("Drill layouts", self.show_layouts)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
-                                          "Holes", "Total CdA", "Inlet port diameter", "Swirler Cd", "Liquid lasts"],
-                             InjectorSketch(), inj_form)
+                                          "Holes", "Total CdA", "Hole drill", "Swirler Cd", "Limits the flow",
+                                          "Liquid lasts"],
+                             InjectorSketch(), inj_form, sketch_over_results=True)
         self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"], NozzleSketch())
         self.nozzle.show_row("Sized throat", False)
         grain_form = FieldGrid()
@@ -402,8 +423,9 @@ class SizingPage(QWidget):
             w.setVisible(not solve)
         self.injector.show_row("Flow per hole", not solve)
         self.injector.show_row("Holes", not solve and not self._by_holes())  # with a chosen count it's an input
-        self.injector.show_row("Inlet port diameter", solve)
+        self.injector.show_row("Hole drill", solve)
         self.injector.show_row("Swirler Cd", solve)
+        self.injector.show_row("Limits the flow", self._swirler)
         for w in self._layouts_row:
             w.setVisible(solve)
         self.swirler_options.setVisible(solve and self.show_layouts.isChecked())
@@ -478,7 +500,15 @@ class SizingPage(QWidget):
         self.sw_R_in.set_display(from_si(values["sw_R_in"], self.sw_R_in.unit.currentText(), "length"))
         self._show_size_from_rows()
         self.size_from.setItemText(1, "Swirler count" if self._swirler else "Hole count")
-        self._hole_D_row[0].setText("Exit diameter" if self._swirler else "Hole diameter")
+        self._hole_D_row[0].setText("PTC bore" if self._swirler else "Hole diameter")
+        self.hole_D.setToolTip("The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through."
+                               if self._swirler else "Diameter of each injector hole.")
+        stock = self._swirler and abs(values["hole_D"] - STOCK_PTC_BORE) < 1e-6
+        self.ptc_stock.blockSignals(True)
+        self.ptc_stock.setChecked(stock)
+        self.ptc_stock.blockSignals(False)
+        self.ptc_stock.setVisible(self._swirler)
+        self.hole_D.setEnabled(not stock)
         self._holes_row[0].setText("Swirler count" if self._swirler else "Hole count")
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if self._swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if self._swirler else "Holes")
@@ -618,22 +648,30 @@ class SizingPage(QWidget):
             if solve:
                 cd = z.inj_CdA / (holes * 0.25 * math.pi * self._hole_D(cfg) ** 2)
                 if self._layout is None:
-                    self.injector.set("Inlet port diameter", "none fits", self._port_error)
+                    self.injector.set("Hole drill", "none fits", self._port_error)
                     self.injector.set("Swirler Cd", "—")
                 else:
                     D_port = self._layout.port_D
-                    self.injector.set("Inlet port diameter", f"#{self._layout.drill} ({u.text(D_port, 'length')})",
+                    self.injector.set("Hole drill", f"#{self._layout.drill} ({u.text(D_port, 'length')})",
                                       f"The number drill nearest the port size that gives Cd {cd:.3f} with {ports} ports\n"
                                       f"{u.text(R_in, 'length')} off the axis, from the swirl theory for an ideal liquid (Abramovich).\n"
                                       "Measured swirlers have flowed less than this theory, so expect a little less flow.\n"
                                       "Apply to motor copies it into the swirler.")
                     self.injector.set("Swirler Cd", f"{self._layout.cd:.3f}",
                                       f"The drilled swirler's Cd on its {hole} exit. The flow needs {cd:.3f}.")
+            holes_gain, bore_gain = swirl_sensitivity(self._hole_D(cfg), ports, D_port, R_in)
+            limit = ("Swirler holes" if holes_gain > bore_gain + 0.15 else
+                     "PTC bore" if bore_gain > holes_gain + 0.15 else "Both")
+            self.injector.set("Limits the flow", limit,
+                              f"10% more swirler hole area gives {10 * holes_gain:.1f}% more flow;\n"
+                              f"10% more PTC bore area gives {10 * bore_gain:.1f}% more.\n"
+                              "With little swirl the PTC bore works like a plain hole, which really loses a bit more than\n"
+                              "the ideal swirl theory says.")
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "bore": bore,
                 "swirler": {"exit": self._hole_D(cfg), "ports": ports, "port": D_port, "offset": R_in, "fill": fill},
-                "caption": f"{ports} tangential ports, {hole} exit"})
+                "caption": f"{ports} swirler holes, {hole} PTC bore"})
         else:
             self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
                                             "caption": f"{holes} × {hole} holes"})
@@ -712,13 +750,14 @@ class SizingPage(QWidget):
         for card in (self.injector, self.nozzle, self.grain):
             card.sketch.set_theme(name)
 
-    def _on_layout_picked(self, exit_D: float, ports: int):
-        """Use a layout's exit and port count; the injector then shows its drill."""
-        self._loading = True
-        self.hole_D.set_display(from_si(exit_D, self.hole_D.unit.currentText(), "length"))
+    def _on_layout_picked(self, ports: int):
+        """Use a layout's hole count; the injector then shows its drill."""
         self.sw_ports.setValue(ports)
-        self._loading = False
-        self.motor_edited.emit()
+
+    def _on_ptc_stock(self, stock: bool):
+        self.hole_D.setEnabled(not stock)
+        if stock:
+            self.hole_D.spin.setValue(from_si(STOCK_PTC_BORE, self.hole_D.unit.currentText(), "length"))
 
     def _on_pick(self, throat: float):
         self._picked_throat = throat
