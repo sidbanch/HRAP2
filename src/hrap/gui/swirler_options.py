@@ -73,22 +73,14 @@ def layouts(t: Target, exits: list[float], counts: range, min_drill: float) -> l
 
 
 class SwirlerOptions(QFrame):
-    """Drillable swirler layouts grouped by exit; clicking one loads its exit and port count into the injector."""
+    """Drillable swirler layouts grouped by exit, shown inside the injector card; clicking one loads its exit and port count."""
 
     picked = Signal(float, int)  # exit diameter (m), port count
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("sizingCard")
         self._target: Target | None = None
         self._rows: dict[int, Layout] = {}
-
-        heading = QLabel("Swirler layouts")
-        heading.setObjectName("cardTitle")
-        intro = QLabel("Number-drill port sizes that give the target flow. Click a row to use it. The swirl theory has run "
-                       "high on measured swirlers, so expect a little less flow and open the ports up a size after a flow test.")
-        intro.setObjectName("cardLabel")
-        intro.setWordWrap(True)
 
         self.exits = QLineEdit("0.188, 0.25")
         self.exits.setFixedWidth(120)
@@ -135,10 +127,8 @@ class SwirlerOptions(QFrame):
         self.table.cellClicked.connect(self._pick)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(10)
-        layout.addWidget(heading)
-        layout.addWidget(intro)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(8)
         layout.addLayout(inputs)
         layout.addWidget(self.note)
         layout.addWidget(self.table)
@@ -164,8 +154,8 @@ class SwirlerOptions(QFrame):
             self.note.setText("Exits need to be numbers in inches, separated by commas.")
             return
         found = layouts(t, exits, range(self.ports_lo.value(), self.ports_hi.value() + 1), self.min_drill.value() * IN)
-        self.note.setText(f"Target: {t.mdot_o:.3f} kg/s of oxidizer, total CdA {t.CdA / IN ** 2:.5f} in², "
-                          f"ports {t.R_in / IN:.3f} in off the axis."
+        self.note.setText("Number-drill port sizes for the target flow. Click a row to use it. The swirl theory has run high "
+                          "on measured swirlers, so expect a little less flow and open the ports up a size after a flow test."
                           + ("" if found else " Nothing fits: try other exits, more ports or a smaller drill."))
         group_bg = self.table.palette().color(QPalette.ColorRole.AlternateBase)
         bold = QFont(self.table.font())

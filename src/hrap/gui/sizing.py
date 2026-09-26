@@ -250,6 +250,7 @@ class SizingPage(QWidget):
         shared.setObjectName("cardLabel")
         shared.setWordWrap(True)
         ml.addWidget(shared)
+        ml.addStretch(1)  # the card fills down to the grain; its fields stay at the top
         self.motor_fields = (self.tank_V.spin, self.tank_V.unit, self.tank_T.spin, self.tank_T.unit, self.fill,
                              self.hole_D.spin, self.hole_D.unit, self.inj_Cd, self.inj_model, self.propellant,
                              self.cstar, self.noz_Cd, self.inj_type, self.sw_ports, self.sw_D_port.spin,
@@ -279,6 +280,11 @@ class SizingPage(QWidget):
         cd_layout.addWidget(self.sw_cd_geom)
         self._cd_row = inj_form.add("Cd", cd_row, span=True)
         inj_form.add("Flow model", self.inj_model)
+        self.show_layouts = QPushButton("Show")
+        self.show_layouts.setCheckable(True)
+        self.show_layouts.setToolTip("Number-drill port sizes that give the target flow, for a few exits and port counts.")
+        self.show_layouts.toggled.connect(lambda _on: self._show_size_from_rows())
+        self._layouts_row = inj_form.add("Drill layouts", self.show_layouts)
         self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
                                           "Holes", "Total CdA", "Inlet port diameter", "Swirler Cd", "Liquid lasts"],
                              InjectorSketch(), inj_form)
@@ -315,6 +321,8 @@ class SizingPage(QWidget):
         self.sweep = SweepPanel(self.sized_cfg, get_units, self._on_pick)
         self.swirler_options = SwirlerOptions()
         self.swirler_options.picked.connect(self._on_layout_picked)
+        injector_layout = self.injector.layout()
+        injector_layout.insertWidget(injector_layout.count() - 1, self.swirler_options)  # above the card's closing stretch
         self.sweep.limit_edited.connect(self._on_motor_edited)
 
         intro = QLabel("Sizes the injector, nozzle and grain for conditions at the start of the burn, using the "
@@ -329,25 +337,24 @@ class SizingPage(QWidget):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(12)
         left.addWidget(targets)
-        left.addWidget(motor)
-        left.addStretch(1)
-        results = QGridLayout()
-        results.setSpacing(12)
-        results.addWidget(self.injector, 0, 0, 1, 2)
-        results.addWidget(self.swirler_options, 1, 0, 1, 2)
-        results.addWidget(self.grain, 2, 0, 1, 2)
-        results.addWidget(self.nozzle, 3, 0)
-        results.addWidget(self.performance, 3, 1)
-        right = QVBoxLayout()
-        right.setSpacing(12)
-        right.addWidget(self.limit_warning)
-        right.addWidget(self.error)
-        right.addLayout(results)
-        right.addWidget(self.sweep, 1)
-        body = QHBoxLayout()
-        body.setSpacing(16)
-        body.addWidget(inputs, 0, Qt.AlignmentFlag.AlignTop)
-        body.addLayout(right, 1)
+        left.addWidget(motor, 1)
+        # Targets and Motor sit beside the injector and grain; everything below them runs the full width.
+        body = QGridLayout()
+        body.setHorizontalSpacing(16)
+        body.setVerticalSpacing(12)
+        body.addWidget(self.limit_warning, 0, 0, 1, 2)
+        body.addWidget(self.error, 1, 0, 1, 2)
+        body.addWidget(inputs, 2, 0, 2, 1)
+        body.addWidget(self.injector, 2, 1)
+        body.addWidget(self.grain, 3, 1)
+        lower = QHBoxLayout()
+        lower.setSpacing(12)
+        lower.addWidget(self.nozzle, 1)
+        lower.addWidget(self.performance, 1)
+        body.addLayout(lower, 4, 0, 1, 2)
+        body.addWidget(self.sweep, 5, 0, 1, 2)
+        body.setRowStretch(3, 1)
+        body.setColumnStretch(1, 1)
 
         inner = QWidget()
         page = QVBoxLayout(inner)
@@ -397,7 +404,10 @@ class SizingPage(QWidget):
         self.injector.show_row("Holes", not solve and not self._by_holes())  # with a chosen count it's an input
         self.injector.show_row("Inlet port diameter", solve)
         self.injector.show_row("Swirler Cd", solve)
-        self.swirler_options.setVisible(solve)
+        for w in self._layouts_row:
+            w.setVisible(solve)
+        self.swirler_options.setVisible(solve and self.show_layouts.isChecked())
+        self.show_layouts.setText("Hide" if self.show_layouts.isChecked() else "Show")
         for w in self._OF_row:
             w.setVisible(not self._by_length() or self._by_OF())
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
