@@ -1,58 +1,112 @@
 # HRAP2 — HCAT's Hybrid Rocket Analysis Program
 
-**The app we develop and run is in [`src/hrap/`](src/hrap/).** It predicts a hybrid motor's burn from tank, injector, fuel-grain, chamber, and nozzle inputs, and displays thrust, pressure, propellant consumption, and mass/center-of-gravity results.
+HRAP2 simulates a nitrous hybrid motor's burn: tank, injector, fuel grain, chamber and nozzle. It also sizes a motor from targets like chamber pressure and O/F. It's HCAT's Python fork of [HRAP](https://github.com/rnickel1/HRAP_Source). The default model reproduces the original MATLAB HRAP; everything else is opt-in.
 
-The desktop window is named **HRAP (HCAT Fork) 1.1.0**. Its standard engine translates the original MATLAB HRAP calculation sequence. Advanced fluid, chemistry, and grain options change that model. Agreement with MATLAB is a software check, not a guarantee of agreement with a real firing.
+Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow says how close a result is to a real motor.
 
 ## Run the app
 
-- **Windows:** download the versioned Windows zip from [Releases](https://github.com/sidbanch/HRAP2/releases), unzip it, and run `HRAP.exe`. For a source checkout, double-click `run_hrap.bat`.
-- **macOS:** double-click **`run_hrap.command`** in Finder. It uses this checkout's `.venv` and installs missing dependencies. For first-time setup, install Python 3.10+ or `uv`.
-- **Other source installations:** use Python 3.10+ in a virtual environment, install this project with `python -m pip install -e .`, then run `python -m hrap`.
+- **Windows:** download the zip from [Releases](https://github.com/sidbanch/HRAP2/releases), unzip it and run `HRAP.exe`. From a source checkout, double-click `run_hrap.bat`.
+- **macOS:** double-click `run_hrap.command`. It sets up `.venv` and installs what's missing. The first run needs Python 3.10+ or `uv`.
+- **Anything else:** in a Python 3.10+ virtual environment, `python -m pip install -e .`, then `hrap`.
 
-Enter the motor settings on the left, press **Run**, and inspect the plots and summary. Save/load motor configurations as JSON, import MATLAB `.mat` motor files, or export results as CSV, RSE (OpenRocket/RockSim), and ENG.
+**Save** and **Load** (top right) read and write motor files as JSON, including the Sizing page settings. MATLAB `.mat` motor files load too. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
 
-Results are grouped into tabs such as **Thrust**, **Pressure**, and **Mass flow**, each with its own vertical scale. Select quantities in the list to show their tabs. Time-axis zoom is shared across tabs; hover over a graph to inspect the motor at that time.
+## Sizing tab
 
-Use **Settings → Units** to choose units for plots, the motor diagram, and the results summary. Choices are remembered between launches. Pressure defaults to psi and is absolute (including atmospheric pressure); injector ΔP is a pressure difference. Input fields keep their own labeled unit selectors. Display preferences do not change simulation calculations or export units.
+Works out a motor from start-of-burn targets, using the same injector, combustion and nozzle math as the simulation. **Apply to motor** copies the result into the Simulation tab.
 
-Optional advanced dependencies: `python -m pip install -e ".[advanced]"`.
+**Injector: Size from** decides what sets the oxidizer flow:
 
-## Find your way around
+| Size from | You give | It gives |
+| --- | --- | --- |
+| Hole count | hole or swirler count and geometry | the flow |
+| Liquid burn time | how long the liquid should last | flow = liquid in the tank ÷ burn time |
+| O/F | a starting O/F, with the grain on Grain length | the flow that gives that O/F |
 
-| Location | Purpose |
+Every mode shows **Total CdA**: the Cd × area the injector needs for that flow at this ΔP. Compare it with a cold-flow result. If the cold flow gives Cd on the exit area, Cd × exit area is the CdA.
+
+**Grain: Size from** O/F gives a grain length; Grain length gives an O/F. **Nozzle** gives the throat and expansion ratio.
+
+**Check across injector Cd** runs the full simulation for a range of throats and injector Cds, since the Cd is usually a guess until a cold flow. Cells are red over the chamber pressure limit and blue under the minimum. Click a throat to use it.
+
+### Swirl injectors
+
+Set the injector **Type** to **Swirler** for tangential-port swirlers. **From geometry** estimates the Cd from the exit, port count, port size and port offset with Abramovich's ideal swirl theory ([below](#how-the-swirl-model-works)).
+
+In **Liquid burn time** or **O/F** mode, the page works backwards to a swirler instead:
+
+- **Inlet port diameter:** the port size that gives the needed CdA, for the exit, port count and offset you enter.
+- **Swirler layouts:** drillable options for a list of exits and port counts, rounded to real number drills, with the starting O/F and flow each one gives. Click a row to load it.
+
+The theory ignores losses entering the ports, so real swirlers probably flow less than it says. Drill the listed size, cold-flow it, and open the ports up a drill size if it flows low.
+
+## Simulation tab
+
+Enter the motor on the left, press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
+
+Options that change the default MATLAB model:
+
+- **Injector model** (Injector / vent section):
+  - **SPI** (default): pure liquid through the injector, as in original HRAP. Overpredicts flow above about 250–300 psi ΔP.
+  - **HEM:** the nitrous boils instantly in the orifice. Underpredicts flow.
+  - **Dyer:** a blend of the two, weighted by κ (default 1).
+
+  HEM and Dyer use CoolProp nitrous properties for the injector and the tank.
+- **Solve tank cooling each step** (Tank section): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
+- **Enable advanced options:** live chemistry and experimental fluid and grain models.
+
+## Mass & export tab
+
+Tank and chamber dry masses and positions give the empty mass and CG, and the CG over the burn for RSE and ENG files. **File → Export** writes CSV, RSE (OpenRocket / RockSim) or ENG.
+
+## Command line
+
+```sh
+python -m hrap.cli motor.json -o HRAP_output.csv          # one run
+hrap-sweep motor.json --throat 0.3:0.5:5 --cd 0.4:0.9:6   # throat × Cd sweep to CSV
+hrap-compare motor.json golden.csv                        # compare against a saved MATLAB trace
+```
+
+## How the swirl model works
+
+The spin leaves an empty air core down the exit, so liquid only flows through a ring around it. More swirl makes a bigger core and a lower Cd:
+
+```
+A  = port offset × exit radius ÷ (port count × port radius²)    swirl number
+A  = (1 − φ) · √2 ÷ φ^1.5                                         φ = share of the exit filled with liquid
+Cd = φ · √(φ ÷ (2 − φ))                                           Cd on the exit area
+```
+
+| A | 0.5 | 1 | 2 | 4 | 8 |
+| --- | --- | --- | --- | --- | --- |
+| Cd | 0.60 | 0.44 | 0.29 | 0.18 | 0.10 |
+
+Ports farther off the axis, a bigger exit, or less total port area mean more swirl. More or bigger ports mean less. The exit is the narrowest point after the ports: on HCAT's plug-and-push-to-connect injector, that's the push-to-connect fitting's bore.
+
+## Code layout
+
+| Folder | What's in it |
 | --- | --- |
-| [`src/hrap/gui/`](src/hrap/gui/) | Desktop forms, plots, and motor drawing |
-| [`src/hrap/engine/`](src/hrap/engine/) | Standard tank, fuel, combustion, chamber, and nozzle calculations |
-| [`src/hrap/io/`](src/hrap/io/) | Configuration loading, unit conversion/initialization, propellant data, and exports |
-| [`src/hrap/advanced/`](src/hrap/advanced/) | Additional fluid, chemistry, and grain models |
-| [`src/hrap/resources/`](src/hrap/resources/) | Data and example motors shipped with the app |
-| [`tests/`](tests/) | Automated checks and saved MATLAB comparison traces |
-| [`scripts/`](scripts/) | Maintenance tools for converting reference data and regenerating MATLAB traces |
-| [`packaging/`](packaging/) | Build the Windows release |
-| [`reference/`](reference/) | Inherited MATLAB and Python implementations, kept for comparison and feature research |
+| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `sweep.py`, `swirler_options.py` |
+| [`src/hrap/engine/`](src/hrap/engine/) | Tank, injector, grain, combustion, nozzle and the burn loop (`sim.py`); sizing (`sizing.py`) and the swirl model (`swirl.py`) |
+| [`src/hrap/io/`](src/hrap/io/) | Motor files, units, propellant data and exports |
+| [`src/hrap/advanced/`](src/hrap/advanced/) | Opt-in chemistry, fluid, injector and grain models |
+| [`src/hrap/resources/`](src/hrap/resources/) | Propellant tables and example motors |
+| [`tests/`](tests/) | Tests and saved MATLAB traces |
+| [`reference/`](reference/) | The original MATLAB and Python HRAP, for comparison only ([guide](reference/README.md)) |
 
-When you press Run, `gui/main.py` collects inputs, `io/config.py` prepares the initial state, and `engine/sim.py` advances it through the burn. The GUI displays the recorded results; `io/export.py` writes them to files.
+Upstream's Python HRAP also installs a package called `hrap`, so don't install both in one environment.
 
-**The reference folders are not alternative entry points for this app.** Upstream's Python implementation also uses the package and command name `hrap`; do not install it in the same environment. See [the reference guide](reference/README.md) for their origin and how to study upstream changes.
+## Develop
 
-## Develop and verify
-
-Start with [the development guide](docs/development.md) for setup, checks, data regeneration, and releases.
+See [the development guide](docs/development.md) for setup, tests, regenerating MATLAB traces and releases.
 
 ```sh
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-For a command-line simulation:
-
-```sh
-python -m hrap.cli path/to/motor.json -o HRAP_output.csv
-```
-
 ## Origin and license
 
-HCAT's app is based on [HRAP](https://github.com/rnickel1/HRAP_Source), originally developed by Robert Nickel for the University of Tennessee Rocket Engineering Team. The repository retains reference code from that project; the active app is maintained here in `src/hrap`.
-
-[GNU GPL v3](LICENSE). This fork remains GPL because it is based on the original HRAP sources.
+Based on [HRAP](https://github.com/rnickel1/HRAP_Source) by Robert Nickel for the University of Tennessee Rocket Engineering Team. [GNU GPL v3](LICENSE).
