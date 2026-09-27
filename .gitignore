@@ -12,7 +12,6 @@ hrap_gui_launch.log
 hrap_gui_launch.out
 hrap_launch.log
 compare-study/
-HCAT motor files/
 hrap_stderr.txt
 hrap_stdout.txt
 src/hrap/resources/propellants/50P.json
