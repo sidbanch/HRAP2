@@ -360,11 +360,14 @@ class SizingPage(QWidget):
         self.sw_CdA_meas = UnitRow(AREA_ITEMS, "in^2", 5)
         self.sw_CdA_meas.setToolTip("One swirler's CdA from a cold flow: water flow ÷ √(2 × 998 kg/m³ × ΔP), with ΔP read right\n"
                                     "at the injector. If the cold flow gives a Cd on the exit area, CdA = Cd × exit area.")
-        fit = QPushButton("Fit")
+        self.sw_CdA_meas.spin.setSpecialValueText("none yet")  # optional: only once a cold flow measures one
+        fit = self._fit_btn = QPushButton("Fit")
         fit.setToolTip("Stock ticked: set what the stock PTC acts like, keeping ξ.\n"
                        "Bored PTC: set the inlet loss ξ, keeping the bore.\n"
                        "Either way the swirl theory then gives the measured CdA.")
+        fit.setEnabled(False)
         fit.clicked.connect(self._on_fit)
+        self.sw_CdA_meas.spin.valueChanged.connect(lambda cda: fit.setEnabled(cda > 0))
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
                                    "Untick it to type a Cd measured in a cold flow.")
@@ -739,6 +742,7 @@ class SizingPage(QWidget):
         self.ptc_stock.blockSignals(False)
         self.sw_xi.setValue(float(cfg.get("sw_xi") or 0.0))
         self.sw_CdA_meas.set_display(0.0)
+        self._fit_btn.setEnabled(False)
         self.holes.setValue(int(cfg.get("inj_N") or 1))
         self.sw_ports.setValue(int(cfg["sw_ports"]))
         show(self.sw_D_port, "sw_D_port")
@@ -1070,8 +1074,6 @@ class SizingPage(QWidget):
         cda = self.sw_CdA_meas.si("area")
         geometry = (self.sw_ports.value(), self.sw_D_port.si("length"), self.sw_R_in.si("length"))
         try:
-            if cda <= 0.0:
-                raise ValueError("Enter one swirler's measured CdA first.")
             if self.ptc_stock.isChecked():
                 self.hole_D.set_si(swirl_exit_D(cda, *geometry, self.sw_xi.value()), "length")
             else:
