@@ -900,8 +900,10 @@ class SizingPage(QWidget):
             self.grain.set("Fuel burned", u.text(z.fuel_burned, "mass"),
                            "The fuel between the starting port and the port at liquid burnout.")
         else:
-            for name in ("Grain length", "Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"):
-                self.grain.set(name, "needs a regression law (a > 0)")
+            why = "The fuel's burn rate a on the Fuel card is 0, so no grain length makes fuel."
+            self.grain.set("Grain length", "set burn rate a (Fuel card)", why)
+            for name in ("Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"):
+                self.grain.set(name, "—", why)
 
         self.performance.set("Thrust", u.text(z.thrust, "force"))
         self.performance.set("Isp", f"{z.isp:.0f} s")
