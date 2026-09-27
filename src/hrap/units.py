@@ -180,4 +180,7 @@ class DisplayUnits:
         return from_si(si, self.unit(quantity), quantity)
 
     def text(self, si: float, quantity: str, precision: int = 4) -> str:
-        return f"{self.value(si, quantity):.{precision}g} {self.unit(quantity)}".strip()
+        value = self.value(si, quantity)
+        # Whole numbers once they need more digits than the precision, instead of 1.041e+04.
+        number = f"{value:.0f}" if abs(value) >= 10 ** precision else f"{value:.{precision}g}"
+        return f"{number} {self.unit(quantity)}".strip()

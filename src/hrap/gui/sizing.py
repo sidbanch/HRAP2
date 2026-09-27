@@ -5,6 +5,7 @@ import math
 from typing import Callable, cast
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -282,6 +283,17 @@ class SizingPage(QWidget):
                                "a scales the whole burn rate.")
         self.prop_n.setToolTip("How strongly the burn rate follows oxidizer flux. Usually 0.3–0.8.")
         self.prop_m.setToolTip("Grain-length effect. Almost always 0.")
+        self.reg_model = PlainComboBox()
+        self.reg_model.addItem("Burn-rate law", "Shifting OF")
+        self.reg_model.addItem("Fixed O/F", "Constant OF")
+        self.reg_model.setToolTip("Burn-rate law (HRAP's Shifting OF): the fuel burns back at a × G^n × L^m, so the O/F\n"
+                                  "drifts as the port opens.\n"
+                                  "Fixed O/F (HRAP's Constant OF): fuel flow = oxidizer flow ÷ the O/F below, and a, n and m\n"
+                                  "aren't used. Only for motors with no burn-rate data, or to reproduce old HRAP runs.")
+        self.const_OF = PlainDoubleSpinBox()
+        self.const_OF.setDecimals(3)
+        self.const_OF.setRange(0.01, 100)
+        self.const_OF.setToolTip("The O/F held for the whole burn.")
         self.cstar = PlainDoubleSpinBox()
         self.cstar.setRange(0, 100)
         self.cstar.setDecimals(1)
@@ -290,9 +302,10 @@ class SizingPage(QWidget):
         fuel_form = FieldGrid()
         fuel_form.add("Propellant", self.propellant)
         fuel_form.add("Density", self.rho)
-        fuel_form.add("Burn rate a", self.prop_a)
-        fuel_form.add("Burn rate n", self.prop_n)
-        fuel_form.add("Burn rate m", self.prop_m)
+        fuel_form.add("Fuel flow", self.reg_model)
+        self._burn_rate_rows = [*fuel_form.add("Burn rate a", self.prop_a), *fuel_form.add("Burn rate n", self.prop_n),
+                                *fuel_form.add("Burn rate m", self.prop_m)]
+        self._const_OF_row = fuel_form.add("O/F", self.const_OF)
         fuel_form.add("C* efficiency", self.cstar, "%")
         fuel_layout.addLayout(fuel_form)
 
@@ -479,10 +492,10 @@ class SizingPage(QWidget):
                   self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa, self.throat_D):
             w.spin.valueChanged.connect(self._on_motor_edited)
             w.unit.currentTextChanged.connect(self._on_motor_edited)
-        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.cstar, self.inj_Cd,
+        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.inj_Cd,
                      self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
-        for combo in (self.vent, self.inj_type, self.inj_model):
+        for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model):
             combo.currentIndexChanged.connect(self._on_motor_edited)
         for box in (self.sw_cd_geom, self.hem_same):
             box.toggled.connect(self._on_motor_edited)
@@ -499,6 +512,14 @@ class SizingPage(QWidget):
 
     def _by_OF(self) -> bool:
         return self.size_from.currentIndex() == 2
+
+    @property
+    def result(self) -> Sizing | None:
+        """The motor at the start of the burn, from the last refresh."""
+        return self._result
+
+    def _fixed_OF(self) -> bool:
+        return self.reg_model.currentData() == "Constant OF"
 
     def _fixed_nozzle(self) -> bool:
         return self.nozzle_from.currentIndex() == 0
@@ -621,6 +642,16 @@ class SizingPage(QWidget):
             self.inj_Cd_HEM.blockSignals(False)
         for w in self._vent_rows:
             w.setVisible(self.vent.currentText() != "None")
+        fixed = self._fixed_OF()
+        for w in self._burn_rate_rows:
+            w.setVisible(not fixed)
+        for w in self._const_OF_row:
+            w.setVisible(fixed)
+        # With a fixed O/F, neither the flow nor the grain length changes the O/F, so neither can be sized for one.
+        for combo, index in ((self.size_from, 2), (self.grain_from, 1)):
+            cast(QStandardItemModel, combo.model()).item(index).setEnabled(not fixed)
+            if fixed and combo.currentIndex() == index:
+                combo.setCurrentIndex(0)
         self._show_size_from_rows()
 
     def _on_propellant(self):
@@ -671,6 +702,8 @@ class SizingPage(QWidget):
         self.prop_a.setValue(float(cfg.get("prop_a") or 0.0))
         self.prop_n.setValue(float(cfg.get("prop_n") or 0.0))
         self.prop_m.setValue(float(cfg.get("prop_m") or 0.0))
+        self.reg_model.setCurrentIndex(max(self.reg_model.findData(cfg.get("reg_model") or "Constant OF"), 0))
+        self.const_OF.setValue(float(cfg.get("const_OF") or 1.0))
         self.cstar.setValue(float(cfg.get("cstar_eff") or 100.0))
 
         self.inj_type.setCurrentText(str(cfg["inj_type"]))
@@ -728,7 +761,8 @@ class SizingPage(QWidget):
             "prop_id": self.propellant.currentData() or "ABS",
             "prop_nm": (self.propellant.currentText() or "ABS").split(" (")[0],
             **field("prop_rho", self.rho), "prop_a": self.prop_a.value(), "prop_n": self.prop_n.value(),
-            "prop_m": self.prop_m.value(), "cstar_eff": self.cstar.value(),
+            "prop_m": self.prop_m.value(), "reg_model": self.reg_model.currentData(), "const_OF": self.const_OF.value(),
+            "cstar_eff": self.cstar.value(),
             "inj_type": self.inj_type.currentText(), **field("inj_D", self.hole_D), "inj_N": self.holes.value(),
             "inj_Cd": self.inj_Cd.value(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
             **field("sw_R_in", self.sw_R_in), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
@@ -909,7 +943,10 @@ class SizingPage(QWidget):
 
         port = u.text(t.port_D, "length")
         fuel = u.text(z.mdot_f, "mass_flow", 3)
-        if t.grain_L:
+        if self._fixed_OF():
+            self.grain.set("Fuel flow", fuel, f"oxidizer flow ÷ the fixed O/F = {flow} ÷ {z.OF:.3g}")
+            self.grain.set("O/F", f"{z.OF:.2f}", "Fixed on the Fuel card.")
+        elif t.grain_L:
             self.grain.set("Fuel flow", fuel,
                            f"The fuel the {u.text(t.grain_L, 'length')} grain burns at the starting flux:\n"
                            "fuel flow = density × burn rate × port wall area, with burn rate = a × flux^n from the propellant.")
@@ -927,6 +964,7 @@ class SizingPage(QWidget):
                            f"The port after burning back for {z.burn_time:.3g} s at the starting oxidizer flow.\n"
                            "The dashed circle in the drawing.")
             self.grain.set("O/F at liquid burnout", f"{z.OF_end:.2f}",
+                           "Fixed on the Fuel card." if self._fixed_OF() else
                            "The wider port lowers the flux but adds burning wall, so the O/F drifts.")
             self.grain.set("Fuel burned", u.text(z.fuel_burned, "mass"),
                            "The fuel between the starting port and the port at liquid burnout.")

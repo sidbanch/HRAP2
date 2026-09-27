@@ -346,19 +346,7 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(inner)
         root.setSpacing(8)
 
-        # Model
-        self.reg_model = PlainComboBox()
-        self.reg_model.addItem("Burn-rate law (Shifting OF)", "Shifting OF")
-        self.reg_model.addItem("Fixed O/F (Constant OF)", "Constant OF")
-        self.reg_model.setToolTip(
-            "Burn-rate law: each step, the fuel burns back at a × G^n (the fuel's burn rate on the Motor tab,\n"
-            "G = oxidizer flux through the port), so the O/F drifts as the port opens.\n"
-            "Fixed O/F: fuel flow = oxidizer flow ÷ the O/F below, and the grain's burn rate isn't used.\n"
-            "Only for motors with no burn-rate data, or to reproduce old HRAP runs."
-        )
-        self.const_OF = PlainDoubleSpinBox()
-        self.const_OF.setDecimals(4)
-        self.const_OF.setRange(0.01, 100)
+        # Run
         self.solve_tank_cooling = QCheckBox("Solve tank cooling each step (not MATLAB-identical)")
         self.solve_tank_cooling.setToolTip(
             "HRAP cools the tank after splitting liquid and vapor. When the liquid runs low that overcools\n"
@@ -366,16 +354,6 @@ class MainWindow(QMainWindow):
             "This solves the cooling at the step's end temperature instead, so the fallback never runs.\n"
             "Total impulse usually changes by under 1%."
         )
-        model = CollapsibleBox("Model")
-        mf = model.form()
-        mf.addRow("Fuel flow", self.reg_model)
-        mf.addRow("Constant O/F", self.const_OF)
-        mf.addRow(self.solve_tank_cooling)
-        self.reg_model.currentIndexChanged.connect(
-            lambda: mf.setRowVisible(self.const_OF, self.reg_model.currentData() == "Constant OF"))
-        root.addWidget(model)
-
-        # Run
         self.tmax = PlainDoubleSpinBox()
         self.tmax.setRange(0.01, 120)
         self.tmax.setValue(10)
@@ -395,6 +373,7 @@ class MainWindow(QMainWindow):
         sf.addRow("Close valve at [s]", self.tburn)
         sf.addRow("Timestep [ms]", self.dt)
         sf.addRow("Chamber start pressure", self.P_cmbr)
+        sf.addRow(self.solve_tank_cooling)
         root.addWidget(sim)
 
         # Advanced
@@ -573,11 +552,9 @@ class MainWindow(QMainWindow):
             "mtr_m_unit": self.tnk_m.unit.currentText(),
             "P_cmbr": self.P_cmbr.spin.value(),
             "P_cmbr_unit": self.P_cmbr.unit.currentText(),
-            "const_OF": self.const_OF.value(),
             "t_max": self.tmax.value(),
             "t_burn": self.tburn.value(),
             "dt": self.dt.value() / 1000.0,
-            "reg_model": self.reg_model.currentData(),
             "advanced": {
                 "enabled": self.adv_on.isChecked(),
                 "ox_fluid": self.ox_fluid.currentText(),
@@ -607,11 +584,9 @@ class MainWindow(QMainWindow):
         self.tnk_m.set_display(cfg.get("tnk_m", 0), cfg.get("tnk_m_unit", "kg"))
         self.cmbr_m.set_display(cfg.get("cmbr_m", 0), cfg.get("cmbr_m_unit", "kg"))
         self.P_cmbr.set_display(cfg.get("P_cmbr", 1), cfg.get("P_cmbr_unit", "atm"))
-        self.const_OF.setValue(float(cfg.get("const_OF") or 1))
         self.tmax.setValue(float(cfg.get("t_max") or 10))
         self.tburn.setValue(float(cfg.get("t_burn") or 0))
         self.dt.setValue(1000.0 * float(cfg.get("dt") or 0.001))
-        self.reg_model.setCurrentIndex(max(self.reg_model.findData(cfg.get("reg_model") or "Constant OF"), 0))
         self.dry_OD.set_display(from_si(cfg.get("export_OD") or lay.overall_OD, "in", "length"), "in")
         self.dry_L.set_display(from_si(cfg.get("export_L") or lay.overall_L, "in", "length"), "in")
         adv = cfg.get("advanced") or {}
@@ -657,7 +632,6 @@ class MainWindow(QMainWindow):
         for row in (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m, self.P_cmbr):
             row.spin.valueChanged.connect(self._update_derived_labels)
             row.unit.currentTextChanged.connect(self._update_derived_labels)
-        self.const_OF.valueChanged.connect(self._update_derived_labels)
         self.name.textChanged.connect(self._update_derived_labels)
 
     def _update_derived_labels(self):
@@ -728,7 +702,7 @@ class MainWindow(QMainWindow):
         ox_mdot = 0.0
         fuel_mdot = 0.0
         noz_mdot = 0.0
-        of_ratio = float(self.const_OF.value())
+        of_ratio = sp.result.OF if sp.result is not None else float("nan")  # at the start of the burn
         thrust = 0.0
         time_s = None
         P_tnk = 0.0

@@ -27,7 +27,7 @@ class SizingTargets:
     P_cmbr: float | None  # Pa absolute; None keeps the motor's throat and expansion ratio and solves the pressure
     burn_time: float | None  # s, time to use the liquid at the starting oxidizer flow; ignored when holes is set.
                              # With neither, the oxidizer flow is solved from OF and grain_L.
-    OF: float         # ignored when grain_L is set, unless it sets the oxidizer flow
+    OF: float         # ignored when grain_L is set, unless it sets the oxidizer flow; a fixed-O/F motor uses its own
     port_D: float     # m, starting port diameter
     holes: int | None = None  # a fixed injector hole count; the burn time then follows from it
     grain_L: float | None = None  # m, a fixed grain length; the starting O/F then follows from it
@@ -93,11 +93,14 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
     flow_per_hole = liquid_flow(s, x.T_tnk, op.rho_l, P_tnk, P_cmbr) / s.inj_N
     a, n, m = (float(v) for v in s.prop_Reg[:3])
     rho = s.prop_Rho
+    fixed_OF = s.regression_model == "Constant OF"  # the fuel flow is the oxidizer flow ÷ the motor's O/F
     if t.holes:
         mdot_o = t.holes * flow_per_hole
     elif t.burn_time:
         mdot_o = x.mLiq_new / t.burn_time
     else:
+        if fixed_OF:
+            raise ValueError("With a fixed O/F, the O/F doesn't depend on the oxidizer flow, so it can't size the injector.")
         if not t.grain_L or a <= 0.0 or n >= 1.0:
             raise ValueError("Sizing the oxidizer flow from O/F needs a grain length and the propellant's regression law.")
         # fuel flow = K · mdot_o^n, so O/F = mdot_o^(1−n) / K
@@ -105,7 +108,12 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
         mdot_o = (t.OF * K) ** (1.0 / (1.0 - n))
     burn_time = t.burn_time if t.burn_time and not t.holes else x.mLiq_new / mdot_o
     ox_flux = mdot_o / (0.25 * math.pi * t.port_D ** 2)
-    if t.grain_L:
+    if fixed_OF:
+        if not t.grain_L:
+            raise ValueError("With a fixed O/F, the grain length doesn't change the fuel flow, so it can't be sized.")
+        grain_L, OF = t.grain_L, s.const_OF
+        mdot_f = mdot_o / OF
+    elif t.grain_L:
         if a <= 0.0:
             raise ValueError("Sizing from a grain length needs the propellant's regression law (a > 0).")
         grain_L = t.grain_L
@@ -131,7 +139,10 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
     thrust = nozzle(s, x).F_thr
 
     port_D_end = OF_end = fuel_burned = float("nan")
-    if a > 0.0:
+    if fixed_OF:  # the port opens by the fuel burned, as in the simulation
+        fuel_burned, OF_end = mdot_f * burn_time, OF
+        port_D_end = math.sqrt(t.port_D ** 2 + 4.0 * fuel_burned / (math.pi * rho * grain_L))
+    elif a > 0.0:
         # dD/dt = 2·0.001·a·(4·mdot_o/(π·D²))^n·L^m integrates in closed form for constant mdot_o
         c = 2.0 * 0.001 * a * (4.0 * mdot_o / math.pi) ** n * grain_L ** m
         port_D_end = (t.port_D ** (2 * n + 1) + (2 * n + 1) * c * burn_time) ** (1.0 / (2 * n + 1))
@@ -152,7 +163,7 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
         inj_CdA=s.inj_CdA * mdot_o / flow_per_hole,  # the flow is proportional to CdA in every injector model
         holes=mdot_o / flow_per_hole,
         burn_time=burn_time,
-        OF_exp=1.0 - n,
+        OF_exp=0.0 if fixed_OF else 1.0 - n,
         k=k,
         cstar=x.cstar,
         throat_D=throat_D,

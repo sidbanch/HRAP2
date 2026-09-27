@@ -18,6 +18,8 @@ Holds the whole motor: tank, fuel, injector, grain and nozzle, and shows its sta
 
 The Injector, Grain and Nozzle cards each have a **Sizing** setting. **As built**, the part is what you enter. Set **For** a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Sizing settings opens with every part as built.
 
+**Fuel: Fuel flow** is **Burn-rate law** (HRAP's Shifting OF), where the grain burns back at a × G^n and the O/F drifts as the port opens, or **Fixed O/F** (Constant OF), which holds the O/F you type and ignores the burn rate. Use Fixed O/F only without burn-rate data. With it, nothing can be sized for an O/F.
+
 Motor files that give the tank by length, starting pressure or oxidizer mass, or the nozzle by exit diameter, load as the equivalent volume, temperature, fill and expansion ratio.
 
 **Injector: Sizing** decides what sets the oxidizer flow:
@@ -49,10 +51,7 @@ The theory ignores losses entering the ports, so real swirlers probably flow les
 
 Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
 
-The left side only holds how to simulate the motor:
-
-- **Fuel flow:** **Burn-rate law** (HRAP's Shifting OF) burns the grain back at the fuel's burn rate, so the O/F drifts as the port opens. **Fixed O/F** (Constant OF) skips the grain and holds the O/F you type. Use it only without burn-rate data.
-- **Run:** run time, when the valve closes, timestep, and chamber pressure before ignition.
+The left side only holds how to run it: run time, when the valve closes, timestep, and chamber pressure before ignition.
 
 Options that change the default MATLAB model:
 
@@ -62,7 +61,7 @@ Options that change the default MATLAB model:
   - **Dyer:** a blend of the two, weighted by κ (default 1).
 
   HEM and Dyer use CoolProp nitrous properties for the injector and the tank.
-- **Solve tank cooling each step:** replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
+- **Solve tank cooling each step** (Simulation tab, Run): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
 - **Enable advanced options:** live chemistry and experimental fluid and grain models.
 
 ## Mass & export tab
