@@ -939,10 +939,11 @@ class SizingPage(QWidget):
                               f"10% more PTC bore area gives {10 * bore_gain:.1f}% more.\n"
                               "With little swirl the PTC bore works like a plain hole.")
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
+            ptc = f"stock PTC acting like {hole}" if self.ptc_stock.isChecked() else f"{hole} PTC bore"
             self.injector.sketch.show_data({
-                "bore": bore,
+                "bore": bore, "swirlers": holes,
                 "swirler": {"exit": self._hole_D(cfg), "ports": ports, "port": D_port, "offset": R_in, "fill": fill},
-                "caption": f"{ports} swirler holes, {hole} PTC bore"})
+                "caption": f"{holes} swirler{'s' if holes != 1 else ''}, {ports} holes each, {ptc}"})
         else:
             self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
                                             "caption": f"{holes} × {hole} holes"})

@@ -57,9 +57,17 @@ def _circle(p: QPainter, c: QPointF, d: float):
     p.drawEllipse(c, d / 2, d / 2)
 
 
+def _ring(c: QPointF, count: int, radius: float) -> list[QPointF]:
+    """Evenly spaced points on a ring, starting at the top; one point sits in the middle."""
+    if count == 1:
+        return [c]
+    return [c + QPointF(radius * math.cos(a), radius * math.sin(a))
+            for a in (2 * math.pi * i / count - math.pi / 2 for i in range(count))]
+
+
 class InjectorSketch(Sketch):
-    """Injector face inside the chamber bore, holes to scale (at least 4 px so they stay visible),
-    or a swirler looking down its axis."""
+    """Injector face inside the chamber bore, with its holes or swirlers to scale (holes at least 4 px so they stay
+    visible), and for swirlers a close-up of one looking down its axis."""
 
     WIDE = int(SIZE * 2.4)  # a swirler adds a magnified detail beside the face
 
@@ -67,28 +75,32 @@ class InjectorSketch(Sketch):
         self.setFixedWidth(self.WIDE if data and data.get("swirler") else int(SIZE * 1.3))
         super().show_data(data)
 
-    def draw(self, p: QPainter, r: QRectF, bore: float, swirler: dict | None = None, **holes):
+    def draw(self, p: QPainter, r: QRectF, bore: float, swirler: dict | None = None, swirlers: int = 1, **holes):
         if not swirler:
             self._draw_holes(p, r, bore, **holes)
             return
-        # The face at the same scale as the hole view, with the swirler at its true size in the middle,
-        # and a magnified detail of the swirler beside it.
+        # The face at the same scale as the hole view, with every swirler at its true size on the same ring as holes,
+        # and a close-up of the one nearest the detail beside it.
         side = r.height()
         face = QRectF(r.left(), r.top(), side, side)
         detail = QRectF(r.right() - side, r.top(), side, side)
         face_px = self._draw_face(p, face, bore)
         small = _swirler_body(swirler["ports"], swirler["port"], swirler["offset"]) * face_px
+        centers = _ring(face.center(), swirlers, 0.25 * bore * face_px)
+        shown = max(centers, key=lambda c: c.x())
         big = 0.5 * side
         p.setPen(QPen(self.color("muted"), 1.0))
         for sign in (-1, 1):
-            p.drawLine(face.center() + QPointF(0, sign * small), detail.center() + QPointF(0, sign * big))
+            p.drawLine(shown + QPointF(0, sign * small), detail.center() + QPointF(0, sign * big))
         p.setPen(QPen(self.color("outline"), 1.0))
         p.setBrush(self.color("tank"))
-        _circle(p, face.center(), 2 * small)
+        for c in centers:
+            _circle(p, c, 2 * small)
         detail_px = self._draw_swirler(p, detail, **swirler)
         p.setPen(self.color("muted"))
-        p.drawText(QRectF(face.right(), r.bottom() - 16, detail.left() - face.right(), 16),
-                   int(Qt.AlignmentFlag.AlignCenter), f"×{detail_px / face_px:.0f}")
+        gap = 0.5 * (face.right() + detail.left())  # wider than the gap: the circles curve away at the bottom
+        p.drawText(QRectF(gap - 40, r.bottom() - 14, 80, 14), int(Qt.AlignmentFlag.AlignCenter),
+                   f"{detail_px / face_px:.0f}× zoom")
 
     def _draw_swirler(self, p: QPainter, r: QRectF, exit: float, ports: int, port: float, offset: float,
                       fill: float) -> float:
@@ -160,10 +172,8 @@ class InjectorSketch(Sketch):
         c, px = r.center(), self._draw_face(p, r, bore)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(self.color("tank"))  # oxidizer blue, as in the motor diagram
-        ring = 0.0 if holes == 1 else 0.25 * bore * px
-        for i in range(holes):
-            a = 2 * math.pi * i / holes - math.pi / 2
-            _circle(p, c + QPointF(ring * math.cos(a), ring * math.sin(a)), max(hole * px, 4.0))
+        for center in _ring(c, holes, 0.25 * bore * px):
+            _circle(p, center, max(hole * px, 4.0))
 
 
 class GrainSketch(Sketch):
