@@ -58,6 +58,28 @@ def swirl_port_D(D_exit: float, ports: int, R_in: float, cd: float, xi: float = 
     return brentq(lambda d: swirl_cd(D_exit, ports, d, R_in, xi) - cd, 1e-4 * R_in, 2.0 * R_in)
 
 
+def swirl_exit_D(cda: float, ports: int, D_port: float, R_in: float, xi: float = 0.0) -> float:
+    """The exit diameter at which one swirler's Cd × exit area is cda, e.g. what a restricting fitting flows like.
+    The exit can be at most as wide as the swirl chamber."""
+    def gap(D: float) -> float:
+        return swirl_cd(D, ports, D_port, R_in, xi) * 0.25 * math.pi * D ** 2 - cda
+
+    widest = 2.0 * R_in + D_port
+    if gap(widest) < 0.0:
+        raise ValueError("Even an exit as wide as the swirl chamber can't pass that CdA through these holes. "
+                         "Check the hole count, size and offset.")
+    return brentq(gap, 1e-4 * widest, widest)
+
+
+def swirl_xi(cda: float, D_exit: float, ports: int, D_port: float, R_in: float) -> float:
+    """The inlet loss at which one swirler's Cd × exit area is cda."""
+    cd, ideal = cda / (0.25 * math.pi * D_exit ** 2), swirl_cd(D_exit, ports, D_port, R_in)
+    if cd >= ideal:
+        raise ValueError(f"That's at least what the ideal theory gives (Cd {ideal:.3f} on this exit), so there's no "
+                         "inlet loss to fit. Check the exit size.")
+    return (1.0 / cd ** 2 - 1.0 / ideal ** 2) / (D_exit ** 2 / (ports * D_port ** 2)) ** 2
+
+
 # Number drill diameters in inches, #80 to #1.
 NUMBER_DRILLS = dict(zip(range(80, 0, -1), (
     0.0135, 0.0145, 0.016, 0.018, 0.020, 0.021, 0.0225, 0.024, 0.025, 0.026, 0.028, 0.0292, 0.031, 0.032, 0.033, 0.035,

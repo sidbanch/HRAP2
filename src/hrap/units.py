@@ -25,10 +25,10 @@ LENGTH = {
     "ft": 0.3048,
 }
 AREA = {
-    "mm2": 1e-6,
-    "cm2": 1e-4,
-    "m2": 1.0,
-    "in2": 0.0254 ** 2,
+    "mm^2": 1e-6,
+    "cm^2": 1e-4,
+    "m^2": 1.0,
+    "in^2": 0.0254 ** 2,
 }
 VOLUME = {
     "in^3": 0.0254 ** 3,
@@ -86,6 +86,7 @@ UNIT_GROUPS = {
 
 # Display aliases used in the MATLAB GUI
 LENGTH_ITEMS = ["mm", "cm", "m", "in", "ft"]
+AREA_ITEMS = ["in^2", "mm^2", "cm^2", "m^2"]
 VOLUME_ITEMS = ["cm^3", "L", "in^3", "ft^3", "Gal", "m^3"]
 PRESSURE_ITEMS = ["psi", "atm", "kPa", "Bar", "MPa", "Pa", "psf"]
 MASS_ITEMS = ["kg", "g", "lbm", "oz"]

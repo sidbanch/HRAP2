@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
-from hrap.engine.swirl import swirl_A, swirl_cd, swirl_fill, swirl_sensitivity
+from hrap.engine.swirl import swirl_A, swirl_cd, swirl_exit_D, swirl_fill, swirl_sensitivity, swirl_xi
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
 from hrap.gui.sweep import SweepPanel
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
@@ -28,6 +29,7 @@ from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, Un
 from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants, load_propellant
 from hrap.units import (
+    AREA_ITEMS,
     DENSITY_ITEMS,
     LENGTH_ITEMS,
     PRESSURE_ITEMS,
@@ -46,8 +48,8 @@ LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
 
 
-def _beside(field: QWidget, box: QCheckBox) -> QWidget:
-    """A field with a checkbox after it, on one row."""
+def _beside(field: QWidget, box: QWidget) -> QWidget:
+    """A field with a checkbox or button after it, on one row."""
     row = QWidget()
     layout = QHBoxLayout(row)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -355,6 +357,14 @@ class SizingPage(QWidget):
                               "0 is the ideal theory, which flows the most, so holes sized with it come out small.\n"
                               "A sharp drilled hole is about 1.4. It matters most when the holes are small next to the exit.\n"
                               "Fit it to a cold flow of the swirler.")
+        self.sw_CdA_meas = UnitRow(AREA_ITEMS, "in^2", 5)
+        self.sw_CdA_meas.setToolTip("One swirler's CdA from a cold flow: water flow ÷ √(2 × 998 kg/m³ × ΔP), with ΔP read right\n"
+                                    "at the injector. If the cold flow gives a Cd on the exit area, CdA = Cd × exit area.")
+        fit = QPushButton("Fit")
+        fit.setToolTip("Stock ticked: set what the stock PTC acts like, keeping ξ.\n"
+                       "Bored PTC: set the inlet loss ξ, keeping the bore.\n"
+                       "Either way the swirl theory then gives the measured CdA.")
+        fit.clicked.connect(self._on_fit)
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
                                    "Untick it to type a Cd measured in a cold flow.")
@@ -365,7 +375,8 @@ class SizingPage(QWidget):
         self._hole_D_row = inj_form.add("Hole diameter", _beside(self.hole_D, self.ptc_stock), span=True)
         ports_row = inj_form.add("Swirler holes", self.sw_ports)
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
-        self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi)]
+        self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi),
+                              *inj_form.add("Measured CdA", _beside(self.sw_CdA_meas, fit), span=True)]
         self._cd_row = inj_form.add("Cd", _beside(self.inj_Cd, self.sw_cd_geom), span=True)
         inj_form.add("Flow model", self.inj_model)
         self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
@@ -727,6 +738,7 @@ class SizingPage(QWidget):
         self.ptc_stock.setChecked(bool(cfg.get("ptc_stock")))
         self.ptc_stock.blockSignals(False)
         self.sw_xi.setValue(float(cfg.get("sw_xi") or 0.0))
+        self.sw_CdA_meas.set_display(0.0)
         self.holes.setValue(int(cfg.get("inj_N") or 1))
         self.sw_ports.setValue(int(cfg["sw_ports"]))
         show(self.sw_D_port, "sw_D_port")
@@ -1051,6 +1063,23 @@ class SizingPage(QWidget):
     def _on_ptc_stock(self, stock: bool):
         if stock:
             self.hole_D.set_si(STOCK_PTC_D, "length")
+        self._on_motor_edited()
+
+    def _on_fit(self):
+        """Fit the stock PTC's size or the inlet loss to one swirler's measured CdA."""
+        cda = self.sw_CdA_meas.si("area")
+        geometry = (self.sw_ports.value(), self.sw_D_port.si("length"), self.sw_R_in.si("length"))
+        try:
+            if cda <= 0.0:
+                raise ValueError("Enter one swirler's measured CdA first.")
+            if self.ptc_stock.isChecked():
+                self.hole_D.set_si(swirl_exit_D(cda, *geometry, self.sw_xi.value()), "length")
+            else:
+                self.sw_xi.setValue(swirl_xi(cda, self.hole_D.si("length"), *geometry))
+        except ValueError as exc:
+            QMessageBox.information(self, "Fit", str(exc))
+            return
+        self.sw_cd_geom.setChecked(True)  # the fitted theory sets the Cd from here on
         self._on_motor_edited()
 
     def _on_pick(self, throat: float):
