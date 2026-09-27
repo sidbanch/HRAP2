@@ -10,8 +10,13 @@ share φ of the exit area filled with liquid through A = (1 − φ)·√2 / φ^1
 
     Cd = φ · √(φ / (2 − φ))
 
-It's a liquid theory; boiling nitrous flows somewhat differently, so treat it as a starting
-estimate until a cold flow measures the real Cd.
+The ideal theory loses nothing entering the ports. Bazarov's inlet loss ξ (a share of the
+port jets' velocity pressure) adds that, and matters most when the ports are small next to the exit:
+
+    1 / Cd² = 1 / Cd_ideal² + ξ · (exit area ÷ total port area)²
+
+ξ = 0 is the ideal theory; a sharp drilled hole is about 1.4. It's a liquid theory; boiling nitrous
+flows somewhat differently, so fit ξ to a cold flow before trusting the Cd.
 """
 from __future__ import annotations
 
@@ -29,15 +34,16 @@ def swirl_fill(A: float) -> float:
     return brentq(lambda phi: (1.0 - phi) * math.sqrt(2.0) / phi ** 1.5 - A, 1e-6, 1.0)
 
 
-def swirl_cd(D_exit: float, ports: int, D_port: float, R_in: float) -> float:
+def swirl_cd(D_exit: float, ports: int, D_port: float, R_in: float, xi: float = 0.0) -> float:
     phi = swirl_fill(swirl_A(D_exit, ports, D_port, R_in))
-    return phi * math.sqrt(phi / (2.0 - phi))
+    ideal = phi * math.sqrt(phi / (2.0 - phi))
+    return 1.0 / math.sqrt(1.0 / ideal ** 2 + xi * (D_exit ** 2 / (ports * D_port ** 2)) ** 2)
 
 
-def swirl_sensitivity(D_exit: float, ports: int, D_port: float, R_in: float) -> tuple[float, float]:
+def swirl_sensitivity(D_exit: float, ports: int, D_port: float, R_in: float, xi: float = 0.0) -> tuple[float, float]:
     """The % flow change per % more total port area, and per % more exit area. Whichever is bigger limits the flow."""
     def log_cda(De: float, Dp: float) -> float:
-        return math.log(swirl_cd(De, ports, Dp, R_in) * De ** 2)
+        return math.log(swirl_cd(De, ports, Dp, R_in, xi) * De ** 2)
 
     step = 1.01  # a 1% larger area
     base = log_cda(D_exit, D_port)
@@ -45,11 +51,11 @@ def swirl_sensitivity(D_exit: float, ports: int, D_port: float, R_in: float) -> 
             (log_cda(D_exit * math.sqrt(step), D_port) - base) / math.log(step))
 
 
-def swirl_port_D(D_exit: float, ports: int, R_in: float, cd: float) -> float:
+def swirl_port_D(D_exit: float, ports: int, R_in: float, cd: float, xi: float = 0.0) -> float:
     """Inlet port diameter that gives a Cd of cd. The ports can be at most twice their offset across."""
-    if swirl_cd(D_exit, ports, 2.0 * R_in, R_in) < cd:
+    if swirl_cd(D_exit, ports, 2.0 * R_in, R_in, xi) < cd:
         raise ValueError("No port size reaches this flow. Widen the exit, add ports or move them toward the axis.")
-    return brentq(lambda d: swirl_cd(D_exit, ports, d, R_in) - cd, 1e-4 * R_in, 2.0 * R_in)
+    return brentq(lambda d: swirl_cd(D_exit, ports, d, R_in, xi) - cd, 1e-4 * R_in, 2.0 * R_in)
 
 
 # Number drill diameters in inches, #80 to #1.

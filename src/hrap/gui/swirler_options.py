@@ -36,6 +36,7 @@ class Target:
     R_in: float        # m, port offset from the swirler axis
     exit_D: float      # m, the injector's current exit, to mark the loaded layout
     ports: int         # the injector's current port count
+    xi: float = 0.0    # inlet loss
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,8 @@ class Layout:
 def drilled_layout(t: Target, exit_D: float, ports: int) -> Layout:
     """The swirler with the number drill nearest the exact port size for the flow. Raises ValueError if none fits."""
     cd_needed = t.CdA / (t.swirlers * 0.25 * math.pi * exit_D ** 2)
-    drill, port_D = nearest_drill(swirl_port_D(exit_D, ports, t.R_in, cd_needed))
-    cd = swirl_cd(exit_D, ports, port_D, t.R_in)
+    drill, port_D = nearest_drill(swirl_port_D(exit_D, ports, t.R_in, cd_needed, t.xi))
+    cd = swirl_cd(exit_D, ports, port_D, t.R_in, t.xi)
     return Layout(exit_D, ports, drill, port_D, swirl_A(exit_D, ports, port_D, t.R_in), cd,
                   cd * t.swirlers * 0.25 * math.pi * exit_D ** 2)
 

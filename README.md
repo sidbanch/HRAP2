@@ -45,7 +45,12 @@ Sized **For liquid burn time** or **For O/F**, the page works backwards to a swi
 - **Inlet port diameter:** the port size that gives the needed CdA, for the exit, port count and offset you enter.
 - **Swirler layouts:** drillable options for a list of exits and port counts, rounded to real number drills, with the starting O/F and flow each one gives. Click a row to load it.
 
-The theory ignores losses entering the ports, so real swirlers probably flow less than it says. Drill the listed size, cold-flow it, and open the ports up a drill size if it flows low.
+Two settings tune the theory to measurements:
+
+- **Inlet loss (ξ):** pressure lost entering the swirler holes (Bazarov). 0 is the ideal theory, which flows the most, so holes sized with it come out small; a sharp drilled hole is about 1.4. It matters most for small holes, and a cold flow of the swirler fits it.
+- **Stock PTC acts like:** with **Stock** ticked, the PTC bore is the clean hole a stock 1/4" PTC flows like. Its tube stop and collet restrict more than its 0.188" hex: HPS01-1's four swirlers ran out of liquid at 5.8 s in the fire video with 0.116" (Dyer κ 1, burn-rate law, tank cooling; 0.099" with SPI and a fixed O/F 6). A cold flow of a bare stock PTC replaces it.
+
+Until a cold flow fits them, drill the listed size and open the holes up a drill size if the part flows low.
 
 ## Simulation tab
 

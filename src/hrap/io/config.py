@@ -103,6 +103,8 @@ def default_cfg() -> dict[str, Any]:
         "sw_R_in": 0.094,  # swirler axis to each inlet port's axis
         "sw_R_in_unit": "in",
         "sw_cd_from_geometry": True,
+        "sw_xi": 0.0,  # swirler inlet loss (Bazarov); 0 is the ideal theory
+        "ptc_stock": False,  # the swirler exit is a stock PTC, whose inj_D is the clean hole it flows like
         "P_cmbr_max": 500.0,  # chamber design limit (absolute); the sweep, sizing and runs check against it
         "P_cmbr_max_unit": "psi",
         "vnt_state": "Internal",
@@ -185,7 +187,8 @@ def _mass(cfg: dict[str, Any], name: str, default: float = 0.0) -> float:
 def injector_cd(cfg: dict[str, Any]) -> float:
     """The injector Cd: typed in, or worked out from a swirler's geometry."""
     if cfg.get("inj_type") == "Swirler" and cfg.get("sw_cd_from_geometry", True):
-        return swirl_cd(_len(cfg, "inj_D"), int(cfg["sw_ports"]), _len(cfg, "sw_D_port"), _len(cfg, "sw_R_in"))
+        return swirl_cd(_len(cfg, "inj_D"), int(cfg["sw_ports"]), _len(cfg, "sw_D_port"), _len(cfg, "sw_R_in"),
+                        float(cfg.get("sw_xi") or 0.0))
     return float(cfg["inj_Cd"])
 
 

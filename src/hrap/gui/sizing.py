@@ -38,7 +38,10 @@ from hrap.units import (
     to_si,
 )
 
-STOCK_PTC_BORE = 0.188 * 0.0254  # m, the hex inside a stock 1/4 in PTC (HPS01 notes), taken as a round hole
+# m. A stock 1/4 in PTC has a 0.188 in hex inside, but its tube stop and collet restrict more: HPS01-1's liquid ran
+# out at 5.8 s in the video when its four swirlers (6 × 0.100 in holes, offset guessed at 0.10 in) exit through a clean
+# hole this size, with the Dyer model (κ 1), the burn-rate law and tank cooling. With SPI and a fixed O/F 6 it's 0.099 in.
+STOCK_PTC_D = 0.116 * 0.0254
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
 
@@ -342,8 +345,16 @@ class SizingPage(QWidget):
         self.sw_R_in.setToolTip("Distance from the swirler's axis to each hole's axis. For holes tangent to the\n"
                                 "plug's bore, it's the bore radius minus half a hole.")
         self.ptc_stock = QCheckBox("Stock")
-        self.ptc_stock.setToolTip("A stock 1/4 in PTC, with a 0.188 in hex inside. Untick it to bore the PTC out.")
+        self.ptc_stock.setToolTip("A stock 1/4 in PTC. Its insides restrict more than its 0.188 in hex, so it's entered as\n"
+                                  "the clean hole it flows like. Untick it for a PTC bored out to a size.")
         self.ptc_stock.toggled.connect(self._on_ptc_stock)
+        self.sw_xi = PlainDoubleSpinBox()
+        self.sw_xi.setRange(0, 100)
+        self.sw_xi.setDecimals(2)
+        self.sw_xi.setToolTip("Pressure lost entering the swirler holes, as a share of the jets' velocity pressure (Bazarov's ξ).\n"
+                              "0 is the ideal theory, which flows the most, so holes sized with it come out small.\n"
+                              "A sharp drilled hole is about 1.4. It matters most when the holes are small next to the exit.\n"
+                              "Fit it to a cold flow of the swirler.")
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
                                    "Untick it to type a Cd measured in a cold flow.")
@@ -354,7 +365,7 @@ class SizingPage(QWidget):
         self._hole_D_row = inj_form.add("Hole diameter", _beside(self.hole_D, self.ptc_stock), span=True)
         ports_row = inj_form.add("Swirler holes", self.sw_ports)
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
-        self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in)]
+        self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi)]
         self._cd_row = inj_form.add("Cd", _beside(self.inj_Cd, self.sw_cd_geom), span=True)
         inj_form.add("Flow model", self.inj_model)
         self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
@@ -492,7 +503,7 @@ class SizingPage(QWidget):
                   self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa, self.throat_D):
             w.spin.valueChanged.connect(self._on_motor_edited)
             w.unit.currentTextChanged.connect(self._on_motor_edited)
-        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.inj_Cd,
+        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.inj_Cd, self.sw_xi,
                      self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
         for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model):
@@ -614,11 +625,14 @@ class SizingPage(QWidget):
         """Show the rows the injector type, flow model and vent use, and fill in the Cds that follow from others."""
         self._swirler = swirler = self.inj_type.currentText() == "Swirler"
         self._holes_row[0].setText("Swirler count" if swirler else "Hole count")
-        self._hole_D_row[0].setText("PTC bore" if swirler else "Hole diameter")
-        self.hole_D.setToolTip("The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through."
-                               if swirler else "Diameter of each injector hole.")
+        stock = swirler and self.ptc_stock.isChecked()
+        self._hole_D_row[0].setText("Stock PTC acts like" if stock else "PTC bore" if swirler else "Hole diameter")
+        self.hole_D.setToolTip(
+            f"The clean hole a stock PTC flows like. {STOCK_PTC_D / 0.0254:.3f} in fits the HPS01-1 fire; replace it with\n"
+            "a cold flow of a bare stock PTC." if stock else
+            "The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through." if swirler else
+            "Diameter of each injector hole.")
         self.ptc_stock.setVisible(swirler)
-        self.hole_D.setEnabled(not (swirler and self.ptc_stock.isChecked()))
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if swirler else "Holes")
         self.sw_cd_geom.setVisible(swirler)
@@ -628,7 +642,8 @@ class SizingPage(QWidget):
         D_port = self.sw_D_port.si("length")
         if geometry and D_port > 0:
             self.inj_Cd.blockSignals(True)
-            self.inj_Cd.setValue(swirl_cd(self.hole_D.si("length"), self.sw_ports.value(), D_port, self.sw_R_in.si("length")))
+            self.inj_Cd.setValue(swirl_cd(self.hole_D.si("length"), self.sw_ports.value(), D_port, self.sw_R_in.si("length"),
+                                          self.sw_xi.value()))
             self.inj_Cd.blockSignals(False)
         model = self.inj_model.currentText()
         for w in self._hem_row:
@@ -709,8 +724,9 @@ class SizingPage(QWidget):
         self.inj_type.setCurrentText(str(cfg["inj_type"]))
         show(self.hole_D, "inj_D")
         self.ptc_stock.blockSignals(True)
-        self.ptc_stock.setChecked(self.inj_type.currentText() == "Swirler" and abs(si("inj_D") - STOCK_PTC_BORE) < 1e-6)
+        self.ptc_stock.setChecked(bool(cfg.get("ptc_stock")))
         self.ptc_stock.blockSignals(False)
+        self.sw_xi.setValue(float(cfg.get("sw_xi") or 0.0))
         self.holes.setValue(int(cfg.get("inj_N") or 1))
         self.sw_ports.setValue(int(cfg["sw_ports"]))
         show(self.sw_D_port, "sw_D_port")
@@ -765,7 +781,8 @@ class SizingPage(QWidget):
             "cstar_eff": self.cstar.value(),
             "inj_type": self.inj_type.currentText(), **field("inj_D", self.hole_D), "inj_N": self.holes.value(),
             "inj_Cd": self.inj_Cd.value(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
-            **field("sw_R_in", self.sw_R_in), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
+            **field("sw_R_in", self.sw_R_in), "sw_xi": self.sw_xi.value(), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
+            "ptc_stock": self.inj_type.currentText() == "Swirler" and self.ptc_stock.isChecked(),
             "inj_model": self.inj_model.currentText(),
             "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
@@ -826,7 +843,8 @@ class SizingPage(QWidget):
         self._layout = None
         if self._solve_port():
             target = Target(z.inj_CdA, z.mdot_o, z.OF if self._by_length() else None, z.OF_exp, z.ox_liquid, self.holes.value(),
-                            to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length"), self._hole_D(cfg), int(cfg["sw_ports"]))
+                            to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length"), self._hole_D(cfg), int(cfg["sw_ports"]),
+                            self.sw_xi.value())
             try:
                 self._layout = drilled_layout(target, target.exit_D, target.ports)
             except ValueError as exc:
@@ -908,19 +926,18 @@ class SizingPage(QWidget):
                     D_port = self._layout.port_D
                     self.injector.set("Hole drill", f"#{self._layout.drill} ({u.text(D_port, 'length')})",
                                       f"The number drill nearest the port size that gives Cd {cd:.3f} with {ports} ports\n"
-                                      f"{u.text(R_in, 'length')} off the axis, from the swirl theory for an ideal liquid (Abramovich).\n"
-                                      "Measured swirlers have flowed less than this theory, so expect a little less flow.\n"
+                                      f"{u.text(R_in, 'length')} off the axis, from Abramovich's swirl theory with inlet loss ξ "
+                                      f"{self.sw_xi.value():.2f}.\n"
                                       "Apply to motor copies it into the swirler.")
                     self.injector.set("Swirler Cd", f"{self._layout.cd:.3f}",
                                       f"The drilled swirler's Cd on its {hole} exit. The flow needs {cd:.3f}.")
-            holes_gain, bore_gain = swirl_sensitivity(self._hole_D(cfg), ports, D_port, R_in)
+            holes_gain, bore_gain = swirl_sensitivity(self._hole_D(cfg), ports, D_port, R_in, self.sw_xi.value())
             limit = ("Swirler holes" if holes_gain > bore_gain + 0.15 else
                      "PTC bore" if bore_gain > holes_gain + 0.15 else "Both")
             self.injector.set("Limits the flow", limit,
                               f"10% more swirler hole area gives {10 * holes_gain:.1f}% more flow;\n"
                               f"10% more PTC bore area gives {10 * bore_gain:.1f}% more.\n"
-                              "With little swirl the PTC bore works like a plain hole, which really loses a bit more than\n"
-                              "the ideal swirl theory says.")
+                              "With little swirl the PTC bore works like a plain hole.")
             fill = swirl_fill(swirl_A(self._hole_D(cfg), ports, D_port, R_in))
             self.injector.sketch.show_data({
                 "bore": bore,
@@ -1031,9 +1048,9 @@ class SizingPage(QWidget):
         self.sw_ports.setValue(ports)
 
     def _on_ptc_stock(self, stock: bool):
-        self.hole_D.setEnabled(not stock)
         if stock:
-            self.hole_D.spin.setValue(from_si(STOCK_PTC_BORE, self.hole_D.unit.currentText(), "length"))
+            self.hole_D.set_si(STOCK_PTC_D, "length")
+        self._on_motor_edited()
 
     def _on_pick(self, throat: float):
         self._picked_throat = throat
