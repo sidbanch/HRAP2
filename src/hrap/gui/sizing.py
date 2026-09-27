@@ -198,9 +198,10 @@ class SizingPage(QWidget):
                                   "and the hole count follows from it. The real flow falls during the burn, so the\n"
                                   "liquid lasts somewhat longer. A weak vapor tail follows once the liquid runs out.")
         self.size_from = PlainComboBox()
-        self.size_from.addItems(["Liquid burn time", "Hole count", "O/F"])
-        self.size_from.setToolTip("Pick the liquid burn time and get the hole count, or pick the hole count and get the burn time.\n"
-                                  "O/F picks the oxidizer flow that gives the starting O/F with your grain length.")
+        self.size_from.addItems(["As built", "For liquid burn time", "For O/F"])
+        self.size_from.setToolTip("As built: the holes or swirlers you enter; the flow and burn time follow.\n"
+                                  "For liquid burn time: the flow that empties the liquid in that time, and the holes for it.\n"
+                                  "For O/F: the flow that gives the starting O/F with the grain as built.")
         self.holes = PlainSpinBox()
         self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count. The oxidizer flow and burn time follow from it.")
@@ -208,8 +209,9 @@ class SizingPage(QWidget):
                            "or the oxidizer flow when the injector is sized from O/F.\n"
                            "With a regression law it drifts during the burn.")
         self.grain_from = PlainComboBox()
-        self.grain_from.addItems(["O/F", "Grain length"])
-        self.grain_from.setToolTip("Pick the starting O/F and get the grain length, or pick the grain length and get the O/F.")
+        self.grain_from.addItems(["As built", "For O/F"])
+        self.grain_from.setToolTip("As built: the grain length you enter; the starting O/F follows.\n"
+                                   "For O/F: the grain length that gives the starting O/F.")
         self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_OD = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_L = UnitRow(LENGTH_ITEMS, "in", 4)
@@ -333,7 +335,7 @@ class SizingPage(QWidget):
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
                                    "Untick it to type a Cd measured in a cold flow.")
         inj_form = FieldGrid()
-        inj_form.add("Size from", self.size_from)
+        inj_form.add("Sizing", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
         self._hole_D_row = inj_form.add("Hole diameter", _beside(self.hole_D, self.ptc_stock), span=True)
@@ -367,16 +369,16 @@ class SizingPage(QWidget):
         self.Pa = UnitRow(PRESSURE_ITEMS, "atm", 3)
         self.Pa.setToolTip("Outside pressure. A sized expansion ratio matches it. Lower it to model a motor at altitude.")
         self.nozzle_from = PlainComboBox()
-        self.nozzle_from.addItems(["Chamber pressure", "Throat"])
-        self.nozzle_from.setToolTip("Chamber pressure: size the throat and expansion ratio for the chamber pressure target.\n"
-                                    "Throat: use the nozzle's own throat and expansion ratio; the chamber pressure follows.")
+        self.nozzle_from.addItems(["As built", "For chamber pressure"])
+        self.nozzle_from.setToolTip("As built: the throat and expansion ratio you enter; the chamber pressure follows.\n"
+                                    "For chamber pressure: size them for the chamber pressure target.")
         self.throat_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.noz_ER = PlainDoubleSpinBox()
         self.noz_ER.setRange(1, 1000)
         self.noz_ER.setDecimals(3)
         self.noz_ER.setToolTip("Exit area ÷ throat area.")
         noz_form = FieldGrid()
-        noz_form.add("Size from", self.nozzle_from)
+        noz_form.add("Sizing", self.nozzle_from)
         self._throat_rows = [*noz_form.add("Throat", self.throat_D), *noz_form.add("Expansion ratio", self.noz_ER)]
         noz_form.add("Throat Cd", self.noz_Cd)
         noz_form.add("Efficiency", self.noz_eff, "%")
@@ -391,7 +393,7 @@ class SizingPage(QWidget):
                               "The chamber's gas volume sets how fast its pressure builds at ignition.")
         self.post_L.setToolTip("Empty space between the back of the grain and the nozzle.")
         grain_form = FieldGrid()
-        grain_form.add("Size from", self.grain_from)
+        grain_form.add("Sizing", self.grain_from)
         self._grain_L_row = grain_form.add("Grain length", self.grain_L)
         grain_form.add("Starting port", self.port_D)
         grain_form.add("Outer diameter", self.grain_OD)
@@ -426,7 +428,7 @@ class SizingPage(QWidget):
         injector_layout = self.injector.layout()
         injector_layout.insertWidget(injector_layout.count() - 1, self.swirler_options)  # above the card's closing stretch
 
-        intro = QLabel("The whole motor, with its state at the start of the burn. To redesign a part, set its Size from to "
+        intro = QLabel("The whole motor, with its state at the start of the burn. To redesign a part, set its Sizing to "
                        "a target; Apply to motor then makes the sized part the motor's. The Simulation tab runs the whole burn.")
         intro.setObjectName("cardLabel")
         intro.setWordWrap(True)
@@ -490,13 +492,16 @@ class SizingPage(QWidget):
         self._sync_motor_rows()
 
     def _by_holes(self) -> bool:
+        return self.size_from.currentIndex() == 0
+
+    def _by_burn_time(self) -> bool:
         return self.size_from.currentIndex() == 1
 
     def _by_OF(self) -> bool:
         return self.size_from.currentIndex() == 2
 
     def _fixed_nozzle(self) -> bool:
-        return self.nozzle_from.currentIndex() == 1
+        return self.nozzle_from.currentIndex() == 0
 
     def _solve_port(self) -> bool:
         """A burn time or O/F sets the flow, and the swirler's inlet port size is sized to it."""
@@ -505,7 +510,7 @@ class SizingPage(QWidget):
     def _show_size_from_rows(self):
         solve = self._solve_port()
         for w in self._burn_time_row:
-            w.setVisible(self.size_from.currentIndex() == 0)
+            w.setVisible(self._by_burn_time())
         for w in self._holes_row:
             w.setVisible(self._by_holes())
         for w in self._swirler_rows:
@@ -540,18 +545,18 @@ class SizingPage(QWidget):
         self.nozzle.show_row("Chamber pressure", fixed)
 
     def _by_length(self) -> bool:
-        return self.grain_from.currentIndex() == 1
+        return self.grain_from.currentIndex() == 0
 
     def _on_size_from(self, *_):
         if self._by_OF():
-            self.grain_from.setCurrentIndex(1)
+            self.grain_from.setCurrentIndex(0)
         self._show_size_from_rows()
         self.refresh()
 
     def targets(self) -> SizingTargets:
         return SizingTargets(
             P_cmbr=None if self._fixed_nozzle() else self.P_cmbr.si("pressure"),
-            burn_time=self.burn_time.value() if self.size_from.currentIndex() == 0 else None,
+            burn_time=self.burn_time.value() if self._by_burn_time() else None,
             OF=self.OF.value(),
             port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
             holes=self.holes.value() if self._by_holes() else None,
@@ -559,7 +564,7 @@ class SizingPage(QWidget):
         )
 
     def targets_cfg(self) -> dict:
-        return {"size_from": ("burn_time", "holes", "OF")[self.size_from.currentIndex()],
+        return {"size_from": ("holes", "burn_time", "OF")[self.size_from.currentIndex()],
                 "grain_from": "grain_L" if self._by_length() else "OF",
                 "nozzle_from": "throat" if self._fixed_nozzle() else "P_cmbr",
                 "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value()}
@@ -570,9 +575,9 @@ class SizingPage(QWidget):
         self.P_cmbr.set_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), "pressure")
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
         # Injector mode first: while it's still on the last motor's O/F, it holds the grain on Grain length.
-        self.size_from.setCurrentIndex({"burn_time": 0, "OF": 2}.get(saved.get("size_from"), 1))
-        self.grain_from.setCurrentIndex(0 if saved.get("grain_from") == "OF" else 1)
-        self.nozzle_from.setCurrentIndex(0 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 1)
+        self.size_from.setCurrentIndex({"burn_time": 1, "OF": 2}.get(saved.get("size_from"), 0))
+        self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "OF" else 0)
+        self.nozzle_from.setCurrentIndex(1 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
@@ -587,7 +592,6 @@ class SizingPage(QWidget):
     def _sync_motor_rows(self):
         """Show the rows the injector type, flow model and vent use, and fill in the Cds that follow from others."""
         self._swirler = swirler = self.inj_type.currentText() == "Swirler"
-        self.size_from.setItemText(1, "Swirler count" if swirler else "Hole count")
         self._holes_row[0].setText("Swirler count" if swirler else "Hole count")
         self._hole_D_row[0].setText("PTC bore" if swirler else "Hole diameter")
         self.hole_D.setToolTip("The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through."

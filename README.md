@@ -10,27 +10,27 @@ Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow s
 - **macOS:** double-click `run_hrap.command`. It sets up `.venv` and installs what's missing. The first run needs Python 3.10+ or `uv`.
 - **Anything else:** in a Python 3.10+ virtual environment, `python -m pip install -e .`, then `hrap`.
 
-Motor files are JSON, and hold the Motor tab's Size from settings and targets too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
+Motor files are JSON, and hold the Motor tab's Sizing settings and targets too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
 
 ## Motor tab
 
 Holds the whole motor: tank, fuel, injector, grain and nozzle, and shows its state at the start of the burn (flows, O/F, chamber pressure, thrust), using the same injector, combustion and nozzle math as the simulation.
 
-The Injector, Grain and Nozzle cards each have a **Size from**. As built (Hole count, Grain length, Throat), the part is what you enter. Set to a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Size from settings opens with every part as built.
+The Injector, Grain and Nozzle cards each have a **Sizing** setting. **As built**, the part is what you enter. Set **For** a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Sizing settings opens with every part as built.
 
 Motor files that give the tank by length, starting pressure or oxidizer mass, or the nozzle by exit diameter, load as the equivalent volume, temperature, fill and expansion ratio.
 
-**Injector: Size from** decides what sets the oxidizer flow:
+**Injector: Sizing** decides what sets the oxidizer flow:
 
-| Size from | You give | It gives |
+| Sizing | You give | It gives |
 | --- | --- | --- |
-| Hole count | hole or swirler count and geometry | the flow |
-| Liquid burn time | how long the liquid should last | flow = liquid in the tank ÷ burn time |
-| O/F | a starting O/F, with the grain on Grain length | the flow that gives that O/F |
+| As built | hole or swirler count and geometry | the flow |
+| For liquid burn time | how long the liquid should last | flow = liquid in the tank ÷ burn time |
+| For O/F | a starting O/F, with the grain as built | the flow that gives that O/F |
 
 Every mode shows **Total CdA**: the Cd × area the injector needs for that flow at this ΔP. Compare it with a cold-flow result. If the cold flow gives Cd on the exit area, Cd × exit area is the CdA.
 
-**Grain: Size from** O/F gives a grain length; Grain length gives an O/F. **Nozzle: Size from** Chamber pressure gives the throat and expansion ratio for a chamber pressure target; Throat uses the nozzle's own and gives the chamber pressure.
+**Grain: Sizing** For O/F gives a grain length; As built gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; As built uses the nozzle's own and gives the chamber pressure.
 
 **Check across injector Cd** runs the full simulation for a range of throats and injector Cds, since the Cd is usually a guess until a cold flow. Cells are red over the chamber pressure limit and blue under the minimum. Click a throat to use it.
 
@@ -38,7 +38,7 @@ Every mode shows **Total CdA**: the Cd × area the injector needs for that flow 
 
 Set the injector **Type** to **Swirler** for tangential-port swirlers. **From geometry** estimates the Cd from the exit, port count, port size and port offset with Abramovich's ideal swirl theory ([below](#how-the-swirl-model-works)).
 
-In **Liquid burn time** or **O/F** mode, the page works backwards to a swirler instead:
+Sized **For liquid burn time** or **For O/F**, the page works backwards to a swirler instead:
 
 - **Inlet port diameter:** the port size that gives the needed CdA, for the exit, port count and offset you enter.
 - **Swirler layouts:** drillable options for a list of exits and port counts, rounded to real number drills, with the starting O/F and flow each one gives. Click a row to load it.
