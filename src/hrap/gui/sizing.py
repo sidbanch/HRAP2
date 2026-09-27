@@ -681,6 +681,8 @@ class SizingPage(QWidget):
         self.noz_eff.setValue(float(cfg.get("noz_eff") or 100.0))
         show(self.Pa, "Pa")
         show(self.P_limit, "P_cmbr_max")
+        self._picked_throat = None
+        self.sweep.reset()
         self._loading = False
         self._sync_motor_rows()
 

@@ -65,6 +65,9 @@ class SweepWorker(QObject):
         self.finished.emit()
 
 
+ASK = "Run the sweep to see which throats stay in the chamber pressure range for every Cd."
+
+
 def _chip(color: QColor, text: str) -> QWidget:
     w = QWidget()
     h = QHBoxLayout(w)
@@ -81,6 +84,7 @@ def _chip(color: QColor, text: str) -> QWidget:
 class SweepPanel(QFrame):
     """Full-simulation check of a sized motor across throat diameters and injector Cds."""
 
+    started = Signal()
     finished = Signal()
 
     def __init__(self, get_cfg: Callable[[], dict | None], get_units: Callable[[], DisplayUnits],
@@ -177,7 +181,7 @@ class SweepPanel(QFrame):
         buttons.addWidget(QLabel("Show"))
         buttons.addWidget(self.shown)
 
-        self.answer = QLabel("Run the sweep to see which throats stay in the chamber pressure range for every Cd.")
+        self.answer = QLabel(ASK)
         self.answer.setWordWrap(True)
         font = QFont(self.answer.font())
         font.setBold(True)
@@ -363,6 +367,7 @@ class SweepPanel(QFrame):
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._on_thread_finished)
         self._thread.start()
+        self.started.emit()
 
     def _label_throats(self):
         u = self._get_units()
@@ -377,6 +382,14 @@ class SweepPanel(QFrame):
         self._picked = col
         self._label_throats()
         self._on_pick(self._throats[col])
+
+    def reset(self):
+        """Drop the last sweep's table; it was for another motor."""
+        self.cases, self._cells, self._throats, self._picked, self._error = [], {}, [], None, ""
+        for w in (self.table, self.legend, self.progress):
+            w.hide()
+        self.export_btn.setEnabled(False)
+        self.answer.setText(ASK)
 
     def clear_pick(self):
         if self._picked is not None:

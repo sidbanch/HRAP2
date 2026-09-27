@@ -14,10 +14,15 @@ def app():
 
 
 @pytest.fixture
-def window(app):
+def window(app, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QMessageBox
+
     from hrap.gui.main import MainWindow
 
-    win = MainWindow()
+    # Closing asks about unsaved motors; don't let the question block the tests.
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Discard)
+    win = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
     win.tmax.setValue(.02)
     win.show()
     yield win

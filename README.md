@@ -10,7 +10,7 @@ Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow s
 - **macOS:** double-click `run_hrap.command`. It sets up `.venv` and installs what's missing. The first run needs Python 3.10+ or `uv`.
 - **Anything else:** in a Python 3.10+ virtual environment, `python -m pip install -e .`, then `hrap`.
 
-**Save** and **Load** (top right) read and write motor files as JSON, including the Sizing page settings. MATLAB `.mat` motor files load too. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
+Motor files are JSON, and hold the Sizing page settings too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
 
 ## Sizing tab
 

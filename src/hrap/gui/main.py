@@ -6,14 +6,14 @@ import multiprocessing
 import os
 import sys
 import traceback
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QFontDatabase, QIcon
+from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTabBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -128,12 +129,32 @@ class SimWorker(QObject):
             self.failed.emit(traceback.format_exc())
 
 
+@dataclass
+class OpenMotor:
+    """A motor in the header's tabs: its file, its settings, and its last run."""
+    path: str  # "" until it's saved to a file
+    title: str
+    cfg: dict  # the settings as the pages last showed them
+    saved: dict | None = None  # the settings as last loaded or saved, to tell whether it has unsaved edits
+    run: tuple | None = None  # (settings, state, output, cfg) of its last run
+
+
+def _same_cfg(a, b) -> bool:
+    """Equal settings, apart from float rounding from unit conversions."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_cfg(a[k], b[k]) for k in a)
+    if isinstance(a, float) or isinstance(b, float):
+        return (isinstance(a, (int, float)) and isinstance(b, (int, float))
+                and math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12))
+    return a == b
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, prefs: QSettings | None = None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.resize(1280, 860)
-        self.cfg = bundled_motor("example_98mm") if _has_bundled("example_98mm") else default_cfg()
+        self._shown: OpenMotor | None = None  # the motor the pages show
         self._output = None
         self._settings = None
         self._state = None
@@ -143,7 +164,7 @@ class MainWindow(QMainWindow):
         self._close_when_finished = False
         self._result_cfg = None
         self._hover_index = None
-        self._prefs = QSettings("HCAT", APP_NAME)
+        self._prefs = prefs or QSettings("HCAT", APP_NAME)
         defaults = asdict(DisplayUnits())
         saved = {key: str(self._prefs.value(f"displayUnits/{key}", default))
                  for key, default in defaults.items()}
@@ -153,7 +174,6 @@ class MainWindow(QMainWindow):
         })
         self._last_dir = str(self._prefs.value("lastFileDir") or "")
         self._build()
-        self._cfg_to_form(self.cfg)
         self._connect_derived()
         for control_type, signal in (
             (QDoubleSpinBox, "valueChanged"), (QSpinBox, "valueChanged"),
@@ -162,15 +182,26 @@ class MainWindow(QMainWindow):
             for page in (self._form, self.mass_page):
                 for control in page.findChildren(control_type):
                     getattr(control, signal).connect(self._invalidate_results)
-        self.name.textChanged.connect(self._invalidate_results)
-        self.mfg.textChanged.connect(self._invalidate_results)
+                    getattr(control, signal).connect(self._update_tab_marker)
+        for edit in (self.name, self.mfg):
+            edit.textChanged.connect(self._invalidate_results)
+            edit.textChanged.connect(self._update_tab_marker)
+        self.sizing_page.sized.connect(self._update_tab_marker)
+        self._restore_session()
 
     def _build(self):
         file_menu = self._file_menu = self.menuBar().addMenu("&File")
-        file_menu.addAction("New", self._new)
-        file_menu.addAction("Open JSON…", self._open_json)
-        file_menu.addAction("Import MATLAB .mat…", self._import_mat)
-        file_menu.addAction("Save JSON…", self._save_json)
+        for text, slot, key in (
+            ("New", self._new, QKeySequence.StandardKey.New),
+            ("Open…", self._open_json, QKeySequence.StandardKey.Open),
+            ("Import MATLAB .mat…", self._import_mat, None),
+            ("Save", lambda: self._save_motor(self._shown), QKeySequence.StandardKey.Save),
+            ("Save As…", lambda: self._save_motor(self._shown, choose_path=True), QKeySequence.StandardKey.SaveAs),
+            ("Close motor", lambda: self._close_motor(self.motor_tabs.currentIndex()), QKeySequence.StandardKey.Close),
+        ):
+            action = file_menu.addAction(text, slot)
+            if key is not None:
+                action.setShortcut(key)
         file_menu.addSeparator()
         file_menu.addAction("Export CSV…", lambda: self._export("csv"))
         file_menu.addAction("Export RSE…", lambda: self._export("rse"))
@@ -179,8 +210,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Quit", self.close)
 
         ex_menu = self._examples_menu = self.menuBar().addMenu("&Examples")
-        ex_menu.addAction("example_98mm (const O/F, ABS)", lambda: self._load_bundled("example_98mm"))
-        ex_menu.addAction("Rattworks K240 (const O/F, HDPE)", lambda: self._load_bundled("Rattworks_K240"))
+        ex_menu.addAction("example_98mm (const O/F, ABS)", lambda: self._open_bundled("example_98mm"))
+        ex_menu.addAction("Rattworks K240 (const O/F, HDPE)", lambda: self._open_bundled("Rattworks_K240"))
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction("Dark theme", lambda: self._set_theme("dark"))
@@ -195,17 +226,34 @@ class MainWindow(QMainWindow):
         top = QWidget()
         top.setObjectName("configHeader")
         top_l = QHBoxLayout(top)
-        top_l.setContentsMargins(12, 8, 12, 8)
+        top_l.setContentsMargins(12, 6, 12, 6)
+        # One tab per open motor. Each keeps its unsaved edits and last run, so switching is instant.
+        self.motor_tabs = QTabBar()
+        self.motor_tabs.setObjectName("motorTabs")
+        self.motor_tabs.setTabsClosable(True)
+        self.motor_tabs.setMovable(True)
+        self.motor_tabs.setExpanding(False)
+        self.motor_tabs.setDrawBase(False)
+        self.motor_tabs.currentChanged.connect(self._on_motor_tab)
+        self.motor_tabs.tabCloseRequested.connect(self._close_motor)
+        for key, step in ((QKeySequence.StandardKey.NextChild, 1), (QKeySequence.StandardKey.PreviousChild, -1)):
+            QShortcut(key, self, lambda step=step: self._step_motor(step))
+        self._open_btn = QPushButton("Open…")
+        self._open_btn.setToolTip("Open a motor file in a new tab.")
+        self._open_btn.clicked.connect(self._open_json)
         self.name = QLineEdit()
         self.name.setPlaceholderText("Motor name")
+        self.name.setToolTip("The motor's name, used in the drawing and in exported RSE and ENG files.")
+        self.name.setMaximumWidth(320)
         save_btn = QPushButton("Save")
-        load_btn = QPushButton("Load")
-        save_btn.clicked.connect(self._save_json)
-        load_btn.clicked.connect(self._open_json)
-        top_l.addWidget(QLabel("Motor"))
+        save_btn.setToolTip("Save this motor to its file.")
+        save_btn.clicked.connect(lambda: self._save_motor(self._shown))
+        top_l.addWidget(self.motor_tabs)
+        top_l.addWidget(self._open_btn)
+        top_l.addStretch(1)
+        top_l.addWidget(QLabel("Name"))
         top_l.addWidget(self.name, 1)
         top_l.addWidget(save_btn)
-        top_l.addWidget(load_btn)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._form = self._make_form()
@@ -218,6 +266,8 @@ class MainWindow(QMainWindow):
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
+        self.sizing_page.sweep.started.connect(self._sync_busy)
+        self.sizing_page.sweep.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
@@ -836,15 +886,6 @@ class MainWindow(QMainWindow):
         self._hover_index = index
         self._refresh_viz()
 
-    def _load_bundled(self, name: str):
-        self._output = None
-        self._hover_index = None
-        self.cfg = bundled_motor(name)
-        self._cfg_to_form(self.cfg)
-        self.summary.clear()
-        self._clear_plot()
-        self._refresh_viz()
-
     def _invalidate_results(self):
         if self._output is None:
             return
@@ -859,15 +900,14 @@ class MainWindow(QMainWindow):
     def _run(self):
         if self._thread is not None:
             return
-        self.cfg = self._form_to_cfg()
-        self._running_cfg = self.cfg
+        self._running_cfg = self._form_to_cfg()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
         self._progress.show()
-        self._set_running(True)
         self.statusBar().showMessage("Running simulation…")
         self._thread = QThread()
-        self._worker = SimWorker(self.cfg)
+        self._set_running(True)
+        self._worker = SimWorker(self._running_cfg)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -882,8 +922,13 @@ class MainWindow(QMainWindow):
     def _set_running(self, running: bool):
         for page in (self._form, self.sizing_page, self.mass_page):
             page.setEnabled(not running)
-        self._file_menu.setEnabled(not running)
-        self._examples_menu.setEnabled(not running)
+        self._sync_busy()
+
+    def _sync_busy(self):
+        """Motors can't be switched or opened while a run or a sweep is going."""
+        idle = self._thread is None and not self.sizing_page.sweep.busy()
+        for w in (self.motor_tabs, self._open_btn, self._file_menu, self._examples_menu):
+            w.setEnabled(idle)
 
     def _thread_finished(self):
         thread = cast(QThread, self._thread)
@@ -909,8 +954,19 @@ class MainWindow(QMainWindow):
             self._close_when_finished = True
             self.statusBar().showMessage("Closing when the current simulation finishes…")
             event.ignore()
-        else:
-            event.accept()
+            return
+        self._stash()
+        motors = self._motors()
+        unsaved = [m.title for m in motors if self._edited(m)]
+        if unsaved and QMessageBox.question(
+            self, APP_NAME, f"Unsaved changes in {', '.join(unsaved)}.",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel,
+        ) != QMessageBox.StandardButton.Discard:
+            event.ignore()
+            return
+        self._prefs.setValue("openMotors", [m.path for m in motors if m.path])
+        self._prefs.setValue("currentMotor", self._shown.path if self._shown else "")
+        event.accept()
 
     def _on_progress(self, i: int, n: int):
         n = max(int(n), 1)
@@ -925,14 +981,18 @@ class MainWindow(QMainWindow):
     def _on_finished(self, s, x, o):
         self._settings, self._state, self._output = s, x, o
         self._result_cfg = self._running_cfg
+        self._stop_progress()
+        self._show_results()
+
+    def _show_results(self):
+        s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
         self._hover_index = None
         info = summarize(s, x, o)
         self.summary.setPlainText(format_summary(info, self.display_units))
         self._refresh_plot()
         self._refresh_viz()
-        self._stop_progress()
         u = self.display_units
-        peak, limit = float(np.max(o.P_cmbr)), chamber_limit(self._result_cfg)
+        peak, limit = float(np.max(o.P_cmbr)), chamber_limit(cast(dict, self._result_cfg))
         over = peak > limit
         self.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
                                    f"{u.text(limit, 'pressure')} chamber pressure limit.")
@@ -1045,15 +1105,6 @@ class MainWindow(QMainWindow):
         for line in self._hover_lines:
             line.setPen(self._hover_line_pen())
 
-    def _new(self):
-        self._output = None
-        self._hover_index = None
-        self.cfg = default_cfg()
-        self._cfg_to_form(self.cfg)
-        self.summary.clear()
-        self._clear_plot()
-        self._refresh_viz()
-
     def _dialog_dir(self) -> str:
         if self._last_dir and Path(self._last_dir).is_dir():
             return self._last_dir
@@ -1073,34 +1124,149 @@ class MainWindow(QMainWindow):
             self._last_dir = str(folder)
             self._prefs.setValue("lastFileDir", self._last_dir)
 
+    def _motors(self) -> list[OpenMotor]:
+        return [self.motor_tabs.tabData(i) for i in range(self.motor_tabs.count())]
+
+    def _edited(self, motor: OpenMotor) -> bool:
+        return not _same_cfg(motor.cfg, motor.saved)
+
+    def _add_motor(self, cfg: dict, path: str = "", title: str = "", show: bool = True):
+        """Open a motor in a new tab, or switch to its tab if its file is already open."""
+        for i, motor in enumerate(self._motors()):
+            if path and motor.path == path:
+                self.motor_tabs.setCurrentIndex(i)
+                return
+        motor = OpenMotor(path, title or Path(path).stem, cfg)
+        i = self.motor_tabs.addTab(motor.title)
+        self.motor_tabs.setTabData(i, motor)
+        self.motor_tabs.setTabToolTip(i, path or "Not saved to a file yet")
+        if show:
+            self.motor_tabs.setCurrentIndex(i)
+            self._on_motor_tab(i)  # the first tab is current before its motor is attached
+
+    def _on_motor_tab(self, index: int):
+        motor = self.motor_tabs.tabData(index) if index >= 0 else None
+        if motor is None or motor is self._shown:
+            return
+        if self._shown is not None:
+            self._stash()
+        self._shown = None  # loading the pages mustn't mark anything edited
+        self._output = self._settings = self._state = self._result_cfg = None
+        self._cfg_to_form(motor.cfg)
+        if motor.saved is None:
+            motor.saved = self._form_to_cfg()
+        self._shown = motor
+        if motor.run is not None:
+            self._settings, self._state, self._output, self._result_cfg = motor.run
+            self._show_results()
+        else:
+            self.limit_warning.hide()
+            self.summary.clear()
+            self._clear_plot()
+            self._refresh_viz()
+        self._update_tab_marker()
+
+    def _stash(self):
+        """Keep the shown motor's settings and last run, so switching back brings them back."""
+        motor = self._shown
+        if motor is not None:
+            motor.cfg = self._form_to_cfg()
+            motor.run = (self._settings, self._state, self._output, self._result_cfg) if self._output is not None else None
+
+    def _update_tab_marker(self, *_):
+        motor = self._shown
+        if motor is None:
+            return
+        motor.cfg = self._form_to_cfg()
+        i = self._motors().index(motor)
+        self.motor_tabs.setTabText(i, motor.title + (" •" if self._edited(motor) else ""))
+        self.motor_tabs.setTabToolTip(i, motor.path or "Not saved to a file yet")
+        self.setWindowTitle(f"{motor.title} — {APP_NAME} {__version__}")
+
+    def _step_motor(self, step: int):
+        if self.motor_tabs.isEnabled() and self.motor_tabs.count() > 1:
+            self.motor_tabs.setCurrentIndex((self.motor_tabs.currentIndex() + step) % self.motor_tabs.count())
+
+    def _close_motor(self, index: int):
+        motor = self.motor_tabs.tabData(index)
+        if motor is None or not self.motor_tabs.isEnabled():
+            return
+        if motor is self._shown:
+            self._stash()
+        if self._edited(motor):
+            answer = QMessageBox.question(
+                self, APP_NAME, f"{motor.title} has unsaved changes.",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                return
+            if answer == QMessageBox.StandardButton.Save and not self._save_motor(motor):
+                return
+        self.motor_tabs.removeTab(self._motors().index(motor))
+        if self.motor_tabs.count() == 0:
+            self._shown = None
+            self._new()
+
+    def _save_motor(self, motor: OpenMotor | None, choose_path: bool = False) -> bool:
+        """Save a motor to its file, asking for one if it has none. Returns whether it was saved."""
+        if motor is None:
+            return False
+        if motor is self._shown:
+            motor.cfg = self._form_to_cfg()
+        path = motor.path
+        if choose_path or not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Save motor", path or self._dialog_path(f"{motor.title}.json"),
+                                                  "HRAP JSON (*.json)")
+            if not path:
+                return False
+            self._remember_file_dir(path)
+            motor.path, motor.title = str(Path(path).resolve()), Path(path).stem
+        save_json(motor.path, motor.cfg)
+        motor.saved = motor.cfg
+        if motor is self._shown:
+            self._update_tab_marker()
+        else:
+            self.motor_tabs.setTabText(self._motors().index(motor), motor.title)
+        self.statusBar().showMessage(f"Saved {motor.path}")
+        return True
+
     def _open_json(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open motor", self._dialog_path(), "HRAP JSON (*.json)")
         if path:
             self._remember_file_dir(path)
-            self._output = None
-            self._hover_index = None
-            self.cfg = load_json(path)
-            self._cfg_to_form(self.cfg)
-            self.summary.clear()
-            self._clear_plot()
+            self._open_path(path)
+
+    def _open_path(self, path: str, show: bool = True):
+        path = str(Path(path).resolve())
+        self._add_motor(load_json(path), path, show=show)
 
     def _import_mat(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import MATLAB motor", self._dialog_path(), "MATLAB (*.mat)")
         if path:
             self._remember_file_dir(path)
-            self._output = None
-            self._hover_index = None
-            self.cfg = load_matlab_mat(path)
-            self._cfg_to_form(self.cfg)
-            self.summary.clear()
-            self._clear_plot()
+            self._add_motor(load_matlab_mat(path), title=Path(path).stem)
 
-    def _save_json(self):
-        suggested = (self.name.text() or "motor") + ".json"
-        path, _ = QFileDialog.getSaveFileName(self, "Save motor", self._dialog_path(suggested), "HRAP JSON (*.json)")
-        if path:
-            self._remember_file_dir(path)
-            save_json(path, self._form_to_cfg())
+    def _open_bundled(self, name: str):
+        self._add_motor(bundled_motor(name), title=name)
+
+    def _new(self):
+        self._add_motor(default_cfg(), title="Untitled")
+
+    def _restore_session(self):
+        """Reopen the motors that were open last time, or the example motor on a first start."""
+        for path in self._prefs.value("openMotors", [], list):
+            try:
+                self._open_path(path, show=False)
+            except (OSError, ValueError):  # moved, deleted or not a motor file any more
+                continue
+        if self.motor_tabs.count() == 0:
+            self._open_bundled("example_98mm") if _has_bundled("example_98mm") else self._new()
+            return
+        current = self._prefs.value("currentMotor", "")
+        i = next((i for i, motor in enumerate(self._motors()) if motor.path == current), 0)
+        self.motor_tabs.setCurrentIndex(i)
+        self._on_motor_tab(i)
 
     def _export(self, kind: str):
         if self._output is None or self._settings is None:
