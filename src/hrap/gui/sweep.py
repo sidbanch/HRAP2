@@ -275,7 +275,7 @@ class SweepPanel(QFrame):
         """Follow the sized motor: the throat range, the injector model and the units."""
         u = self._get_units()
         self.run_btn.setEnabled(cfg is not None and self._thread is None)
-        self.sized_label.setText(f"sized {u.text(throat, 'length')}" if cfg is not None else "")
+        self.sized_label.setText(f"Nozzle card: {u.text(throat, 'length')}" if cfg is not None else "")
         self.sized_label.setToolTip("The throat from the Nozzle card above. Hover it there to see how it's worked out.")
         if u.length != self._length_unit:
             if self._length_unit:

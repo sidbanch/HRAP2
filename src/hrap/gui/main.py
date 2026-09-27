@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
         self.tabs.setObjectName("pageTabs")
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setDrawBase(False)
-        self.tabs.addTab(self.sizing_page, "Sizing")
+        self.tabs.addTab(self.sizing_page, "Motor")
         self.tabs.addTab(splitter, "Simulation")
         self.tabs.addTab(self.mass_page, "Mass && export")
         self.tabs.setCurrentWidget(splitter)
@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
         self.run_btn.clicked.connect(self._run)
         wl.addWidget(self.run_btn)
 
-        # The motor is set on the Sizing page; this only says which one runs.
+        # The motor is set on the Motor tab; this only says which one runs.
         motor = QFrame()
         motor.setObjectName("sizingCard")
         ml = QVBoxLayout(motor)
@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
         head = QHBoxLayout()
         title = QLabel("Motor")
         title.setObjectName("cardTitle")
-        edit = QPushButton("Edit on Sizing")
+        edit = QPushButton("Edit on Motor tab")
         edit.clicked.connect(lambda: self.tabs.setCurrentWidget(self.sizing_page))
         head.addWidget(title)
         head.addStretch(1)
@@ -332,7 +332,7 @@ class MainWindow(QMainWindow):
         self.unapplied_text.setObjectName("notApplied")
         self.unapplied_text.setWordWrap(True)
         apply_btn = QPushButton("Apply")
-        apply_btn.setToolTip("Apply the Sizing page's result to the motor.")
+        apply_btn.setToolTip("Make the sized parts on the Motor tab the motor's.")
         apply_btn.clicked.connect(lambda: self.sizing_page.apply())
         ul.addWidget(self.unapplied_text, 1)
         ul.addWidget(apply_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -351,7 +351,7 @@ class MainWindow(QMainWindow):
         self.reg_model.addItem("Burn-rate law (Shifting OF)", "Shifting OF")
         self.reg_model.addItem("Fixed O/F (Constant OF)", "Constant OF")
         self.reg_model.setToolTip(
-            "Burn-rate law: each step, the fuel burns back at a × G^n (the fuel's burn rate on the Sizing page,\n"
+            "Burn-rate law: each step, the fuel burns back at a × G^n (the fuel's burn rate on the Motor tab,\n"
             "G = oxidizer flux through the port), so the O/F drifts as the port opens.\n"
             "Fixed O/F: fuel flow = oxidizer flow ÷ the O/F below, and the grain's burn rate isn't used.\n"
             "Only for motors with no burn-rate data, or to reproduce old HRAP runs."
@@ -634,7 +634,7 @@ class MainWindow(QMainWindow):
         self._update_derived_labels()
 
     def _update_motor_summary(self):
-        """Say which motor runs, and what the Sizing page would still change about it."""
+        """Say which motor runs, and what the Motor tab's sizing would still change about it."""
         sp, u = self.sizing_page, self.display_units
         n = sp.holes.value()
         if sp.inj_type.currentText() == "Swirler":
@@ -650,7 +650,7 @@ class MainWindow(QMainWindow):
         self.unapplied.setVisible(bool(changes))
 
     def _on_applied(self):
-        self.statusBar().showMessage("Sizing applied to the motor. Run the simulation to check it over the whole burn.")
+        self.statusBar().showMessage("Applied to the motor. Run the simulation to check it over the whole burn.")
         self.tabs.setCurrentIndex(1)
 
     def _connect_derived(self):

@@ -1,4 +1,5 @@
-"""Preliminary sizing: injector, nozzle and grain for a target chamber pressure.
+"""Preliminary sizing: injector, nozzle and grain for a target chamber pressure, or the chamber pressure
+the motor's own nozzle gives.
 
 Everything is evaluated at the start of the burn with the tank at its starting temperature, using
 the same injector, combustion-table and nozzle equations as the simulation. The simulation then
@@ -9,6 +10,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Any
+
+from scipy.optimize import brentq
 
 from hrap.engine.comb import comb
 from hrap.engine.nox import nox
@@ -21,7 +24,7 @@ G0 = 9.80665
 
 @dataclass(frozen=True)
 class SizingTargets:
-    P_cmbr: float     # Pa absolute
+    P_cmbr: float | None  # Pa absolute; None keeps the motor's throat and expansion ratio and solves the pressure
     burn_time: float | None  # s, time to use the liquid at the starting oxidizer flow; ignored when holes is set.
                              # With neither, the oxidizer flow is solved from OF and grain_L.
     OF: float         # ignored when grain_L is set, unless it sets the oxidizer flow
@@ -32,6 +35,7 @@ class SizingTargets:
 
 @dataclass(frozen=True)
 class Sizing:
+    P_cmbr: float         # Pa, chamber pressure (the target, or what the motor's nozzle gives)
     P_tnk: float          # Pa, tank pressure at the starting temperature
     inj_dP: float         # Pa
     ox_liquid: float      # kg of liquid in the tank at the start
@@ -46,7 +50,7 @@ class Sizing:
     k: float              # ratio of specific heats from the combustion table
     cstar: float          # m/s, including C* efficiency
     throat_D: float       # m
-    ER: float             # expansion ratio for exit pressure = ambient
+    ER: float             # expansion ratio for exit pressure = ambient, or the motor's
     exit_D: float         # m
     thrust: float         # N
     isp: float            # s
@@ -60,13 +64,33 @@ class Sizing:
 def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
     s, x = resolve(cfg)
     op = s.get_sat_props(x.T_tnk) if s.get_sat_props is not None else nox(x.T_tnk)
-    P_tnk = op.Pv
-    if t.P_cmbr >= P_tnk:
-        raise ValueError("The chamber pressure target has to be below the tank pressure.")
-    if t.P_cmbr <= s.Pa:
-        raise ValueError("The chamber pressure target has to be above ambient pressure.")
+    if t.P_cmbr is not None:
+        if t.P_cmbr >= op.Pv:
+            raise ValueError("The chamber pressure target has to be below the tank pressure.")
+        if t.P_cmbr <= s.Pa:
+            raise ValueError("The chamber pressure target has to be above ambient pressure.")
+        return _size(s, x, t, op, t.P_cmbr, None)
+    # The motor's nozzle is set. A higher chamber pressure needs a smaller throat for the flow (and lets less
+    # oxidizer in), so exactly one pressure between ambient and the tank matches the motor's throat.
+    throat_D, ER = s.noz_thrt, s.noz_ER
+    if throat_D <= 0.0:
+        raise ValueError("The motor has no throat diameter.")
 
-    flow_per_hole = liquid_flow(s, x.T_tnk, op.rho_l, P_tnk, t.P_cmbr) / s.inj_N
+    def gap(P: float) -> float:
+        return _size(s, x, t, op, P, ER).throat_D - throat_D
+
+    low, high = s.Pa * (1.0 + 1e-6), op.Pv * (1.0 - 1e-6)
+    if gap(low) < 0.0:
+        raise ValueError("The throat is too big for this flow: the chamber would stay at ambient pressure.")
+    if gap(high) > 0.0:
+        raise ValueError("The throat is too small for this flow: the chamber would need more than the tank pressure.")
+    return _size(s, x, t, op, brentq(gap, low, high, xtol=1.0), ER)
+
+
+def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing:
+    """Everything at one chamber pressure. Without an expansion ratio, it's sized for ambient exit pressure."""
+    P_tnk = op.Pv
+    flow_per_hole = liquid_flow(s, x.T_tnk, op.rho_l, P_tnk, P_cmbr) / s.inj_N
     a, n, m = (float(v) for v in s.prop_Reg[:3])
     rho = s.prop_Rho
     if t.holes:
@@ -94,14 +118,15 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         grain_L = (mdot_f / (rho * 0.001 * a * ox_flux ** n * math.pi * t.port_D)) ** (1.0 / (1.0 + m)) if a > 0.0 else float("nan")
     mdot = mdot_o + mdot_f
 
-    x.OF, x.P_cmbr = OF, t.P_cmbr
+    x.OF, x.P_cmbr = OF, P_cmbr
     x = comb(s, x, 0.0)
     k = x.k
-    throat_A = mdot * x.cstar / (t.P_cmbr * s.noz_Cd)
+    throat_A = mdot * x.cstar / (P_cmbr * s.noz_Cd)
     throat_D = math.sqrt(4.0 * throat_A / math.pi)
 
-    Me = math.sqrt(2.0 / (k - 1.0) * ((t.P_cmbr / s.Pa) ** ((k - 1.0) / k) - 1.0))
-    ER = ((2.0 / (k + 1.0)) * (1.0 + 0.5 * (k - 1.0) * Me ** 2)) ** ((k + 1.0) / (2.0 * (k - 1.0))) / Me
+    if ER is None:
+        Me = math.sqrt(2.0 / (k - 1.0) * ((P_cmbr / s.Pa) ** ((k - 1.0) / k) - 1.0))
+        ER = ((2.0 / (k + 1.0)) * (1.0 + 0.5 * (k - 1.0) * Me ** 2)) ** ((k + 1.0) / (2.0 * (k - 1.0))) / Me
     s.noz_thrt, s.noz_ER = throat_D, ER
     thrust = nozzle(s, x).F_thr
 
@@ -116,8 +141,9 @@ def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
         fuel_burned = rho * 0.25 * math.pi * (port_D_end ** 2 - t.port_D ** 2) * grain_L
 
     return Sizing(
+        P_cmbr=P_cmbr,
         P_tnk=P_tnk,
-        inj_dP=P_tnk - t.P_cmbr,
+        inj_dP=P_tnk - P_cmbr,
         ox_liquid=x.mLiq_new,
         mdot_o=mdot_o,
         mdot_f=mdot_f,

@@ -10,11 +10,13 @@ Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow s
 - **macOS:** double-click `run_hrap.command`. It sets up `.venv` and installs what's missing. The first run needs Python 3.10+ or `uv`.
 - **Anything else:** in a Python 3.10+ virtual environment, `python -m pip install -e .`, then `hrap`.
 
-Motor files are JSON, and hold the Sizing page settings too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
+Motor files are JSON, and hold the Motor tab's Size from settings and targets too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
 
-## Sizing tab
+## Motor tab
 
-Holds the whole motor: tank, fuel, injector, grain and nozzle. It also works out the injector, throat and grain for start-of-burn targets, using the same injector, combustion and nozzle math as the simulation. **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's.
+Holds the whole motor: tank, fuel, injector, grain and nozzle, and shows its state at the start of the burn (flows, O/F, chamber pressure, thrust), using the same injector, combustion and nozzle math as the simulation.
+
+The Injector, Grain and Nozzle cards each have a **Size from**. As built (Hole count, Grain length, Throat), the part is what you enter. Set to a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Size from settings opens with every part as built.
 
 Motor files that give the tank by length, starting pressure or oxidizer mass, or the nozzle by exit diameter, load as the equivalent volume, temperature, fill and expansion ratio.
 
@@ -28,7 +30,7 @@ Motor files that give the tank by length, starting pressure or oxidizer mass, or
 
 Every mode shows **Total CdA**: the Cd × area the injector needs for that flow at this ΔP. Compare it with a cold-flow result. If the cold flow gives Cd on the exit area, Cd × exit area is the CdA.
 
-**Grain: Size from** O/F gives a grain length; Grain length gives an O/F. **Nozzle** gives the throat and expansion ratio.
+**Grain: Size from** O/F gives a grain length; Grain length gives an O/F. **Nozzle: Size from** Chamber pressure gives the throat and expansion ratio for a chamber pressure target; Throat uses the nozzle's own and gives the chamber pressure.
 
 **Check across injector Cd** runs the full simulation for a range of throats and injector Cds, since the Cd is usually a guess until a cold flow. Cells are red over the chamber pressure limit and blue under the minimum. Click a throat to use it.
 
@@ -45,7 +47,7 @@ The theory ignores losses entering the ports, so real swirlers probably flow les
 
 ## Simulation tab
 
-Runs the motor from the Sizing page. The **Motor** line at the top says which motor that is, and lists anything the Sizing page calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
+Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
 
 The left side only holds how to simulate the motor:
 
@@ -54,7 +56,7 @@ The left side only holds how to simulate the motor:
 
 Options that change the default MATLAB model:
 
-- **Flow model** (Sizing page, Injector card):
+- **Flow model** (Motor tab, Injector card):
   - **SPI** (default): pure liquid through the injector, as in original HRAP. Overpredicts flow above about 250–300 psi ΔP.
   - **HEM:** the nitrous boils instantly in the orifice. Underpredicts flow.
   - **Dyer:** a blend of the two, weighted by κ (default 1).

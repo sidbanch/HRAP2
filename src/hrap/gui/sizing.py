@@ -1,4 +1,4 @@
-"""Sizing page: injector, nozzle and grain for a target chamber pressure and burn time."""
+"""Motor tab: the whole motor, with each part either as built or sized for targets at the start of the burn."""
 from __future__ import annotations
 
 import math
@@ -218,11 +218,11 @@ class SizingPage(QWidget):
         self.grain_L.setToolTip("Grain length. The fuel flow and starting O/F follow from it.")
 
         self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
-        self.P_limit.setToolTip("The chamber's design pressure (absolute). Sizing, runs and the Cd check warn above it.")
+        self.P_limit.setToolTip("The chamber's design pressure (absolute). This page, runs and the Cd check warn above it.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
-        form.add("Chamber pressure", self.P_cmbr)
+        self._P_cmbr_row = form.add("Chamber pressure", self.P_cmbr)
         self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
         self._OF_row = form.add("O/F", self.OF)
         form.add("Pressure limit", self.P_limit)
@@ -365,16 +365,25 @@ class SizingPage(QWidget):
         self.noz_eff.setToolTip("Thrust lost to the nozzle's cone angle and friction; scales thrust only.\n"
                                 "A 15° cone loses about 2% to the angle alone. 92–97% is typical.")
         self.Pa = UnitRow(PRESSURE_ITEMS, "atm", 3)
-        self.Pa.setToolTip("Outside pressure. The expansion ratio is sized to it. Lower it to model a motor at altitude.")
+        self.Pa.setToolTip("Outside pressure. A sized expansion ratio matches it. Lower it to model a motor at altitude.")
+        self.nozzle_from = PlainComboBox()
+        self.nozzle_from.addItems(["Chamber pressure", "Throat"])
+        self.nozzle_from.setToolTip("Chamber pressure: size the throat and expansion ratio for the chamber pressure target.\n"
+                                    "Throat: use the nozzle's own throat and expansion ratio; the chamber pressure follows.")
+        self.throat_D = UnitRow(LENGTH_ITEMS, "in", 4)
+        self.noz_ER = PlainDoubleSpinBox()
+        self.noz_ER.setRange(1, 1000)
+        self.noz_ER.setDecimals(3)
+        self.noz_ER.setToolTip("Exit area ÷ throat area.")
         noz_form = FieldGrid()
+        noz_form.add("Size from", self.nozzle_from)
+        self._throat_rows = [*noz_form.add("Throat", self.throat_D), *noz_form.add("Expansion ratio", self.noz_ER)]
         noz_form.add("Throat Cd", self.noz_Cd)
         noz_form.add("Efficiency", self.noz_eff, "%")
         noz_form.add("Ambient pressure", self.Pa)
-        self.nozzle = Card("Nozzle", ["Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter", "C*"],
-                           NozzleSketch(), noz_form)
+        self.nozzle = Card("Nozzle", ["Chamber pressure", "Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter",
+                                      "C*"], NozzleSketch(), noz_form)
         self.nozzle.show_row("Sized throat", False)
-        # The motor's throat and expansion ratio. Apply to motor sets them to the sized ones.
-        self._throat, self._ER, self._throat_unit = 0.0, 1.0, "in"
 
         self.pre_L = UnitRow(LENGTH_ITEMS, "in", 4)
         self.post_L = UnitRow(LENGTH_ITEMS, "in", 4)
@@ -405,7 +414,7 @@ class SizingPage(QWidget):
         self.apply_btn.setToolTip("Set the motor's throat, expansion ratio, hole count, swirler holes and grain length to the sized ones.")
         self.apply_btn.clicked.connect(self.apply)
         self.apply_summary = QLabel("")
-        bar = QFrame()
+        bar = self._apply_bar = QFrame()
         bar.setObjectName("applyBar")
         buttons = QHBoxLayout(bar)
         buttons.setContentsMargins(16, 10, 16, 10)
@@ -417,9 +426,8 @@ class SizingPage(QWidget):
         injector_layout = self.injector.layout()
         injector_layout.insertWidget(injector_layout.count() - 1, self.swirler_options)  # above the card's closing stretch
 
-        intro = QLabel("The whole motor is set here. Sizing works out the injector, nozzle and grain for the conditions "
-                       "at the start of the burn; Apply to motor makes them the motor's, and the Simulation tab runs the "
-                       "whole burn.")
+        intro = QLabel("The whole motor, with its state at the start of the burn. To redesign a part, set its Size from to "
+                       "a target; Apply to motor then makes the sized part the motor's. The Simulation tab runs the whole burn.")
         intro.setObjectName("cardLabel")
         intro.setWordWrap(True)
 
@@ -466,11 +474,11 @@ class SizingPage(QWidget):
             spin.valueChanged.connect(self.refresh)
         self.P_cmbr.unit.currentTextChanged.connect(self.refresh)
         for w in (self.P_limit, self.tank_V, self.tank_D, self.tank_T, self.vent_D, self.rho, self.hole_D, self.sw_D_port, self.sw_R_in,
-                  self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa):
+                  self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa, self.throat_D):
             w.spin.valueChanged.connect(self._on_motor_edited)
             w.unit.currentTextChanged.connect(self._on_motor_edited)
         for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.cstar, self.inj_Cd,
-                     self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff):
+                     self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
         for combo in (self.vent, self.inj_type, self.inj_model):
             combo.currentIndexChanged.connect(self._on_motor_edited)
@@ -478,6 +486,7 @@ class SizingPage(QWidget):
             box.toggled.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
         self.grain_from.currentIndexChanged.connect(self._on_size_from)
+        self.nozzle_from.currentIndexChanged.connect(self._on_size_from)
         self._sync_motor_rows()
 
     def _by_holes(self) -> bool:
@@ -485,6 +494,9 @@ class SizingPage(QWidget):
 
     def _by_OF(self) -> bool:
         return self.size_from.currentIndex() == 2
+
+    def _fixed_nozzle(self) -> bool:
+        return self.nozzle_from.currentIndex() == 1
 
     def _solve_port(self) -> bool:
         """A burn time or O/F sets the flow, and the swirler's inlet port size is sized to it."""
@@ -518,6 +530,14 @@ class SizingPage(QWidget):
             w.setVisible(self._by_length())
         self.grain.show_row("Grain length", not self._by_length())
         self.grain.show_row("O/F", self._by_length())
+        fixed = self._fixed_nozzle()
+        for w in self._P_cmbr_row:
+            w.setVisible(not fixed)
+        for w in self._throat_rows:
+            w.setVisible(fixed)
+        for name in ("Throat diameter", "Expansion ratio"):  # with the nozzle as built they're inputs
+            self.nozzle.show_row(name, not fixed)
+        self.nozzle.show_row("Chamber pressure", fixed)
 
     def _by_length(self) -> bool:
         return self.grain_from.currentIndex() == 1
@@ -530,7 +550,7 @@ class SizingPage(QWidget):
 
     def targets(self) -> SizingTargets:
         return SizingTargets(
-            P_cmbr=to_si(self.P_cmbr.spin.value(), self.P_cmbr.unit.currentText(), "pressure"),
+            P_cmbr=None if self._fixed_nozzle() else self.P_cmbr.si("pressure"),
             burn_time=self.burn_time.value() if self.size_from.currentIndex() == 0 else None,
             OF=self.OF.value(),
             port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
@@ -539,19 +559,20 @@ class SizingPage(QWidget):
         )
 
     def targets_cfg(self) -> dict:
-        t = self.targets()
         return {"size_from": ("burn_time", "holes", "OF")[self.size_from.currentIndex()],
                 "grain_from": "grain_L" if self._by_length() else "OF",
-                "P_cmbr": t.P_cmbr, "burn_time": self.burn_time.value(), "OF": t.OF}
+                "nozzle_from": "throat" if self._fixed_nozzle() else "P_cmbr",
+                "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value()}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
-        """Load saved targets, or start from the motor's own O/F."""
+        """Load saved targets. A motor without any opens with every part as built, so nothing is sized."""
         self._loading = True
-        self.P_cmbr.set_display(from_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), self.P_cmbr.unit.currentText(), "pressure"))
+        self.P_cmbr.set_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), "pressure")
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
         # Injector mode first: while it's still on the last motor's O/F, it holds the grain on Grain length.
-        self.size_from.setCurrentIndex({"holes": 1, "OF": 2}.get(saved.get("size_from"), 0))
-        self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
+        self.size_from.setCurrentIndex({"burn_time": 0, "OF": 2}.get(saved.get("size_from"), 1))
+        self.grain_from.setCurrentIndex(0 if saved.get("grain_from") == "OF" else 1)
+        self.nozzle_from.setCurrentIndex(0 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 1)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
@@ -675,9 +696,9 @@ class SizingPage(QWidget):
             if extra > 0:
                 self.post_L.set_si(si("cmbr_post_L") + extra, "length")
 
-        self._throat, self._throat_unit = si("noz_thrt"), cfg["noz_thrt_unit"]
+        show(self.throat_D, "noz_thrt")
         exit_D = si("noz_ex") if cfg.get("noz_def") == "Nozzle Exit Diameter" else 0.0
-        self._ER = (exit_D / self._throat) ** 2 if exit_D and self._throat else float(cfg.get("noz_ex") or 1.0)
+        self.noz_ER.setValue((exit_D / si("noz_thrt")) ** 2 if exit_D and si("noz_thrt") else float(cfg.get("noz_ex") or 1.0))
         self.noz_Cd.setValue(float(cfg.get("noz_Cd") or 1.0))
         self.noz_eff.setValue(float(cfg.get("noz_eff") or 100.0))
         show(self.Pa, "Pa")
@@ -713,8 +734,8 @@ class SizingPage(QWidget):
             **field("P_cmbr_max", self.P_limit),
             **field("grn_ID", self.port_D), **field("grn_OD", self.grain_OD), **field("grn_L", self.grain_L),
             **field("cmbr_pre_L", self.pre_L), **field("cmbr_post_L", self.post_L), "cmbr_V_state": 1,
-            "noz_thrt": from_si(self._throat, self._throat_unit, "length"), "noz_thrt_unit": self._throat_unit,
-            "noz_def": "Nozzle Expansion Ratio", "noz_ex": self._ER, "noz_Cd": self.noz_Cd.value(),
+            **field("noz_thrt", self.throat_D), "noz_def": "Nozzle Expansion Ratio", "noz_ex": self.noz_ER.value(),
+            "noz_Cd": self.noz_Cd.value(),
             "noz_eff": self.noz_eff.value(), **field("Pa", self.Pa),
         }
 
@@ -736,7 +757,8 @@ class SizingPage(QWidget):
 
     def nozzle_size(self) -> tuple[float, float, float]:
         """The motor's throat and exit diameters [m] and expansion ratio."""
-        return self._throat, self._throat * math.sqrt(self._ER), self._ER
+        throat = self.throat_D.si("length")
+        return throat, throat * math.sqrt(self.noz_ER.value()), self.noz_ER.value()
 
     def refresh(self):
         if self._loading:
@@ -744,11 +766,9 @@ class SizingPage(QWidget):
         u = self._get_units()
         cfg = self._get_cfg()
         self.tank_L.setText(u.text(self.tank_geometry()[0], "length"))
-        target, limit = self.targets().P_cmbr, chamber_limit(cfg)
-        self.limit_warning.setText(f"The {u.text(target, 'pressure')} chamber pressure target is above the "
-                                   f"{u.text(limit, 'pressure')} chamber pressure limit.")
-        self.limit_warning.setVisible(target > limit)
+        limit = chamber_limit(cfg)
         self.sweep.set_chamber_limit(limit)
+        self.limit_warning.hide()
         try:
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
@@ -776,6 +796,10 @@ class SizingPage(QWidget):
             self.swirler_options.update_target(target)
         self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
+        what = "starting chamber pressure" if self._fixed_nozzle() else "chamber pressure target"
+        self.limit_warning.setText(f"The {u.text(z.P_cmbr, 'pressure')} {what} is above the "
+                                   f"{u.text(limit, 'pressure')} chamber pressure limit.")
+        self.limit_warning.setVisible(z.P_cmbr > limit)
 
         self.tank_P.setText(u.text(z.P_tnk, "pressure"))
         self.ox_liquid.setText(u.text(z.ox_liquid, "mass"))
@@ -785,7 +809,7 @@ class SizingPage(QWidget):
         solve = self._solve_port()
         lasts = z.burn_time if solve else z.ox_liquid / (holes * z.flow_per_hole)
         flow, per_hole = u.text(z.mdot_o, "mass_flow", 3), u.text(z.flow_per_hole, "mass_flow", 3)
-        dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(t.P_cmbr, "pressure")
+        dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(z.P_cmbr, "pressure")
         hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), injector_cd(cfg), cfg.get("inj_model") or "SPI"
         noun = "swirler" if self._swirler else "hole"
         if t.holes:
@@ -801,7 +825,7 @@ class SizingPage(QWidget):
                               f"liquid oxidizer ÷ liquid burn time = {u.text(z.ox_liquid, 'mass')} ÷ {t.burn_time:.3g} s = {flow}")
         self.injector.set("Injector ΔP", dP,
                           f"tank pressure − chamber pressure = {u.text(z.P_tnk, 'pressure')} − {P_cmbr} = {dP}")
-        self.injector.set("ΔP / chamber", f"{100 * z.inj_dP / t.P_cmbr:.0f}%",
+        self.injector.set("ΔP / chamber", f"{100 * z.inj_dP / z.P_cmbr:.0f}%",
                           f"Injector ΔP as a share of chamber pressure: {dP} ÷ {P_cmbr}.\n"
                           "Above about 20%, chamber pressure swings barely change the injector flow,\n"
                           "which avoids feed-coupled combustion instability.")
@@ -915,11 +939,14 @@ class SizingPage(QWidget):
 
     def _show_throat(self):
         z, u = cast(Sizing, self._result), self._get_units()
-        throat = self._picked_throat or z.throat_D
-        t = self.targets()
-        how = (f"Sized throat: the throat that holds {u.text(t.P_cmbr, 'pressure')} in the chamber at the starting flow.\n"
-               f"throat area = total flow × C* ÷ (chamber pressure × throat Cd)\n"
-               f"total flow = {u.text(z.mdot_o + z.mdot_f, 'mass_flow', 3)}, C* = {z.cstar:.0f} m/s, throat Cd = {self.noz_Cd.value():.3g}")
+        throat = self._values()["throat_D"]
+        formula = (f"throat area = total flow × C* ÷ (chamber pressure × throat Cd)\n"
+                   f"total flow = {u.text(z.mdot_o + z.mdot_f, 'mass_flow', 3)}, C* = {z.cstar:.0f} m/s, "
+                   f"throat Cd = {self.noz_Cd.value():.3g}")
+        how = f"Sized throat: the throat that holds {u.text(z.P_cmbr, 'pressure')} in the chamber at the starting flow.\n" + formula
+        self.nozzle.set("Chamber pressure", u.text(z.P_cmbr, "pressure"),
+                        f"The chamber pressure at which the {u.text(throat, 'length')} throat passes the starting flow:\n"
+                        + formula + "\nsolved for the chamber pressure. A higher chamber pressure also lets in less oxidizer.")
         self.nozzle.set("Throat diameter", u.text(throat, "length"), "Picked in the Cd check below." if self._picked_throat else how)
         self.nozzle.set("Sized throat", u.text(z.throat_D, "length"), how)
         self.nozzle.show_row("Sized throat", bool(self._picked_throat))
@@ -933,8 +960,8 @@ class SizingPage(QWidget):
         if self._result is None:
             return []
         u, v = self._get_units(), self._values()
-        pairs = [("throat", u.text(self._throat, "length"), u.text(v["throat_D"], "length")),
-                 ("expansion ratio", f"{self._ER:.2f}", f"{v['ER']:.2f}"),
+        pairs = [("throat", u.text(self.throat_D.si("length"), "length"), u.text(v["throat_D"], "length")),
+                 ("expansion ratio", f"{self.noz_ER.value():.2f}", f"{v['ER']:.2f}"),
                  ("swirlers" if self._swirler else "holes", str(self.holes.value()), str(v["holes"]))]
         if v["sw_D_port"]:
             pairs.append(("swirler holes", u.text(self.sw_D_port.si("length"), "length"), u.text(v["sw_D_port"], "length")))
@@ -943,10 +970,10 @@ class SizingPage(QWidget):
         return [f"{name} {old} → {new}" for name, old, new in pairs if old != new]
 
     def _show_apply(self):
+        """The Apply bar only shows when a sized part differs from the motor's."""
         changes = self.unapplied()
-        self.apply_btn.setEnabled(bool(changes))
-        self.apply_summary.setText("Applies: " + ", ".join(changes) if changes else
-                                   "The motor matches this sizing." if self._result else "")
+        self.apply_summary.setText("Applies: " + ", ".join(changes))
+        self._apply_bar.setVisible(bool(changes))
         self.sized.emit()
 
     @staticmethod
@@ -974,7 +1001,7 @@ class SizingPage(QWidget):
     def _values(self) -> dict:
         z, t = cast(Sizing, self._result), self.targets()
         return {
-            "throat_D": self._picked_throat or z.throat_D,
+            "throat_D": self._picked_throat or (self.throat_D.si("length") if self._fixed_nozzle() else z.throat_D),
             "ER": z.ER,
             "holes": t.holes or (self.holes.value() if self._solve_port() else max(1, round(z.holes))),
             "sw_D_port": self._layout.port_D if self._layout else None,
@@ -1001,7 +1028,8 @@ class SizingPage(QWidget):
             return
         v = self._values()
         self._loading = True
-        self._throat, self._ER = v["throat_D"], v["ER"]
+        self.throat_D.set_si(v["throat_D"], "length")
+        self.noz_ER.setValue(v["ER"])
         self.holes.setValue(v["holes"])
         if v["sw_D_port"]:
             self.sw_D_port.set_si(v["sw_D_port"], "length")
