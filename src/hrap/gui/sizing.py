@@ -40,9 +40,10 @@ from hrap.units import (
     to_si,
 )
 
-# m. A stock 1/4 in PTC has a 0.188 in hex inside, but its tube stop and collet restrict more: HPS01-1's liquid ran
-# out at 5.8 s in the video when its four swirlers (6 × 0.100 in holes, offset guessed at 0.10 in) exit through a clean
-# hole this size, with the Dyer model (κ 1), the burn-rate law and tank cooling. With SPI and a fixed O/F 6 it's 0.099 in.
+# m, a very rough estimate. A stock 1/4 in PTC has a 0.188 in hex inside, but its tube stop and collet restrict more:
+# HPS01-1's liquid ran out at 5.8 s in the fire video when its four swirlers (6 × 0.100 in holes, offset guessed at
+# 0.10 in) exit through a clean hole this size, with the Dyer model (κ 1), the burn-rate law and tank cooling. With SPI
+# and a fixed O/F 6 it's 0.099 in. One video timing, so a cold flow of a bare stock PTC should replace it.
 STOCK_PTC_D = 0.116 * 0.0254
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
@@ -640,10 +641,14 @@ class SizingPage(QWidget):
         self._swirler = swirler = self.inj_type.currentText() == "Swirler"
         self._holes_row[0].setText("Swirler count" if swirler else "Hole count")
         stock = swirler and self.ptc_stock.isChecked()
-        self._hole_D_row[0].setText("Stock PTC acts like" if stock else "PTC bore" if swirler else "Hole diameter")
+        rough = stock and abs(self.hole_D.si("length") - STOCK_PTC_D) < 1e-6  # still the fire-video estimate
+        self._hole_D_row[0].setText("Stock PTC acts like (rough)" if rough else "Stock PTC acts like" if stock else
+                                    "PTC bore" if swirler else "Hole diameter")
         self.hole_D.setToolTip(
-            f"The clean hole a stock PTC flows like. {STOCK_PTC_D / 0.0254:.3f} in fits the HPS01-1 fire; replace it with\n"
-            "a cold flow of a bare stock PTC." if stock else
+            f"The clean hole a stock PTC flows like. {STOCK_PTC_D / 0.0254:.3f} in is a very rough estimate: the size that\n"
+            "makes HPS01-1's liquid run out at 5.8 s in the fire video. That's one timing off a video, with a guessed\n"
+            "0.10 in hole offset and assumed flow settings (Dyer κ 1, burn-rate law, tank cooling); SPI and a fixed O/F 6\n"
+            "give 0.099 in instead. Replace it with a cold flow of a bare stock PTC (Measured CdA → Fit)." if stock else
             "The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through." if swirler else
             "Diameter of each injector hole.")
         self.ptc_stock.setVisible(swirler)
