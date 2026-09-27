@@ -549,8 +549,9 @@ class SizingPage(QWidget):
         self._loading = True
         self.P_cmbr.set_display(from_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), self.P_cmbr.unit.currentText(), "pressure"))
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
-        self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
+        # Injector mode first: while it's still on the last motor's O/F, it holds the grain on Grain length.
         self.size_from.setCurrentIndex({"holes": 1, "OF": 2}.get(saved.get("size_from"), 0))
+        self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "grain_L" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
         self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
