@@ -46,6 +46,8 @@ def _blank_output(s: Settings) -> Output:
 
 
 def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
+    if x.mLiq_new <= 0 and "liquid_runout_time" not in o.extra:
+        o.extra["liquid_runout_time"] = t
     o.t[i] = t
     o.m_o[i] = x.m_o
     o.P_tnk[i] = x.P_tnk
@@ -137,6 +139,8 @@ def run(
 ) -> tuple[State, Output]:
     """Run a full MATLAB-parity simulation from initialized settings and state."""
     o = _blank_output(s)
+    if x.mLiq_new <= 0:
+        o.extra["liquid_runout_time"] = 0.0
     # GUI stores initial conditions at index 0 (MATLAB index 1) before the loop
     o.m_o[0] = x.m_o
     o.P_tnk[0] = x.P_tnk

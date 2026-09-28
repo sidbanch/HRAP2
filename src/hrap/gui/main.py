@@ -50,6 +50,7 @@ from hrap.engine.sim import run
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
 from hrap.gui.sizing import SizingPage
+from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
@@ -266,8 +267,9 @@ class MainWindow(QMainWindow):
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
-        self.sizing_page.sweep.started.connect(self._sync_busy)
-        self.sizing_page.sweep.finished.connect(self._sync_busy)
+        self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case)
+        self.study_page.started.connect(self._sync_busy)
+        self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
@@ -275,6 +277,7 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.addTab(self.sizing_page, "Motor")
         self.tabs.addTab(splitter, "Simulation")
+        self.tabs.addTab(self.study_page, "Study")
         self.tabs.addTab(self.mass_page, "Mass && export")
         self.tabs.setCurrentWidget(splitter)
         central = QWidget()
@@ -899,8 +902,11 @@ class MainWindow(QMainWindow):
         self._sync_busy()
 
     def _sync_busy(self):
-        """Motors can't be switched or opened while a run or a sweep is going."""
-        idle = self._thread is None and not self.sizing_page.sweep.busy()
+        """Motors can't be switched or opened while a simulation or study is running."""
+        idle = self._thread is None and not self.study_page.busy()
+        for page in (self._form, self.sizing_page, self.mass_page):
+            page.setEnabled(idle)
+        self.study_page.setEnabled(self._thread is None)
         for w in (self.motor_tabs, self._open_btn, self._file_menu, self._examples_menu):
             w.setEnabled(idle)
 
@@ -917,11 +923,11 @@ class MainWindow(QMainWindow):
             self.close()
 
     def closeEvent(self, event):
-        sweep = self.sizing_page.sweep
-        if sweep.busy():
-            sweep.stop()
-            sweep.finished.connect(self.close)
-            self.statusBar().showMessage("Closing when the running sweep simulations finish…")
+        study = self.study_page
+        if study.busy():
+            study.stop()
+            study.finished.connect(self.close)
+            self.statusBar().showMessage("Closing when the running study simulations finish…")
             event.ignore()
             return
         if self._thread is not None:
@@ -1130,6 +1136,7 @@ class MainWindow(QMainWindow):
         if motor.saved is None:
             motor.saved = self._form_to_cfg()
         self._shown = motor
+        self.study_page.motor_changed()
         if motor.run is not None:
             self._settings, self._state, self._output, self._result_cfg = motor.run
             self._show_results()
@@ -1139,6 +1146,12 @@ class MainWindow(QMainWindow):
             self._clear_plot()
             self._refresh_viz()
         self._update_tab_marker()
+
+    def _open_study_case(self, cfg):
+        self._add_motor(cfg, title=cfg["mtr_nm"])
+        self._shown.saved = None
+        self._update_tab_marker()
+        self.tabs.setCurrentIndex(1)
 
     def _stash(self):
         """Keep the shown motor's settings and last run, so switching back brings them back."""
@@ -1309,6 +1322,7 @@ class MainWindow(QMainWindow):
         self._refresh_plot()
         self._update_derived_labels()
         self.sizing_page.refresh()
+        self.study_page.refresh()
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
             self.summary.setPlainText(format_summary(info, units))

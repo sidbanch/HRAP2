@@ -34,7 +34,7 @@ Every mode shows **Total CdA**: the Cd × area the injector needs for that flow 
 
 **Grain: Sizing** For O/F gives a grain length; As built gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; As built uses the nozzle's own and gives the chamber pressure.
 
-**Check across injector Cd** runs the full simulation for a range of throats and injector Cds, since the Cd is usually a guess until a cold flow. Cells are red over the chamber pressure limit and blue under the minimum. Click a throat to use it.
+The throat × injector Cd sweep is now on the **Study** tab.
 
 ### Swirl injectors
 
@@ -71,6 +71,20 @@ Options that change the default MATLAB model:
 - **Solve tank cooling each step** (Simulation tab, Run): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
 - **Enable advanced options:** live chemistry and experimental fluid and grain models.
 
+## Study tab
+
+- Pick **Throat × injector Cd**, **Grain length × total injector CdA**, **Grain length × burn rate a**, or choose your own one or two inputs.
+- Enter comma-separated values (`12, 15, 18, 24`) or `start:end:count` (`12:24:5`). Each input has its own units. CdA is the total over all injectors, not a multiplier of an unnamed reference.
+- Choose the current fuel model, either model individually, or both. **Fixed O/F** and **burn rate a** can only be varied with the model that actually uses them.
+- Press **Run study**. It snapshots the applied Motor settings and Simulation settings, then runs each combination in parallel. Apply pending Motor sizing first. The throat stays fixed unless it is one of the varied inputs; it is not automatically resized to a pressure target.
+- Change **Show** to compare pressure, O/F, thrust, impulse, fuel consumed, port diameter, or burn times. Red cells exceed the pressure limit or deplete the fuel; amber cells have other warnings (hover to read them). O/F outside the combustion table is flagged, but the underlying HRAP calculation is unchanged.
+- The minimum peak pressure and SPI ΔP warning retain the old sweep's screening controls. After a complete study, the page lists column values meeting those limits without fuel depletion across every row. This is a comparison of simulated cases, not a hardware qualification.
+- Select cells to overlay up to eight thrust, pressure, O/F, or port-diameter curves. Double-click one to open its exact inputs as a new, unsaved motor.
+- The **Results** list keeps studies for this app session, including their original motor inputs, even when you edit or switch motors. **Save study** writes those inputs and ranges to JSON; **Load study** restores them for another run. Curves are not saved in that file. **Export CSV** writes all case summaries in the current display units and labels incomplete batches as partial.
+- **Stop** finishes only cases already running; it queues no more. Closing the app waits for those workers too.
+
+Study O/F is total oxidizer mass divided by fuel mass during the simulated liquid phase. If a run ends before liquid runout, the runout cell says **Not reached** and O/F covers only the part simulated. Fuel depletion checks the existing straight cylindrical port model. Selecting injector Cd or CdA overrides geometry-derived Cd and uses the same Cd for SPI and HEM. Changing grain length keeps dry masses unchanged.
+
 ## Mass & export tab
 
 Tank and chamber dry masses and positions give the empty mass and CG, and the CG over the burn for RSE and ENG files. **File → Export** writes CSV, RSE (OpenRocket / RockSim) or ENG.
@@ -103,7 +117,7 @@ Ports farther off the axis, a bigger exit, or less total port area mean more swi
 
 | Folder | What's in it |
 | --- | --- |
-| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `sweep.py`, `swirler_options.py` |
+| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `study.py`, `swirler_options.py` |
 | [`src/hrap/engine/`](src/hrap/engine/) | Tank, injector, grain, combustion, nozzle and the burn loop (`sim.py`); sizing (`sizing.py`) and the swirl model (`swirl.py`) |
 | [`src/hrap/io/`](src/hrap/io/) | Motor files, units, propellant data and exports |
 | [`src/hrap/advanced/`](src/hrap/advanced/) | Opt-in chemistry, fluid, injector and grain models |

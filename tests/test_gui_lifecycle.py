@@ -160,3 +160,75 @@ def test_small_metric_ruler_ticks_are_distinct():
 
     assert _tick_label(.05, .05) == "0.05"
     assert _tick_label(.10, .05) == "0.10"
+
+
+def wait_for_study(window):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    deadline = time.monotonic() + 15
+    while window.study_page.busy() and time.monotonic() < deadline:
+        QApplication.processEvents()
+        QTest.qWait(10)
+    assert not window.study_page.busy()
+
+
+def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from hrap.engine.study import case_cfg
+    from hrap.io.config import resolve
+    from hrap.units import DisplayUnits
+
+    page = window.study_page
+    page.axes[0].set_axis("grain_L", [.25, .3])
+    page.axes[1].set_axis("")
+    page.models.setCurrentIndex(1)
+    page._run()
+    assert not window.motor_tabs.isEnabled()
+    wait_for_study(window)
+    result = page.result
+    assert len(result.cases) == 4
+    assert not result.error
+    assert page.table.rowCount() == 2 and page.table.columnCount() == 2
+    page.table.item(0, 0).setSelected(True)
+    page.table.item(1, 0).setSelected(True)
+    assert len(page.plot.listDataItems()) == 2
+    window._set_display_units(DisplayUnits(length="mm", pressure="bar"))
+    assert "250 mm" in page.table.horizontalHeaderItem(0).text()
+    assert len(page.plot.listDataItems()) == 2
+    path = str(tmp_path / "study.json")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (path, ""))
+    page._save()
+    saved = json.loads((tmp_path / "study.json").read_text())
+    assert saved["motor"] == result.cfg
+    page.table.clearSelection()
+    page.table.item(0, 0).setSelected(True)
+    selected = page._selected()[0]
+    expected, _ = resolve(case_cfg(result.cfg, selected.values, selected.model))
+    page._open()
+    actual, _ = resolve(window._form_to_cfg())
+    assert actual.grn_L == pytest.approx(expected.grn_L)
+    assert actual.regression_model == expected.regression_model
+    assert page.result is result
+    assert window._edited(window._shown)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (path, ""))
+    page._load()
+    assert page._base_override == result.cfg
+    assert page.axes[0].read()[1] == pytest.approx([.25, .3])
+    page.axes[0].unit.setCurrentText("mm")
+    assert page.axes[0].read()[1] == pytest.approx([.25, .3])
+
+
+def test_close_waits_for_study_and_stops_queue(window):
+    page = window.study_page
+    page.axes[0].set_axis("grain_L", [.2 + i * .01 for i in range(30)])
+    page.axes[1].set_axis("")
+    page._run()
+    assert not window.close()
+    wait_for_study(window)
+    assert not window.isVisible()
+    assert page.result.stopped
+    assert len(page.result.cases) <= 8

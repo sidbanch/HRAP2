@@ -23,7 +23,6 @@ from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.engine.swirl import swirl_A, swirl_cd, swirl_exit_D, swirl_fill, swirl_sensitivity, swirl_xi
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
-from hrap.gui.sweep import SweepPanel
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
 from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
 from hrap.io.config import chamber_limit, injector_cd
@@ -188,7 +187,6 @@ class SizingPage(QWidget):
         self._get_cfg, self._get_units = get_cfg, get_units
         self._result: Sizing | None = None
         self._cfg: dict | None = None
-        self._picked_throat: float | None = None
         self._layout: Layout | None = None  # the swirler drilled for the flow, when a burn time or O/F sets it
         self._port_error = ""
         self._loading = False
@@ -228,7 +226,7 @@ class SizingPage(QWidget):
         self.grain_L.setToolTip("Grain length. The fuel flow and starting O/F follow from it.")
 
         self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
-        self.P_limit.setToolTip("The chamber's design pressure (absolute). This page, runs and the Cd check warn above it.")
+        self.P_limit.setToolTip("The chamber's design pressure (absolute). This page, runs and studies warn above it.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
@@ -423,9 +421,8 @@ class SizingPage(QWidget):
         noz_form.add("Throat Cd", self.noz_Cd)
         noz_form.add("Efficiency", self.noz_eff, "%")
         noz_form.add("Ambient pressure", self.Pa)
-        self.nozzle = Card("Nozzle", ["Chamber pressure", "Throat diameter", "Sized throat", "Expansion ratio", "Exit diameter",
+        self.nozzle = Card("Nozzle", ["Chamber pressure", "Throat diameter", "Expansion ratio", "Exit diameter",
                                       "C*"], NozzleSketch(), noz_form)
-        self.nozzle.show_row("Sized throat", False)
 
         self.pre_L = UnitRow(LENGTH_ITEMS, "in", 4)
         self.post_L = UnitRow(LENGTH_ITEMS, "in", 4)
@@ -462,7 +459,6 @@ class SizingPage(QWidget):
         buttons.setContentsMargins(16, 10, 16, 10)
         buttons.addWidget(self.apply_summary, 1)
         buttons.addWidget(self.apply_btn)
-        self.sweep = SweepPanel(self.sized_cfg, get_units, self._on_pick)
         self.swirler_options = SwirlerOptions()
         self.swirler_options.picked.connect(self._on_layout_picked)
         injector_layout = self.injector.layout()
@@ -494,7 +490,6 @@ class SizingPage(QWidget):
         body.addWidget(self.error, 1, 0, 1, 2)
         body.addWidget(left_column, 2, 0)
         body.addLayout(right, 2, 1)
-        body.addWidget(self.sweep, 3, 0, 1, 2)
         body.setColumnStretch(1, 1)
 
         inner = QWidget()
@@ -627,7 +622,6 @@ class SizingPage(QWidget):
         self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "OF" else 0)
         self.nozzle_from.setCurrentIndex(1 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
-        self.sweep.set_cd_range(injector_cd(motor_cfg))
         self._loading = False
 
     def _on_motor_edited(self, *_):
@@ -778,8 +772,6 @@ class SizingPage(QWidget):
         self.noz_eff.setValue(float(cfg.get("noz_eff") or 100.0))
         show(self.Pa, "Pa")
         show(self.P_limit, "P_cmbr_max")
-        self._picked_throat = None
-        self.sweep.reset()
         self._loading = False
         self._sync_motor_rows()
 
@@ -844,13 +836,11 @@ class SizingPage(QWidget):
         cfg = self._get_cfg()
         self.tank_L.setText(u.text(self.tank_geometry()[0], "length"))
         limit = chamber_limit(cfg)
-        self.sweep.set_chamber_limit(limit)
         self.limit_warning.hide()
         try:
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
             self._result = self._cfg = None
-            self.sweep.update_motor(None, 0.0)
             self.swirler_options.update_target(None)
             self.error.setText(str(exc) or type(exc).__name__)
             self.error.show()
@@ -858,9 +848,6 @@ class SizingPage(QWidget):
                 card.clear()
             self._show_apply()
             return
-        if self._result is None or abs(z.throat_D - self._result.throat_D) > 1e-12:
-            self._picked_throat = None
-            self.sweep.clear_pick()
         self._result, self._cfg = z, cfg
         self._layout = None
         if self._solve_port():
@@ -872,7 +859,6 @@ class SizingPage(QWidget):
             except ValueError as exc:
                 self._port_error = str(exc)
             self.swirler_options.update_target(target)
-        self.sweep.update_motor(self.sized_cfg(), z.throat_D)
         self.error.hide()
         what = "starting chamber pressure" if self._fixed_nozzle() else "chamber pressure target"
         self.limit_warning.setText(f"The {u.text(z.P_cmbr, 'pressure')} {what} is above the "
@@ -1029,9 +1015,7 @@ class SizingPage(QWidget):
         self.nozzle.set("Chamber pressure", u.text(z.P_cmbr, "pressure"),
                         f"The chamber pressure at which the {u.text(throat, 'length')} throat passes the starting flow:\n"
                         + formula + "\nsolved for the chamber pressure. A higher chamber pressure also lets in less oxidizer.")
-        self.nozzle.set("Throat diameter", u.text(throat, "length"), "Picked in the Cd check below." if self._picked_throat else how)
-        self.nozzle.set("Sized throat", u.text(z.throat_D, "length"), how)
-        self.nozzle.show_row("Sized throat", bool(self._picked_throat))
+        self.nozzle.set("Throat diameter", u.text(throat, "length"), how)
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
         bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
         self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
@@ -1090,34 +1074,15 @@ class SizingPage(QWidget):
         self.sw_cd_geom.setChecked(True)  # the fitted theory sets the Cd from here on
         self._on_motor_edited()
 
-    def _on_pick(self, throat: float):
-        self._picked_throat = throat
-        self._show_throat()
-        self._show_apply()
-
     def _values(self) -> dict:
         z, t = cast(Sizing, self._result), self.targets()
         return {
-            "throat_D": self._picked_throat or (self.throat_D.si("length") if self._fixed_nozzle() else z.throat_D),
+            "throat_D": self.throat_D.si("length") if self._fixed_nozzle() else z.throat_D,
             "ER": z.ER,
             "holes": t.holes or (self.holes.value() if self._solve_port() else max(1, round(z.holes))),
             "sw_D_port": self._layout.port_D if self._layout else None,
             "grain_L": z.grain_L,
         }
-
-    def sized_cfg(self) -> dict | None:
-        """The motor with this sizing applied, for the sweep."""
-        if self._result is None or self._cfg is None:
-            return None
-        v = self._values()
-        cfg = dict(self._cfg)
-        cfg.update(noz_thrt=v["throat_D"], noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=v["ER"],
-                   inj_N=v["holes"])
-        if v["sw_D_port"]:
-            cfg.update(sw_D_port=v["sw_D_port"], sw_D_port_unit="m")
-        if math.isfinite(v["grain_L"]):
-            cfg.update(grn_L=v["grain_L"], grn_L_unit="m")
-        return cfg
 
     def apply(self):
         """Make the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's."""
