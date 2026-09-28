@@ -937,13 +937,17 @@ class MainWindow(QMainWindow):
             return
         self._stash()
         motors = self._motors()
-        unsaved = [m.title for m in motors if self._edited(m)]
-        if unsaved and QMessageBox.question(
-            self, APP_NAME, f"Unsaved changes in {', '.join(unsaved)}.",
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel,
-        ) != QMessageBox.StandardButton.Discard:
-            event.ignore()
-            return
+        unsaved = [m for m in motors if self._edited(m)]
+        if unsaved:
+            answer = QMessageBox.question(
+                self, APP_NAME, f"Save changes to {', '.join(m.title for m in unsaved)} before quitting?",
+                QMessageBox.StandardButton.SaveAll | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.SaveAll,
+            )
+            if answer != QMessageBox.StandardButton.Discard:
+                if answer != QMessageBox.StandardButton.SaveAll or not all(self._save_motor(m) for m in unsaved):
+                    event.ignore()
+                    return
         self._prefs.setValue("openMotors", [m.path for m in motors if m.path])
         self._prefs.setValue("currentMotor", self._shown.path if self._shown else "")
         event.accept()
@@ -1208,8 +1212,13 @@ class MainWindow(QMainWindow):
             if not path:
                 return False
             self._remember_file_dir(path)
-            motor.path, motor.title = str(Path(path).resolve()), Path(path).stem
-        save_json(motor.path, motor.cfg)
+        path = str(Path(path).resolve())
+        try:
+            save_json(path, motor.cfg)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save failed", f"Could not save {motor.title} to {path}.\n\n{exc}")
+            return False
+        motor.path, motor.title = path, Path(path).stem
         motor.saved = motor.cfg
         if motor is self._shown:
             self._update_tab_marker()

@@ -57,6 +57,60 @@ def test_close_waits_for_worker(window):
     assert window._worker is None
 
 
+@pytest.mark.parametrize("outcome", ["save", "cancel", "discard", "cancel_path", "write_error"])
+def test_quit_with_unsaved_motors(window, tmp_path, monkeypatch, outcome):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from hrap.io.config import default_cfg, load_json, save_json
+
+    first = window._shown
+    first.path = str(tmp_path / "first.json")
+    save_json(first.path, first.saved)
+    original = load_json(first.path)
+    window.mfg.setText("Edited first motor")
+    window._add_motor(default_cfg(), title="Second motor")
+    second = window._shown
+    window.mfg.setText("Edited second motor")
+    second_path = tmp_path / "second.json"
+    errors = []
+
+    def answer(parent, title, text, buttons, default):
+        assert buttons & QMessageBox.StandardButton.SaveAll
+        assert default == QMessageBox.StandardButton.SaveAll
+        return {
+            "cancel": QMessageBox.StandardButton.Cancel,
+            "discard": QMessageBox.StandardButton.Discard,
+        }.get(outcome, QMessageBox.StandardButton.SaveAll)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(QMessageBox, "question", answer)
+        patch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[-1]))
+        patch.setattr(QFileDialog, "getSaveFileName", lambda *args: (
+            "" if outcome == "cancel_path" else str(second_path), "",
+        ))
+
+        def write(path, cfg):
+            if outcome == "write_error" and path == str(second_path):
+                raise PermissionError("Permission denied")
+            save_json(path, cfg)
+
+        patch.setattr("hrap.gui.main.save_json", write)
+        assert window.close() == (outcome in ("save", "discard"))
+
+    assert load_json(first.path)["mfg"] == (
+        original["mfg"] if outcome in ("cancel", "discard") else "Edited first motor"
+    )
+    if outcome == "save":
+        assert load_json(second_path)["mfg"] == "Edited second motor"
+        assert not any(window._edited(m) for m in window._motors())
+        assert window._prefs.value("openMotors") == [first.path, str(second_path)]
+    else:
+        assert not second_path.exists()
+        assert second.path == ""
+        assert window._edited(second)
+    assert bool(errors) == (outcome == "write_error")
+
+
 def test_editing_inputs_invalidates_completed_results(window):
     window._run()
     wait_for_run(window)
