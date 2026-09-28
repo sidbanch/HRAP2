@@ -12,20 +12,22 @@ from typing import Callable
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -33,9 +35,56 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.study import INPUTS, MODELS, OUTPUTS, Case, case_cfg, grid, passing_values, study, uses_spi
+from hrap.gui.sizing import card_frame
 from hrap.gui.widgets import UnitRow
 from hrap.io.config import chamber_limit, clone_cfg
 from hrap.units import AREA_ITEMS, LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, DisplayUnits, from_si, to_si
+
+OK, WARN, BAD = QColor("#2f7d4f"), QColor("#a87a22"), QColor("#a8413b")
+
+
+def _small(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("cardLabel")
+    label.setWordWrap(True)
+    return label
+
+
+def _chip(color: QColor, text: str) -> QWidget:
+    w = QWidget()
+    h = QHBoxLayout(w)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(6)
+    swatch = QLabel()
+    swatch.setFixedSize(12, 12)
+    swatch.setStyleSheet(f"background: {color.name()}; border-radius: 3px;")
+    h.addWidget(swatch)
+    label = QLabel(text)
+    label.setObjectName("cardLabel")
+    h.addWidget(label)
+    return w
+
+
+class TileDelegate(QStyledItemDelegate):
+    """Result cells as rounded colored tiles with a gap between them; selected tiles get an outline."""
+
+    def paint(self, painter: QPainter, option, index):
+        color = index.data(Qt.ItemDataRole.BackgroundRole)
+        if color is None:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect.adjusted(3, 3, -3, -3)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawRoundedRect(rect, 5, 5)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.setPen(QPen(QColor("white"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 4, 4)
+        painter.setPen(QColor("white"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(index.data(Qt.ItemDataRole.DisplayRole) or ""))
+        painter.restore()
 
 
 class Axis(QWidget):
@@ -50,11 +99,14 @@ class Axis(QWidget):
         self.values.setPlaceholderText("12, 15, 18, 24   or   12:24:5")
         self.values.setToolTip("Comma-separated values, or start:end:count for evenly spaced values including both ends.")
         self.unit = QComboBox()
-        layout = QHBoxLayout(self)
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.key)
-        layout.addWidget(self.values, 1)
-        layout.addWidget(self.unit)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(4)
+        layout.addWidget(self.key, 0, 0)
+        layout.addWidget(self.unit, 0, 1)
+        layout.addWidget(self.values, 1, 0, 1, 2)
+        layout.setColumnStretch(0, 1)
         self.key.currentIndexChanged.connect(self._changed)
         self.unit.currentTextChanged.connect(self._convert)
         self.cfg = {}
@@ -91,7 +143,7 @@ class Axis(QWidget):
             values = [value - 10, value, value + 10] if quantity == "temperature" else [value * f for f in (0.8, 1, 1.2)]
             if key in ("fill", "cstar_eff"):
                 values = [min(v, 100) for v in values]
-            self.values.setText(", ".join(f"{v:.7g}" for v in dict.fromkeys(values)))
+            self.values.setText(", ".join(f"{v:.3g}" for v in dict.fromkeys(values)))
 
     def set_axis(self, key, values=None):
         self.key.setCurrentIndex(self.key.findData(key))
@@ -171,131 +223,198 @@ class StudyPage(QWidget):
         self._cells = {}
         self._base_override = None
 
-        root = QVBoxLayout(self)
-        self.setup = QFrame()
-        self.setup.setObjectName("sizingCard")
-        form = QGridLayout(self.setup)
-        form.setColumnStretch(1, 1)
-        form.setVerticalSpacing(6)
-        title = QLabel("Compare simulations")
-        title.setObjectName("cardTitle")
-        note = QLabel("Vary one or two inputs; every other setting stays fixed. Each cell runs the full simulation.")
-        note.setWordWrap(True)
-        form.addWidget(title, 0, 0, 1, 3)
-        form.addWidget(note, 1, 0, 1, 3)
+        # Left: what to study. Right: the result grid, and the curves of the selected cases.
         self.preset = QComboBox()
         self.preset.addItems(["Throat × injector Cd", "Grain length × total injector CdA", "Grain length × burn rate a", "Custom"])
         self.preset.activated.connect(self._preset)
-        form.addWidget(QLabel("Start with"), 2, 0)
-        form.addWidget(self.preset, 2, 1, 1, 2)
         self.axes = [Axis(), Axis(optional=True)]
-        for i, axis in enumerate(self.axes):
-            form.addWidget(QLabel("Columns" if i == 0 else "Rows"), 3 + i, 0)
-            form.addWidget(axis, 3 + i, 1, 1, 2)
         self.models = QComboBox()
         self.models.addItem("Current motor's fuel model", None)
         self.models.addItem("Both fuel models", list(MODELS))
         for key, label in MODELS.items():
             self.models.addItem(label, [key])
-        form.addWidget(QLabel("Fuel model"), 5, 0)
-        form.addWidget(self.models, 5, 1)
-        self.source = QLabel("")
-        self.source.setWordWrap(True)
-        form.addWidget(self.source, 6, 0, 1, 3)
-        self.show_setup = QPushButton("Study inputs ▾")
-        self.show_setup.setCheckable(True)
-        self.show_setup.setChecked(True)
-        self.show_setup.toggled.connect(self.setup.setVisible)
-        self.show_setup.toggled.connect(lambda visible: self.show_setup.setText("Study inputs ▾" if visible else "Study inputs ▸"))
-        root.addWidget(self.show_setup)
-        root.addWidget(self.setup)
         for axis in self.axes:
             axis.key.activated.connect(lambda *_: self.preset.setCurrentIndex(3))
             axis.values.textEdited.connect(lambda *_: self.preset.setCurrentIndex(3))
-        controls = QHBoxLayout()
+        self.source = _small("")
+
+        self.setup, setup = card_frame("Study")
+        setup.addWidget(_small("Vary one or two inputs; everything else stays as the motor is set. "
+                               "Each cell is a full simulation."))
+        fields = QGridLayout()
+        fields.setHorizontalSpacing(10)
+        fields.setVerticalSpacing(8)
+        fields.setColumnStretch(1, 1)
+        fields.addWidget(QLabel("Preset"), 0, 0)
+        fields.addWidget(self.preset, 0, 1)
+        for i, (name, axis) in enumerate(zip(("Columns", "Rows"), self.axes)):
+            fields.addWidget(QLabel(name), 1 + i, 0, Qt.AlignmentFlag.AlignTop)
+            fields.addWidget(axis, 1 + i, 1)
+        fields.addWidget(QLabel("Fuel model"), 3, 0)
+        fields.addWidget(self.models, 3, 1)
+        setup.addLayout(fields)
+        setup.addWidget(_small("Values: 12, 15, 18 or start:end:count."))
         self.run_btn = QPushButton("Run study")
         self.run_btn.setObjectName("runButton")
         self.run_btn.clicked.connect(self._run)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.clicked.connect(self.stop)
         self.stop_btn.setEnabled(False)
-        self.load_btn = QPushButton("Load study…")
-        self.load_btn.clicked.connect(self._load)
-        self.save_btn = QPushButton("Save study…")
-        self.save_btn.clicked.connect(self._save)
-        self.export_btn = QPushButton("Export CSV…")
-        self.export_btn.clicked.connect(self._export)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.run_btn, 1)
+        buttons.addWidget(self.stop_btn)
+        setup.addLayout(buttons)
         self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
         self.progress.hide()
-        for w in (self.run_btn, self.stop_btn, self.load_btn, self.save_btn, self.export_btn, self.progress):
-            controls.addWidget(w)
-        controls.addStretch()
-        root.addLayout(controls)
-        self.status = QLabel("Enter values separated by commas, or start:end:count. Apply any pending Motor sizing before running.")
-        self.status.setWordWrap(True)
-        root.addWidget(self.status)
-        row = QHBoxLayout()
-        self.history = QComboBox()
-        self.history.setMinimumWidth(260)
-        self.history.currentIndexChanged.connect(self._show_run)
-        self.metric = QComboBox()
-        self.metric.addItems([m[0] for m in OUTPUTS])
-        self.metric.currentIndexChanged.connect(self.refresh)
-        row.addWidget(QLabel("Results"))
-        row.addWidget(self.history, 1)
-        row.addWidget(QLabel("Show"))
-        row.addWidget(self.metric)
-        root.addLayout(row)
-        criteria = QHBoxLayout()
+        setup.addWidget(self.progress)
+        setup.addWidget(self.source)
+
+        limits, limits_l = card_frame("Limits")
+        self.max_pressure = QLabel("—")
+        self.max_pressure.setObjectName("cardValue")
+        self.max_pressure.setToolTip("The chamber pressure limit, set in Targets on the Motor tab.")
         self.min_pressure = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.min_pressure.set_si(0, "pressure")
+        self.min_pressure.setToolTip("Lowest acceptable peak chamber pressure (absolute).")
         self.max_dp = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.max_dp.set_si(to_si(300, "psi", "pressure"), "pressure")
-        self.max_dp.setToolTip("Burn-average injector pressure-drop warning for SPI only. This is a user-set screening threshold.")
-        for label, control in (("Minimum peak Pc", self.min_pressure), ("SPI ΔP warning", self.max_dp)):
-            criteria.addWidget(QLabel(label))
-            criteria.addWidget(control)
+        self.max_dp.setToolTip("Above this burn-average injector ΔP, the SPI injector model overpredicts nitrous flow.")
+        grid_l = QGridLayout()
+        grid_l.setHorizontalSpacing(10)
+        grid_l.setVerticalSpacing(8)
+        grid_l.setColumnStretch(1, 1)
+        for r, (label, control) in enumerate((("Max peak Pc", self.max_pressure), ("Min peak Pc", self.min_pressure),
+                                               ("SPI ΔP warning", self.max_dp))):
+            grid_l.addWidget(QLabel(label), r, 0)
+            grid_l.addWidget(control, r, 1)
+        limits_l.addLayout(grid_l)
+        for control in (self.min_pressure, self.max_dp):
             control.spin.valueChanged.connect(self.refresh)
             control.unit.currentTextChanged.connect(self.refresh)
-        criteria.addStretch()
-        root.addLayout(criteria)
+
+        runs, runs_l = card_frame("Runs")
+        self.history = QListWidget()
+        self.history.setMinimumHeight(90)
+        self.history.currentRowChanged.connect(self._show_run)
+        runs_l.addWidget(self.history, 1)
+        files = QHBoxLayout()
+        self.load_btn = QPushButton("Load…")
+        self.load_btn.clicked.connect(self._load)
+        self.save_btn = QPushButton("Save…")
+        self.save_btn.clicked.connect(self._save)
+        self.export_btn = QPushButton("CSV…")
+        self.export_btn.setToolTip("Export the shown run's results as CSV.")
+        self.export_btn.clicked.connect(self._export)
+        for w in (self.load_btn, self.save_btn, self.export_btn):
+            files.addWidget(w)
+        runs_l.addLayout(files)
+
+        left = QWidget()
+        left.setFixedWidth(400)
+        left_l = QVBoxLayout(left)
+        left_l.setContentsMargins(0, 0, 0, 0)
+        left_l.setSpacing(12)
+        left_l.addWidget(self.setup)
+        left_l.addWidget(limits)
+        left_l.addWidget(runs, 1)
+
+        # The result grid.
+        results, results_l = card_frame("Results")
+        head = results_l.itemAt(0).widget()
+        results_l.removeWidget(head)
+        top = QHBoxLayout()
+        top.addWidget(head)
+        top.addStretch(1)
+        top.addWidget(QLabel("Show"))
+        self.shown_output = QComboBox()
+        self.shown_output.addItems([m[0] for m in OUTPUTS])
+        self.shown_output.setToolTip("O/F is nitrous mass ÷ fuel mass over the simulated liquid burn.")
+        self.shown_output.currentIndexChanged.connect(self.refresh)
+        top.addWidget(self.shown_output)
+        results_l.addLayout(top)
+        self.answer = QLabel("")
+        self.answer.setWordWrap(True)
+        self.answer.setObjectName("cardValue")
+        results_l.addWidget(self.answer)
+        self.status = _small("")
+        results_l.addWidget(self.status)
+        self.col_caption = _small("")
+        self.col_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        results_l.addWidget(self.col_caption)
         self.table = QTableWidget()
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setShowGrid(False)
+        self.table.setCornerButtonEnabled(False)
+        self.table.setWordWrap(False)
+        self.table.horizontalHeader().setHighlightSections(False)
+        self.table.verticalHeader().setHighlightSections(False)
+        self.table.setStyleSheet("QTableWidget { border: none; background: transparent; selection-background-color: transparent; }")
+        self.table.setItemDelegate(TileDelegate(self.table))
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.itemSelectionChanged.connect(self._selection)
         self.table.cellDoubleClicked.connect(lambda *_: self._open())
-        self.table.setMinimumHeight(160)
-        bottom = QWidget()
-        layout = QVBoxLayout(bottom)
-        layout.setContentsMargins(0, 0, 0, 0)
+        self.empty = QLabel("Pick what to vary on the left and press Run study.\n"
+                            "Each cell becomes one simulation; click cells to compare their curves below.")
+        self.empty.setObjectName("cardLabel")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setMinimumHeight(160)
+        results_l.addWidget(self.empty, 1)
+        results_l.addWidget(self.table, 1)
+        self.table.hide()
+        legend = QHBoxLayout()
+        legend.setSpacing(16)
+        for color, text in ((OK, "Within limits"), (WARN, "Warning (hover for why)"), (BAD, "Over the pressure limit or burned out")):
+            legend.addWidget(_chip(color, text))
+        legend.addStretch(1)
+        self.legend = QWidget()
+        self.legend.setLayout(legend)
+        legend.setContentsMargins(0, 0, 0, 0)
+        self.legend.hide()
+        results_l.addWidget(self.legend)
+
+        # Curves of the selected cases.
+        compare, compare_l = card_frame("Compare selected cases")
+        head = compare_l.itemAt(0).widget()
+        compare_l.removeWidget(head)
         line = QHBoxLayout()
-        self.open_btn = QPushButton("Open selected case as motor")
-        self.open_btn.clicked.connect(self._open)
+        line.addWidget(head)
+        line.addStretch(1)
         self.trace = QComboBox()
         for name, key, quantity in (("Thrust", "F_thr", "force"), ("Chamber pressure", "P_cmbr", "pressure"),
                                      ("O/F", "OF", "ratio"), ("Port diameter", "grn_ID", "length")):
             self.trace.addItem(name, (key, quantity))
         self.trace.currentIndexChanged.connect(self._selection)
-        line.addWidget(self.open_btn)
-        line.addStretch()
-        line.addWidget(QLabel("Overlay selected cells"))
+        self.open_btn = QPushButton("Open as motor")
+        self.open_btn.setToolTip("Open the selected case as a new motor tab.")
+        self.open_btn.clicked.connect(self._open)
+        line.addWidget(QLabel("Plot"))
         line.addWidget(self.trace)
-        layout.addLayout(line)
-        self.details = QLabel("Select cells to compare curves. Ctrl/⌘-click adds cases; double-click opens one as a motor.")
+        line.addWidget(self.open_btn)
+        compare_l.addLayout(line)
+        self.details = _small("Click cells to plot them; ⌘/Ctrl-click to add more. Double-click opens a case as a motor.")
         self.details.setWordWrap(True)
-        layout.addWidget(self.details)
+        compare_l.addWidget(self.details)
         self.plot = pg.PlotWidget()
         self.plot.setBackground(None)
-        self.plot.setMinimumHeight(180)
-        self.plot.addLegend()
+        self.plot.setMinimumHeight(160)
+        self.plot.addLegend(offset=(-10, 10))
         self.plot.showGrid(x=True, y=True, alpha=0.15)
         self.plot.setLabel("bottom", "Time", units="s")
-        layout.addWidget(self.plot)
+        compare_l.addWidget(self.plot, 1)
+
         split = QSplitter(Qt.Orientation.Vertical)
-        split.addWidget(self.table)
-        split.addWidget(bottom)
-        split.setSizes([260, 250])
+        split.setChildrenCollapsible(False)
+        split.addWidget(results)
+        split.addWidget(compare)
+        split.setSizes([520, 360])
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
+        root.addWidget(left)
         root.addWidget(split, 1)
         self.save_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
@@ -305,12 +424,12 @@ class StudyPage(QWidget):
         if self.busy():
             return
         self._base_override = None
-        self.show_setup.setChecked(True)
         cfg = self._get_cfg()
         for axis in self.axes:
             axis.cfg = cfg
         self._preset(self.preset.currentIndex())
-        self.source.setText(f"Next study: {cfg.get('mtr_nm') or 'current motor'} — applied Motor settings and current Simulation settings.")
+        self.source.setText(f"Runs on: {cfg.get('mtr_nm') or 'this motor'}, as set now. Apply any Motor-tab sizing first.")
+        self.refresh()
 
     def _preset(self, index):
         self.preset.setCurrentIndex(index)
@@ -357,11 +476,9 @@ class StudyPage(QWidget):
         except Exception as exc:
             self.status.setText(str(exc))
             return
-        self.source.setText(f"Next study: {cfg.get('mtr_nm') or 'Motor'} — settings captured when Run study is pressed.")
-        self.show_setup.setChecked(False)
         self.runs.append(result)
         self.history.addItem(f"{len(self.runs)}. {cfg.get('mtr_nm') or 'Motor'} · {result.total} cases")
-        self.history.setCurrentIndex(len(self.runs) - 1)
+        self.history.setCurrentRow(len(self.runs) - 1)
         self.result = result
         self.progress.setRange(0, result.total)
         self.progress.setValue(0)
@@ -432,9 +549,14 @@ class StudyPage(QWidget):
 
     def refresh(self):
         r = self.result
+        u = self._get_units()
+        cfg = r.cfg if r is not None else self._base_override or self._get_cfg()
+        self.max_pressure.setText(f"{u.text(chamber_limit(cfg), 'pressure')} (Motor tab)")
         if r is None:
             return
-        u = self._get_units()
+        self.empty.hide()
+        self.table.show()
+        self.legend.show()
         selected = {(i.row(), i.column()) for i in self.table.selectedItems()}
         self.table.blockSignals(True)
         self.table.clearContents()
@@ -445,42 +567,54 @@ class StudyPage(QWidget):
             QHeaderView.ResizeMode.Stretch if len(xs) <= 8 else QHeaderView.ResizeMode.ResizeToContents)
         self.table.setColumnCount(len(xs))
         self.table.setRowCount(len(rows))
-        self.table.setHorizontalHeaderLabels([f"{INPUTS[xkey].label}\n{self._value_text(xkey, x)}" for x in xs])
+        self.table.setHorizontalHeaderLabels([self._value_text(xkey, x) for x in xs])
+        many_models = len(r.models) > 1
         self.table.setVerticalHeaderLabels([
-            (f"{INPUTS[ykey].label} {self._value_text(ykey, y)} · " if ykey else "") + MODELS[model]
+            "  " + " · ".join(filter(None, [self._value_text(ykey, y) if ykey else "",
+                                             MODELS[model] if many_models or not ykey else ""])) + "  "
             for y, model in rows])
+        rows_label = INPUTS[ykey].label if ykey else "Fuel model"
+        self.col_caption.setText(f"Columns: {INPUTS[xkey].label}   ·   Rows: {rows_label}"
+                                 + ("" if many_models or not ykey else f" ({MODELS[r.models[0]]})"))
         self._cells = {}
-        label, name, quantity = OUTPUTS[self.metric.currentIndex()]
+        label, name, quantity = OUTPUTS[self.shown_output.currentIndex()]
         for case in r.cases:
             col = xs.index(case.value(xkey))
             row = rows.index((case.value(ykey) if ykey else None, case.model))
             self._cells[row, col] = case
             value = getattr(case, name)
             flags = self._flags(case)
-            text = (u.text(value, quantity) if quantity else f"{value:.3g} s") if math.isfinite(value) else "Not reached"
-            if not math.isfinite(value) and name == "OF_liquid":
+            if not math.isfinite(value):
                 text = "—"
-            item = QTableWidgetItem(text + (" ⚠" if flags else ""))
+            elif quantity:
+                text = u.text(value, quantity)
+            else:
+                text = f"{value:.3g} s"
+            item = QTableWidgetItem(text + ("  ⚠" if flags else ""))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setBackground(QColor("#803c37" if case.burnout or case.peak_P_cmbr > chamber_limit(r.cfg)
-                                       else "#705e31" if flags else "#285845"))
+            bad = case.burnout or case.peak_P_cmbr > chamber_limit(r.cfg)
+            item.setBackground(BAD if bad else WARN if flags else OK)
             item.setForeground(QColor("white"))
-            item.setToolTip(self._label(case) + "\n" + "\n".join(flags) + f"\nEnd: {case.end_cond}")
+            item.setToolTip(self._label(case) + ("\n" + "\n".join(flags) if flags else "") + f"\nEnd: {case.end_cond}")
             self.table.setItem(row, col, item)
             item.setSelected((row, col) in selected)
         self.table.blockSignals(False)
         n = len(r.cases)
-        state = "Running" if self.busy() else "Stopped" if r.stopped else "Failed" if r.error else "Complete"
-        flags = sum(bool(self._flags(c)) for c in r.cases)
-        self.status.setText(f"{state}: {n}/{r.total} simulations · {label} · {flags} cases with warnings. "
-                            f"Pressure limit: {u.text(chamber_limit(r.cfg), 'pressure')} absolute."
-                            + (f"\n{r.error}" if r.error else "")
-                            + "\nO/F is oxidizer mass ÷ fuel mass during the simulated liquid phase. Hover warnings for details.")
+        warned = sum(bool(self._flags(c)) for c in r.cases)
+        state = "Running" if self.busy() else "Stopped" if r.stopped else "Failed" if r.error else "Done"
+        self.status.setText(f"{state}: {n} of {r.total} simulations · {warned} with warnings"
+                            + (f"\n{r.error}" if r.error else ""))
         if n == r.total and not r.error and not self.busy():
             passing = passing_values(r.cases, xkey, self.min_pressure.si("pressure"), chamber_limit(r.cfg),
                                      self.max_dp.si("pressure") if uses_spi(r.cfg) else float("inf"))
-            listed = ", ".join(self._value_text(xkey, v) for v in passing) or "none"
-            self.status.setText(self.status.text() + f"\n{INPUTS[xkey].label} values completing every row within pressure/ΔP limits without fuel depletion: {listed}.")
+            every = "every row" if len(rows) > 1 else "this run"
+            if passing:
+                listed = ", ".join(self._value_text(xkey, v) for v in passing)
+                self.answer.setText(f"{INPUTS[xkey].label} within limits for {every}: {listed}")
+            else:
+                self.answer.setText(f"No {INPUTS[xkey].label.lower()} stays within limits for {every}.")
+        else:
+            self.answer.setText("")
         self.save_btn.setEnabled(True)
         self.export_btn.setEnabled(bool(r.cases))
         self._selection()
@@ -553,8 +687,7 @@ class StudyPage(QWidget):
             self.preset.setCurrentIndex(3)
             self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")
             self.max_dp.set_si(float(data.get("max_dp", to_si(300, "psi", "pressure"))), "pressure")
-            self.show_setup.setChecked(True)
-            self.source.setText(f"Next study uses the saved motor snapshot from {Path(path).name}. Switching motors returns to current inputs.")
+            self.source.setText(f"Runs on: the motor saved in {Path(path).name}. Switching motors goes back to the open one.")
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as exc:
             self.status.setText(f"Could not load study: {exc}")
 
