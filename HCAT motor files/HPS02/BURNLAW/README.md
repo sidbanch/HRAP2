@@ -1,6 +1,6 @@
 # HPS02 preliminary with the burn-rate law (9/28)
 
-Sid's N2665 (`HPS02_ROUND2/HPS02-6_ROUND2_4500N_ZIGG.json`) rerun with HRAP's burn-rate law instead of fixed O/F 6, at the grain lengths Sid said the rocket could take (15 to 24"). Sims by Callan in HRAP2.
+Sid's N2665 (`../ROUND2/HPS02-6_ROUND2_4500N_ZIGG.json`) rerun with HRAP's burn-rate law instead of fixed O/F 6, at the grain lengths Sid said the rocket could take (15 to 24"). Sims by Callan in HRAP2.
 
 ## What changed from Sid's file
 

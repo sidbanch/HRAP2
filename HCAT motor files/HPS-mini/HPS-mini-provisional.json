@@ -75,6 +75,8 @@
   "sw_R_in": 0.105,
   "sw_R_in_unit": "in",
   "sw_cd_from_geometry": true,
+  "sw_xi": 0.0,
+  "ptc_stock": false,
   "P_cmbr_max": 500.0,
   "P_cmbr_max_unit": "psi",
   "vnt_state": "None",

@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
         self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case,
-                                    self.sizing_page.unapplied)
+                                    self.sizing_page.unapplied, self._save_output)
         self.study_page.started.connect(self._sync_busy)
         self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
@@ -1137,6 +1137,27 @@ class MainWindow(QMainWindow):
             return filename
         return str(Path(folder) / filename) if filename else folder
 
+    def _output_path(self, filename: str) -> str:
+        """Where an export of the shown motor goes by default: a folder named after its file, beside it."""
+        motor = self._shown
+        if motor is None or not motor.path:
+            return self._dialog_path(filename)
+        folder = Path(motor.path).with_suffix("")
+        folder.mkdir(exist_ok=True)
+        return str(folder / filename)
+
+    def _save_output(self, caption: str, filename: str, filters: str) -> str:
+        """Ask where to save an export, starting in the motor's output folder; drop the folder if it stays empty."""
+        start = self._output_path(filename)
+        path, _ = QFileDialog.getSaveFileName(self, caption, start, filters)
+        folder = Path(start).parent
+        if self._shown is not None and self._shown.path and folder == Path(self._shown.path).with_suffix(""):
+            try:
+                folder.rmdir()  # only succeeds if nothing was saved there
+            except OSError:
+                pass
+        return path
+
     def _remember_file_dir(self, path: str) -> None:
         folder = Path(path)
         if not folder.is_dir():
@@ -1422,13 +1443,13 @@ class MainWindow(QMainWindow):
             return
         cfg = cast(dict, self._result_cfg)
         if kind == "csv":
-            path, _ = QFileDialog.getSaveFileName(self, "Export CSV", self._dialog_path("HRAP_output.csv"), "CSV (*.csv)")
+            path = self._save_output("Export CSV", f"{(Path(self._shown.path).stem if self._shown and self._shown.path else 'HRAP_output')}.csv", "CSV (*.csv)")
             if path:
                 self._remember_file_dir(path)
                 export_csv(path, self._output, self._settings)
         elif kind == "rse":
             stem = cfg["mtr_nm"].strip() or "motor"
-            path, _ = QFileDialog.getSaveFileName(self, "Export RSE", self._dialog_path(f"{stem}.rse"), "RSE (*.rse)")
+            path = self._save_output("Export RSE", f"{stem}.rse", "RSE (*.rse)")
             if path:
                 self._remember_file_dir(path)
                 export_rse(
@@ -1440,7 +1461,7 @@ class MainWindow(QMainWindow):
                     mfg=cfg["mfg"],
                 )
         else:
-            path, _ = QFileDialog.getSaveFileName(self, "Export ENG", self._dialog_path("motor.eng"), "ENG (*.eng)")
+            path = self._save_output("Export ENG", f"{(Path(self._shown.path).stem if self._shown and self._shown.path else 'HRAP_output')}.eng", "ENG (*.eng)")
             if path:
                 self._remember_file_dir(path)
                 export_eng(

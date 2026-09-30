@@ -227,10 +227,12 @@ class StudyPage(QWidget):
     runs_changed = Signal()
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open,
-                 get_unapplied: Callable[[], list[str]] = lambda: []):
+                 get_unapplied: Callable[[], list[str]] = lambda: [],
+                 ask_save: Callable[[str, str, str], str] | None = None):
         super().__init__()
         self._get_cfg, self._get_units, self._on_open = get_cfg, get_units, on_open
         self._get_unapplied = get_unapplied
+        self._ask_save = ask_save or (lambda caption, name, filters: QFileDialog.getSaveFileName(self, caption, name, filters)[0])
         self._loaded_from = ""
         self._thread = self._worker = None
         self.runs: list[StudyRun] = []
@@ -760,7 +762,7 @@ class StudyPage(QWidget):
             return
         r = self.result
         default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "study"
-        path, _ = QFileDialog.getSaveFileName(self, "Save reproducible study", f"{default}.json", "Study JSON (*.json)")
+        path = self._ask_save("Save study", f"{default}.json", "Study JSON (*.json)")
         if path:
             try:
                 Path(path).write_text(json.dumps({"name": r.name, "motor": r.cfg, "axes": r.axes, "models": r.models,
@@ -802,7 +804,8 @@ class StudyPage(QWidget):
         r = self.result
         if r is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export study results", "study.csv", "CSV (*.csv)")
+        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "study"
+        path = self._ask_save("Export study results", f"{default}.csv", "CSV (*.csv)")
         if not path:
             return
         u = self._get_units()
