@@ -22,7 +22,8 @@ def _nsteps(s: Settings) -> int:
 
 def _blank_output(s: Settings) -> Output:
     n = _nsteps(s)
-    z = lambda: np.zeros(n, dtype=float)
+    def z():
+        return np.zeros(n, dtype=float)
     o = Output(
         t=z(),
         m_o=z(),
@@ -39,11 +40,14 @@ def _blank_output(s: Settings) -> Output:
         dP=z(),
         m_t=z(),
         cg=z(),
+        T_tnk=z(),
     )
     return o
 
 
 def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
+    if x.mLiq_new <= 0 and "liquid_runout_time" not in o.extra:
+        o.extra["liquid_runout_time"] = t
     o.t[i] = t
     o.m_o[i] = x.m_o
     o.P_tnk[i] = x.P_tnk
@@ -57,6 +61,7 @@ def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
     o.m_f[i] = x.m_f
     o.dP[i] = x.dP
     o.F_thr[i] = x.F_thr
+    o.T_tnk[i] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[i] = mp[0]
     o.cg[i] = mp[1]
@@ -120,9 +125,10 @@ def sim_loop(
     last = min(last, o.t.size)
     for name in (
         "t", "m_o", "P_tnk", "P_cmbr", "mdot_o", "mdot_f", "OF",
-        "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg",
+        "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg", "T_tnk",
     ):
         setattr(o, name, getattr(o, name)[:last])
+    o.inj_dP = o.P_tnk - o.P_cmbr
     return s, x, o, t
 
 
@@ -133,6 +139,8 @@ def run(
 ) -> tuple[State, Output]:
     """Run a full MATLAB-parity simulation from initialized settings and state."""
     o = _blank_output(s)
+    if x.mLiq_new <= 0:
+        o.extra["liquid_runout_time"] = 0.0
     # GUI stores initial conditions at index 0 (MATLAB index 1) before the loop
     o.m_o[0] = x.m_o
     o.P_tnk[0] = x.P_tnk
@@ -144,6 +152,7 @@ def run(
     o.mdot_n[0] = x.mdot_n
     o.rdot[0] = x.rdot
     o.m_f[0] = x.m_f
+    o.T_tnk[0] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[0] = mp[0]
     o.cg[0] = mp[1]

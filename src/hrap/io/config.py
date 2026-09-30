@@ -10,11 +10,11 @@ from typing import Any
 import numpy as np
 
 from hrap.engine.nox import nox
+from hrap.engine.swirl import swirl_cd
 from hrap.engine.types import Settings, State
 from hrap.io.propellant import load_propellant
 from hrap.layout import (
     MotorLayout,
-    default_chamber_length,
     infer_component_stations,
     motor_layout,
     nozzle_exit_diameter,
@@ -50,8 +50,10 @@ def default_cfg() -> dict[str, Any]:
         "tnk_start_unit": "in",
         "cmbr_start": 0.0,
         "cmbr_start_unit": "in",
-        "cmbr_L": 0.0,
-        "cmbr_L_unit": "in",
+        "cmbr_pre_L": 0.0,
+        "cmbr_pre_L_unit": "in",
+        "cmbr_post_L": 0.0,
+        "cmbr_post_L_unit": "in",
         "tnk_m": 0.0,
         "tnk_m_unit": "kg",
         "cmbr_m": 0.0,
@@ -94,6 +96,17 @@ def default_cfg() -> dict[str, Any]:
         "inj_D_unit": "in",
         "inj_N": 3,
         "inj_Cd": 0.361,
+        "inj_type": "Holes",  # "Holes", or "Swirler": inj_D is then the exit orifice and inj_N the swirler count
+        "sw_ports": 2,
+        "sw_D_port": 0.0625,
+        "sw_D_port_unit": "in",
+        "sw_R_in": 0.094,  # swirler axis to each inlet port's axis
+        "sw_R_in_unit": "in",
+        "sw_cd_from_geometry": True,
+        "sw_xi": 0.0,  # swirler inlet loss (Bazarov); 0 is the ideal theory
+        "ptc_stock": False,  # the swirler exit is a stock PTC, whose inj_D is the clean hole it flows like
+        "P_cmbr_max": 500.0,  # chamber design limit (absolute); the sweep, sizing and runs check against it
+        "P_cmbr_max_unit": "psi",
         "vnt_state": "Internal",
         "vnt_D": 0.028,
         "vnt_D_unit": "in",
@@ -171,6 +184,19 @@ def _mass(cfg: dict[str, Any], name: str, default: float = 0.0) -> float:
     return float(cfg[name]) * to_si(1.0, unit, "mass")
 
 
+def injector_cd(cfg: dict[str, Any]) -> float:
+    """The injector Cd: typed in, or worked out from a swirler's geometry."""
+    if cfg.get("inj_type") == "Swirler" and cfg.get("sw_cd_from_geometry", True):
+        return swirl_cd(_len(cfg, "inj_D"), int(cfg["sw_ports"]), _len(cfg, "sw_D_port"), _len(cfg, "sw_R_in"),
+                        float(cfg.get("sw_xi") or 0.0))
+    return float(cfg["inj_Cd"])
+
+
+def chamber_limit(cfg: dict[str, Any]) -> float:
+    """Chamber design pressure limit in Pa (absolute)."""
+    return float(cfg["P_cmbr_max"]) * to_si(1.0, cfg["P_cmbr_max_unit"], "pressure")
+
+
 def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
     """Hardware stations and dry masses used for CG, ENG/RSE length, and the schematic."""
     grn_OD = _len(cfg, "grn_OD")
@@ -188,16 +214,15 @@ def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
         noz_exit = nozzle_exit_diameter(noz_thrt, float(cfg.get("noz_ex") or 1.0))
     if tnk_L <= 1e-9 and tnk_D > 0 and tnk_V > 0:
         tnk_L = tnk_V / (0.25 * math.pi * tnk_D ** 2)
-    auto_cmbr = default_chamber_length(grn_OD, grn_L, noz_thrt, noz_exit)
-    tnk_start, cmbr_start, cmbr_L = infer_component_stations(
+    pre_L = _len(cfg, "cmbr_pre_L")
+    tnk_start, cmbr_start = infer_component_stations(
         tnk_start=_len(cfg, "tnk_start"),
         cmbr_start=_len(cfg, "cmbr_start"),
-        cmbr_L=_len(cfg, "cmbr_L"),
         tnk_L=tnk_L,
         grn_L=grn_L,
+        pre_L=pre_L,
         tnk_X=_len(cfg, "tnk_X"),
         cmbr_X=_len(cfg, "cmbr_X"),
-        auto_cmbr_L=auto_cmbr,
     )
     return motor_layout(
         tnk_start=tnk_start,
@@ -205,7 +230,8 @@ def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
         tnk_m=_mass(cfg, "tnk_m"),
         tnk_D=tnk_D,
         cmbr_start=cmbr_start,
-        cmbr_L=cmbr_L,
+        pre_L=pre_L,
+        post_L=_len(cfg, "cmbr_post_L"),
         cmbr_m=_mass(cfg, "cmbr_m"),
         grn_L=grn_L,
         grn_OD=grn_OD,
@@ -251,7 +277,8 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         tnk_V = cfg["tnk_V"] * to_si(1.0, cfg["tnk_V_unit"], "volume")
 
     if int(cfg.get("cmbr_V_state", 0)):
-        cmbr_V = grn_L * 0.25 * math.pi * grn_OD ** 2
+        case_L = _len(cfg, "cmbr_pre_L") + grn_L + _len(cfg, "cmbr_post_L")
+        cmbr_V = case_L * 0.25 * math.pi * grn_OD ** 2
     else:
         cmbr_V = cfg["cmbr_V"] * to_si(1.0, cfg["cmbr_V_unit"], "volume")
 
@@ -263,7 +290,8 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         noz_ER = float(cfg["noz_ex"])
 
     inj_D = cfg["inj_D"] * to_si(1.0, cfg["inj_D_unit"], "length")
-    inj_CdA = 0.25 * math.pi * inj_D ** 2 * float(cfg["inj_Cd"])
+    inj_Cd = injector_cd(cfg)
+    inj_CdA = 0.25 * math.pi * inj_D ** 2 * inj_Cd
     vnt_S = int(VENT_MAP.get(cfg.get("vnt_state", "None"), 0))
     vnt_D = cfg["vnt_D"] * to_si(1.0, cfg["vnt_D_unit"], "length")
     vnt_CdA = 0.25 * math.pi * vnt_D ** 2 * float(cfg.get("vnt_Cd") or 0.0)
@@ -327,9 +355,10 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     # Tank temperature
     if cfg.get("tnk_dd") == "Starting Tank Pressure":
         P_targ = cfg["tnk_cond"] * to_si(1.0, cfg["T_tnk_unit"], "pressure")
+        from scipy.optimize import brentq
+
         from hrap.engine.fzero import matlab_fzero
         from hrap.engine.nox import vapor_pressure
-        from scipy.optimize import brentq
 
         def residual(T: float) -> float:
             if get_sat_props is not None:
@@ -388,7 +417,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
         s.inj_model = str(cfg["inj_model"])
-        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or cfg["inj_Cd"])
+        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or inj_Cd)
         s.dyer_kappa = float(cfg.get("dyer_kappa") or 1.0)
         s.hem_flux = hem_flux_table(cp_fluid)
     return s, x

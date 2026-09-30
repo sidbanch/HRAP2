@@ -14,10 +14,15 @@ def app():
 
 
 @pytest.fixture
-def window(app):
+def window(app, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QMessageBox
+
     from hrap.gui.main import MainWindow
 
-    win = MainWindow()
+    # Closing a tab with unsaved edits asks first; don't let the question block the tests.
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Discard)
+    win = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
     win.tmax.setValue(.02)
     win.show()
     yield win
@@ -52,13 +57,50 @@ def test_close_waits_for_worker(window):
     assert window._worker is None
 
 
+def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
+    import pickle
+
+    from PySide6.QtCore import QSettings
+
+    from hrap.gui.main import MainWindow
+    from hrap.gui.study import StudyRun
+    from hrap.io.config import default_cfg, load_json, save_json
+
+    first = window._shown
+    first.path = str(tmp_path / "first.json")
+    save_json(first.path, first.saved)
+    window.mfg.setText("Edited first motor")
+    window._add_motor(default_cfg(), title="Second motor")
+    window.mfg.setText("Edited second motor")
+    window.tabs.setCurrentIndex(2)
+    window.study_page.load_runs(pickle.dumps([StudyRun(default_cfg(), [("grain_L", [0.3])], ["Shifting OF"],
+                                                                      name="Named run")]))
+    window.study_page.runs_changed.emit()
+    assert window.close()  # no prompt: the session keeps the edits
+    assert load_json(first.path)["mfg"] != "Edited first motor"  # the file itself isn't touched
+
+    again = MainWindow(QSettings(window._prefs.fileName(), QSettings.Format.IniFormat))
+    try:
+        motors = again._motors()
+        assert [m.title for m in motors] == [first.title, "Second motor"]
+        assert [m.cfg["mfg"] for m in motors] == ["Edited first motor", "Edited second motor"]
+        assert all(again._edited(m) for m in motors)
+        assert motors[0].path == first.path and motors[1].path == ""
+        assert again.tabs.currentIndex() == 2
+        assert [r.name for r in again.study_page.runs] == ["Named run"]
+    finally:
+        again._session_timer.stop()
+        again.deleteLater()
+
+
 def test_editing_inputs_invalidates_completed_results(window):
     window._run()
     wait_for_run(window)
     assert window._output is not None
     assert window._form.isEnabled()
     assert window._result_cfg["mtr_nm"] == window._settings.mtr_nm
-    window.grn_L.spin.setValue(window.grn_L.spin.value() + 1)
+    grain_L = window.sizing_page.grain_L.spin
+    grain_L.setValue(grain_L.value() + 1)
     assert window._output is None
     assert window._result_cfg is None
     assert not window.summary.toPlainText()
@@ -96,6 +138,7 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
     import numpy as np
     from PySide6.QtCore import QPointF, QSettings, Qt
     from PySide6.QtWidgets import QApplication
+
     from hrap.units import DisplayUnits
 
     window._prefs = QSettings(str(tmp_path / "units.ini"), QSettings.Format.IniFormat)
@@ -139,7 +182,7 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
     QApplication.processEvents()
     assert window.plot.currentWidget() is window._plot_widgets["pressure"]
     np.testing.assert_allclose(window._plots["pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
-    window.trace_list.item(3).setCheckState(Qt.CheckState.Checked)
+    window.trace_list.findItems("O/F", Qt.MatchFlag.MatchExactly)[0].setCheckState(Qt.CheckState.Checked)
     np.testing.assert_allclose(window._plots["ratio"].vb.viewRange()[0], [.002, .008], atol=1e-6)
     for i in range(window.trace_list.count()):
         window.trace_list.item(i).setCheckState(Qt.CheckState.Unchecked)
@@ -153,3 +196,75 @@ def test_small_metric_ruler_ticks_are_distinct():
 
     assert _tick_label(.05, .05) == "0.05"
     assert _tick_label(.10, .05) == "0.10"
+
+
+def wait_for_study(window):
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    deadline = time.monotonic() + 15
+    while window.study_page.busy() and time.monotonic() < deadline:
+        QApplication.processEvents()
+        QTest.qWait(10)
+    assert not window.study_page.busy()
+
+
+def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from hrap.engine.study import case_cfg
+    from hrap.io.config import resolve
+    from hrap.units import DisplayUnits
+
+    page = window.study_page
+    page.axes[0].set_axis("grain_L", [.25, .3])
+    page.axes[1].set_axis("")
+    page.models.setCurrentIndex(1)
+    page._run()
+    assert not window.motor_tabs.isEnabled()
+    wait_for_study(window)
+    result = page.result
+    assert len(result.cases) == 4
+    assert not result.error
+    assert page.table.rowCount() == 2 and page.table.columnCount() == 2
+    page.table.item(0, 0).setSelected(True)
+    page.table.item(1, 0).setSelected(True)
+    assert len(page.plot.listDataItems()) == 2
+    window._set_display_units(DisplayUnits(length="mm", pressure="bar"))
+    assert "250 mm" in page.table.horizontalHeaderItem(0).text()
+    assert len(page.plot.listDataItems()) == 2
+    path = str(tmp_path / "study.json")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (path, ""))
+    page._save()
+    saved = json.loads((tmp_path / "study.json").read_text())
+    assert saved["motor"] == result.cfg
+    page.table.clearSelection()
+    page.table.item(0, 0).setSelected(True)
+    selected = page._selected()[0]
+    expected, _ = resolve(case_cfg(result.cfg, selected.values, selected.model))
+    page._open()
+    actual, _ = resolve(window._form_to_cfg())
+    assert actual.grn_L == pytest.approx(expected.grn_L)
+    assert actual.regression_model == expected.regression_model
+    assert page.result is result
+    assert window._edited(window._shown)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (path, ""))
+    page._load()
+    assert page._base_override == result.cfg
+    assert page.axes[0].read()[1] == pytest.approx([.25, .3])
+    page.axes[0].unit.setCurrentText("mm")
+    assert page.axes[0].read()[1] == pytest.approx([.25, .3])
+
+
+def test_close_waits_for_study_and_stops_queue(window):
+    page = window.study_page
+    page.axes[0].set_axis("grain_L", [.2 + i * .01 for i in range(30)])
+    page.axes[1].set_axis("")
+    page._run()
+    assert not window.close()
+    wait_for_study(window)
+    assert not window.isVisible()
+    assert page.result.stopped
+    assert len(page.result.cases) <= 8

@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.layout import INJECTOR_L, PLATE_L, motor_layout
-from hrap.units import DisplayUnits, LENGTH
+from hrap.layout import motor_layout
+from hrap.units import LENGTH, DisplayUnits
 
 SPEC_GAP = 6.0
 SPEC_MIN_W = 56.0
@@ -87,7 +87,8 @@ class MotorView:
     time_s: float | None = None
     tnk_start: float = 0.0
     cmbr_start: float | None = None
-    cmbr_L: float = 0.0
+    pre_L: float = 0.0
+    post_L: float = 0.0
     tnk_dry_kg: float = 0.0
     cmbr_dry_kg: float = 0.0
 
@@ -148,7 +149,8 @@ def _geom(m: MotorView) -> _Geom:
         tnk_m=float(m.tnk_dry_kg),
         tnk_D=float(m.tnk_D),
         cmbr_start=m.cmbr_start,
-        cmbr_L=float(m.cmbr_L),
+        pre_L=float(m.pre_L),
+        post_L=float(m.post_L),
         cmbr_m=float(m.cmbr_dry_kg),
         grn_L=grn_L,
         grn_OD=float(m.grn_OD),
@@ -294,9 +296,9 @@ class MotorVizWidget(QWidget):
             noz_exit=0.04,
             fill_frac=0.95,
         )
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(300)  # below this the spec blocks leave no room for the drawing
         self.setMaximumHeight(480)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_framed(self, framed: bool) -> None:
         self._framed = framed
@@ -387,15 +389,11 @@ class MotorVizWidget(QWidget):
             p.drawRect(feed)
 
         if g.x_case > g.x_plate1 + 1e-9:
+            # Pre- and post-combustion chambers: open gas space, the full case bore.
             case = box(g.x_plate1, g.x_case, g.grn_R)
-            p.setBrush(_c(colors, "plate"))
+            p.setBrush(_c(colors, "port"))
             p.setPen(outline)
             p.drawRect(case)
-            if g.port_R > 0:
-                case_port = box(g.x_plate1, g.x_case, g.port_R)
-                p.setBrush(_c(colors, "port"))
-                p.setPen(QPen(_c(colors, "outline"), 0.8))
-                p.drawRect(case_port)
 
         grain = box(g.x_grn0, g.x_grn1, g.grn_R)
         p.setBrush(_c(colors, "grain"))

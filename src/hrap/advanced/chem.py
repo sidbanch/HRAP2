@@ -231,7 +231,6 @@ class ChemSolver:
                             i += 11
                             T_max = float(line[i : i + 11].strip(" "))
                             i += 11
-                            ncoffs = int(line[i : i + 1].strip(" ") or "0")
                             i += 1
                             i += 8 * 5
                             coeffs = np.zeros(9)

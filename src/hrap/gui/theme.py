@@ -4,7 +4,6 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
-
 DARK = {
     "window": "#16181d",
     "base": "#1e222a",
@@ -134,6 +133,37 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border-top: 1px solid {colors['border']};
         }}
         QSplitter::handle {{ background: {colors['border']}; }}
+        QFrame#sizingCard {{
+            background: {colors['base']};
+            border: 1px solid {colors['border']};
+            border-radius: 6px;
+        }}
+        QFrame#applyBar {{
+            background: {colors['base']};
+            border-top: 1px solid {colors['border']};
+        }}
+        QFrame#cardDivider {{ color: {colors['border']}; }}
+        QLabel#cardTitle {{ font-weight: 700; font-size: 14px; }}
+        QLabel#cardLabel {{ color: {colors['disabled']}; }}
+        QLabel#cardValue {{ font-weight: 600; }}
+        QLabel#notApplied {{ color: #e5c07b; }}
+        QLabel#sizingError {{
+            color: #e06c75;
+            padding: 8px 12px;
+            border: 1px solid #e06c75;
+            border-radius: 6px;
+        }}
+        QTabWidget#pageTabs::pane {{ border: none; }}
+        QTabWidget#pageTabs > QTabBar::tab {{
+            padding: 8px 22px;
+            font-weight: 600;
+            color: {colors['disabled']};
+            background: transparent;
+            border: none;
+            border-top: 2px solid transparent;
+        }}
+        QTabWidget#pageTabs > QTabBar::tab:selected {{ color: {colors['text']}; border-top: 2px solid {accent}; }}
+        QTabWidget#pageTabs > QTabBar::tab:hover {{ color: {colors['text']}; }}
         QStatusBar {{ background: {colors['alt']}; }}
         QProgressBar {{
             background: {colors['base']};
