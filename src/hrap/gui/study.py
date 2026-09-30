@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -184,6 +185,15 @@ class StudyRun:
     cases: list[Case] = field(default_factory=list)
     error: str = ""
     stopped: bool = False
+    name: str = ""
+
+    def key(self) -> str:
+        """Identifies what was run: the motor, the input values and the fuel models."""
+        return json.dumps([self.cfg, self.axes, self.models], sort_keys=True, default=str)
+
+    @property
+    def complete(self) -> bool:
+        return len(self.cases) == self.total and not self.error and not self.stopped
 
     @property
     def total(self):
@@ -297,7 +307,9 @@ class StudyPage(QWidget):
         runs, runs_l = card_frame("Runs")
         self.history = QListWidget()
         self.history.setMinimumHeight(90)
+        self.history.setToolTip("Double-click a run to rename it.")
         self.history.currentRowChanged.connect(self._show_run)
+        self.history.itemChanged.connect(self._renamed)
         runs_l.addWidget(self.history, 1)
         files = QHBoxLayout()
         self.load_btn = QPushButton("Load…")
@@ -366,7 +378,7 @@ class StudyPage(QWidget):
         self.table.hide()
         legend = QHBoxLayout()
         legend.setSpacing(16)
-        for color, text in ((OK, "Within limits"), (WARN, "Warning (hover for why)"), (BAD, "Over the pressure limit or burned out")):
+        for color, text in ((OK, "Within limits"), (WARN, "Warning (click a cell for why)"), (BAD, "Over the pressure limit or burned out")):
             legend.addWidget(_chip(color, text))
         legend.addStretch(1)
         self.legend = QWidget()
@@ -394,6 +406,11 @@ class StudyPage(QWidget):
         line.addWidget(self.trace)
         line.addWidget(self.open_btn)
         compare_l.addLayout(line)
+        self.warnings = QLabel("")
+        self.warnings.setWordWrap(True)
+        self.warnings.setStyleSheet(f"color: {WARN.lighter(150).name()}; font-weight: 600;")
+        self.warnings.hide()
+        compare_l.addWidget(self.warnings)
         self.details = _small("Click cells to plot them; ⌘/Ctrl-click to add more. Double-click opens a case as a motor.")
         self.details.setWordWrap(True)
         compare_l.addWidget(self.details)
@@ -469,6 +486,11 @@ class StudyPage(QWidget):
             if "a_scale" in keys and models != ["Shifting OF"]:
                 raise ValueError("Choose Burn-rate law to vary a; fixed O/F ignores that setting.")
             result = StudyRun(cfg, axes, models)
+            same = next((i for i, run in enumerate(self.runs) if run.complete and run.key() == result.key()), None)
+            if same is not None:
+                self.history.setCurrentRow(same)
+                self.status.setText(f"Same inputs as “{self.runs[same].name}”, so it's shown instead of running again.")
+                return
             if result.total > 500:
                 raise ValueError(f"That is {result.total} simulations. Narrow the ranges to at most 500.")
             for values in grid(axes):
@@ -476,8 +498,12 @@ class StudyPage(QWidget):
         except Exception as exc:
             self.status.setText(str(exc))
             return
+        result.name = f"{cfg.get('mtr_nm') or 'Motor'} · " + " × ".join(INPUTS[k].label for k, _ in axes)
         self.runs.append(result)
-        self.history.addItem(f"{len(self.runs)}. {cfg.get('mtr_nm') or 'Motor'} · {result.total} cases")
+        item = QListWidgetItem(result.name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setToolTip(f"{result.total} simulations. Double-click to rename.")
+        self.history.addItem(item)
         self.history.setCurrentRow(len(self.runs) - 1)
         self.result = result
         self.progress.setRange(0, result.total)
@@ -517,6 +543,15 @@ class StudyPage(QWidget):
         self.progress.hide()
         self.refresh()
         self.finished.emit()
+
+    def _renamed(self, item):
+        row = self.history.row(item)
+        name = item.text().strip()
+        if 0 <= row < len(self.runs):
+            if name:
+                self.runs[row].name = name
+            else:
+                item.setText(self.runs[row].name)
 
     def _show_run(self, index):
         if 0 <= index < len(self.runs):
@@ -634,11 +669,36 @@ class StudyPage(QWidget):
             self.plot.plot(c.traces["t"], values, name=" / ".join(self._value_text(k, v) for k, v in c.values) + " · " + MODELS[c.model], pen=pg.mkPen(pg.intColor(i, hues=8), width=2))
         if len(cases) == 1:
             c = cases[0]
+            why = self._why(c)
+            self.warnings.setText("\n".join(f"⚠ {w}" for w in why))
+            self.warnings.setVisible(bool(why))
             self.details.setText(f"{self._label(c)}\nPeak Pc {u.text(c.peak_P_cmbr, 'pressure')} · "
                                  f"O/F {c.OF_liquid:.3g} · impulse {u.text(c.total_impulse, 'impulse')} · "
-                                 f"end: {c.end_cond}. " + "; ".join(self._flags(c)))
+                                 f"end: {c.end_cond}")
         else:
+            self.warnings.hide()
             self.details.setText(f"{len(cases)} selected; overlay shows up to 8. Ctrl/⌘-click cells to compare them.")
+
+    def _why(self, case) -> list[str]:
+        """Each warning on a case, with the numbers behind it."""
+        u, r = self._get_units(), self.result
+        pc, limit, low = case.peak_P_cmbr, chamber_limit(r.cfg), self.min_pressure.si("pressure")
+        why = []
+        if pc > limit:
+            why.append(f"Peak chamber pressure {u.text(pc, 'pressure')} is over the {u.text(limit, 'pressure')} limit.")
+        if pc < low:
+            why.append(f"Peak chamber pressure {u.text(pc, 'pressure')} is under the {u.text(low, 'pressure')} minimum.")
+        if case.burnout:
+            why.append("The grain burned through to its outside diameter before the tank emptied.")
+        if case.outside_table:
+            why.append("The O/F left HRAP's combustion table (O/F 1 to 10), so thrust and pressure read high there.")
+        if case.end_cond == "Max Simulation Time Reached":
+            why.append("The run hit the maximum run time before the burn finished.")
+        if uses_spi(r.cfg) and case.avg_inj_dP > self.max_dp.si("pressure"):
+            why.append(f"Average injector ΔP {u.text(case.avg_inj_dP, 'pressure')} is over the "
+                       f"{u.text(self.max_dp.si('pressure'), 'pressure')} warning, where the SPI injector model "
+                       "overpredicts nitrous flow.")
+        return why
 
     def _open(self):
         selected = self._selected()
@@ -653,11 +713,12 @@ class StudyPage(QWidget):
     def _save(self):
         if self.result is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save reproducible study", "study.json", "Study JSON (*.json)")
+        r = self.result
+        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "study"
+        path, _ = QFileDialog.getSaveFileName(self, "Save reproducible study", f"{default}.json", "Study JSON (*.json)")
         if path:
             try:
-                r = self.result
-                Path(path).write_text(json.dumps({"motor": r.cfg, "axes": r.axes, "models": r.models,
+                Path(path).write_text(json.dumps({"name": r.name, "motor": r.cfg, "axes": r.axes, "models": r.models,
                                                  "min_pressure": self.min_pressure.si("pressure"),
                                                  "max_dp": self.max_dp.si("pressure")}, indent=2) + "\n")
             except OSError as exc:
