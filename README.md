@@ -4,13 +4,24 @@ HRAP2 simulates a nitrous hybrid motor's burn: tank, injector, fuel grain, chamb
 
 Matching MATLAB checks the code, not the physics. Only a hot fire or cold flow says how close a result is to a real motor.
 
-## Run the app
+## Install
 
-- **Windows:** download the zip from [Releases](https://github.com/sidbanch/HRAP2/releases), unzip it and run `HRAP.exe`. From a source checkout, double-click `run_hrap.bat`.
-- **macOS:** double-click `run_hrap.command`. It sets up `.venv` and installs what's missing. The first run needs Python 3.10+ or `uv`.
-- **Anything else:** in a Python 3.10+ virtual environment, `python -m pip install -e .`, then `hrap`.
+HRAP installs as an app and updates itself from this repo's `main` branch. It needs no admin rights, and sets up its own Python.
 
-Motor files are JSON, and hold the Motor tab's Sizing settings and targets too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run, and the open motors come back the next time the app starts. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
+- **macOS:** download and double-click [`packaging/install_mac.command`](packaging/install_mac.command), or run
+  `curl -fsSL https://raw.githubusercontent.com/sidbanch/HRAP2/main/packaging/install_mac.command | bash`.
+  HRAP.app goes in your Applications folder.
+- **Windows:** right-click [`packaging/install_windows.ps1`](packaging/install_windows.ps1) → Run with PowerShell, or run
+  `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/sidbanch/HRAP2/main/packaging/install_windows.ps1 | iex"`.
+  Shortcuts go on the Desktop and in the Start menu.
+
+A few seconds after it opens, the app checks for a newer version; **Update available** in the status bar installs it, then restarts. **Settings → Check for updates…** checks now, and **Settings → Update branch…** follows another branch (for testing unmerged work). Running the installer again repairs an install.
+
+Quitting keeps everything: open motors, their unsaved edits, the page you were on, the window size and the Study tab's runs come back next time, including after a crash or an update restart.
+
+**From a source checkout** (for working on HRAP): `run_hrap.command` (macOS) or `run_hrap.bat` (Windows) sets up `.venv` and runs the checkout. These copies don't update themselves; use git.
+
+Motor files are JSON, and hold the Motor tab's Sizing settings and targets too. MATLAB `.mat` motor files open too. Each open motor gets a tab at the top; **Open…** adds one, and **Save** writes the motor back to its file (**File → Save As…** for a new file). Switching tabs keeps each motor's unsaved edits (marked •) and its last run. ⌘} / ⌘{ (Ctrl+Tab on Windows) steps through them. **Settings → Units** picks display units (psi, in, …); it doesn't change the calculation. Pressures are absolute, except injector ΔP.
 
 ## Motor tab
 

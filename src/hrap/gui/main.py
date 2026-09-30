@@ -1,10 +1,12 @@
 """HRAP desktop application — PySide6 + pyqtgraph."""
 from __future__ import annotations
 
+import json
 import math
 import multiprocessing
 import os
 import sys
+import threading
 import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import cast
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSettings, QStandardPaths, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -44,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap import APP_NAME, __version__
+from hrap import APP_NAME, __version__, update
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sim import run
 from hrap.engine.summary import format_summary, summarize
@@ -150,6 +153,31 @@ def _same_cfg(a, b) -> bool:
     return a == b
 
 
+class _Updater(QObject):
+    """Checks GitHub and installs updates off the UI thread."""
+    found = Signal(object, bool)   # the newer commit (or None), quiet
+    installed = Signal()
+    failed = Signal(str, bool)     # message, quiet
+
+    def check(self, repo: str, branch: str, current: str, quiet: bool):
+        def work():
+            try:
+                commit = update.latest(repo, branch)
+                self.found.emit(commit if commit.sha != current else None, quiet)
+            except Exception as exc:
+                self.failed.emit(str(exc), quiet)
+        threading.Thread(target=work, daemon=True).start()
+
+    def install(self, root: Path, commit: update.Commit):
+        def work():
+            try:
+                update.update(root, commit)
+                self.installed.emit()
+            except Exception as exc:
+                self.failed.emit(str(getattr(exc, "stderr", "") or exc).strip()[-500:], False)
+        threading.Thread(target=work, daemon=True).start()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, prefs: QSettings | None = None):
         super().__init__()
@@ -166,6 +194,11 @@ class MainWindow(QMainWindow):
         self._result_cfg = None
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
+        # The session (open motors, unsaved edits, study runs) is kept beside the settings a test passes in,
+        # or in the app's data folder, so it survives quitting, crashes and update restarts.
+        self._session_dir = (Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+                             if prefs is None else Path(prefs.fileName()).with_suffix(".session"))
+        self._session_text = ""
         defaults = asdict(DisplayUnits())
         saved = {key: str(self._prefs.value(f"displayUnits/{key}", default))
                  for key, default in defaults.items()}
@@ -189,6 +222,12 @@ class MainWindow(QMainWindow):
             edit.textChanged.connect(self._update_tab_marker)
         self.sizing_page.sized.connect(self._update_tab_marker)
         self._restore_session()
+        self._session_timer = QTimer(self)
+        self._session_timer.timeout.connect(self._save_session)
+        self._session_timer.start(2000)
+        self.study_page.runs_changed.connect(self._save_study_runs)
+        if update.install_root() is not None:
+            QTimer.singleShot(3000, lambda: self._check_updates(quiet=True))
 
     def _build(self):
         file_menu = self._file_menu = self.menuBar().addMenu("&File")
@@ -220,6 +259,9 @@ class MainWindow(QMainWindow):
 
         settings_menu = self.menuBar().addMenu("&Settings")
         settings_menu.addAction("Units…", self._choose_display_units)
+        settings_menu.addSeparator()
+        settings_menu.addAction("Check for updates…", lambda: self._check_updates(quiet=False))
+        settings_menu.addAction("Update branch…", self._choose_update_branch)
 
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(f"About {APP_NAME}", self._about)
@@ -297,6 +339,15 @@ class MainWindow(QMainWindow):
         root.addWidget(self._progress)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
+        self._update_btn = QPushButton("")
+        self._update_btn.hide()
+        self._update_btn.clicked.connect(self._update_clicked)
+        self.statusBar().addPermanentWidget(self._update_btn)
+        self._updater = _Updater()
+        self._updater.found.connect(self._update_found)
+        self._updater.installed.connect(self._update_installed)
+        self._updater.failed.connect(self._update_failed)
+        self._pending = None  # the commit an update would install
         self.statusBar().showMessage("Ready")
 
     def _make_form(self) -> QWidget:
@@ -935,21 +986,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Closing when the current simulation finishes…")
             event.ignore()
             return
-        self._stash()
-        motors = self._motors()
-        unsaved = [m for m in motors if self._edited(m)]
-        if unsaved:
-            answer = QMessageBox.question(
-                self, APP_NAME, f"Save changes to {', '.join(m.title for m in unsaved)} before quitting?",
-                QMessageBox.StandardButton.SaveAll | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.SaveAll,
-            )
-            if answer != QMessageBox.StandardButton.Discard:
-                if answer != QMessageBox.StandardButton.SaveAll or not all(self._save_motor(m) for m in unsaved):
-                    event.ignore()
-                    return
-        self._prefs.setValue("openMotors", [m.path for m in motors if m.path])
-        self._prefs.setValue("currentMotor", self._shown.path if self._shown else "")
+        self._save_session()
         event.accept()
 
     def _on_progress(self, i: int, n: int):
@@ -1249,20 +1286,135 @@ class MainWindow(QMainWindow):
     def _new(self):
         self._add_motor(default_cfg(), title="Untitled")
 
+    def _check_updates(self, quiet: bool):
+        root = update.install_root()
+        if root is None:
+            if not quiet:
+                QMessageBox.information(self, "Updates", "This copy runs from a source checkout, so it doesn't update "
+                                        "itself. Update it with git pull.")
+            return
+        info = update.read_info(root)
+        self._updater.check(info["repo"], info["branch"], info["sha"], quiet)
+
+    def _choose_update_branch(self):
+        root = update.install_root()
+        if root is None:
+            self._check_updates(quiet=False)
+            return
+        info = update.read_info(root)
+        branch, ok = QInputDialog.getText(self, "Update branch", "Follow this GitHub branch (main is the reviewed one):",
+                                          text=info["branch"])
+        if ok and branch.strip() and branch.strip() != info["branch"]:
+            info["branch"] = branch.strip()
+            update.write_info(root, info)
+            self._check_updates(quiet=False)
+
+    def _update_found(self, commit, quiet: bool):
+        if commit is None:
+            if not quiet:
+                QMessageBox.information(self, "Updates", "HRAP is up to date.")
+            return
+        self._pending = commit
+        self._update_btn.setText("Update available")
+        self._update_btn.setToolTip(f"{commit.message}\n{commit.date[:10]} · {commit.sha[:7]}")
+        self._update_btn.setEnabled(True)
+        self._update_btn.show()
+        if not quiet:
+            self._update_clicked()
+
+    def _update_clicked(self):
+        if self._pending == "restart":
+            self._restart()
+            return
+        if self._pending is None:
+            return
+        self._update_btn.setText("Updating…")
+        self._update_btn.setEnabled(False)
+        self._updater.install(update.install_root(), self._pending)
+
+    def _update_installed(self):
+        self._pending = "restart"
+        self._update_btn.setText("Restart to finish updating")
+        self._update_btn.setEnabled(True)
+
+    def _update_failed(self, message: str, quiet: bool):
+        if self._pending is not None and self._pending != "restart":
+            self._update_btn.setText("Update failed, try again")
+            self._update_btn.setToolTip(message)
+            self._update_btn.setEnabled(True)
+        elif not quiet:
+            QMessageBox.warning(self, "Updates", f"Couldn't check for updates:\n{message}")
+
+    def _restart(self):
+        """Start the updated app, then quit this one; the session brings everything back."""
+        info = update.read_info(update.install_root())
+        if sys.platform == "darwin" and info.get("app"):
+            QProcess.startDetached("open", ["-n", info["app"]])
+        else:
+            exe = Path(sys.executable)
+            pythonw = exe.with_name("pythonw.exe")
+            QProcess.startDetached(str(pythonw if pythonw.exists() else exe), ["-m", "hrap"])
+        self.close()
+
+    def _save_session(self):
+        """Write the open motors (with unsaved edits), the page and the window size, if they changed."""
+        if self._shown is None:
+            return
+        self._stash()
+        motors = [{"path": m.path, "title": m.title, "cfg": m.cfg if self._edited(m) or not m.path else None}
+                  for m in self._motors()]
+        text = json.dumps({"motors": motors, "current": self.motor_tabs.currentIndex(), "page": self.tabs.currentIndex(),
+                           "geometry": bytes(self.saveGeometry().toBase64()).decode()}, default=str)
+        if text != self._session_text:
+            self._write_session_file("session.json", text.encode())
+            self._session_text = text
+
+    def _save_study_runs(self):
+        self._write_session_file("study_runs.pickle", self.study_page.dump_runs())
+
+    def _write_session_file(self, name: str, data: bytes):
+        try:
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._session_dir / f"{name}.tmp"
+            tmp.write_bytes(data)
+            tmp.replace(self._session_dir / name)
+        except OSError:
+            pass  # a read-only or full disk only costs the restore
+
     def _restore_session(self):
-        """Reopen the motors that were open last time, or the example motor on a first start."""
-        for path in self._prefs.value("openMotors", [], list):
+        """Reopen last session's motors, unsaved edits, page, window size and study runs.
+
+        A motor whose file was moved or deleted comes back only if it had unsaved edits (as unsaved).
+        """
+        try:
+            data = json.loads((self._session_dir / "session.json").read_text())
+        except (OSError, ValueError):
+            data = {}
+        for m in data.get("motors", []):
+            path, cfg = m.get("path") or "", m.get("cfg")
             try:
-                self._open_path(path, show=False)
-            except (OSError, ValueError):  # moved, deleted or not a motor file any more
+                saved = load_json(path) if path else None
+            except (OSError, ValueError):
+                saved, path = None, ""
+            if cfg is None and saved is None:
                 continue
+            self._add_motor(cfg or saved, path, m.get("title") or Path(path).stem or "Untitled", show=False)
+            # A motor with no file that was edited stays marked; one with a file compares against it.
+            self._motors()[-1].saved = saved if saved is not None else ({} if cfg else None)
         if self.motor_tabs.count() == 0:
             self._open_bundled("example_98mm") if _has_bundled("example_98mm") else self._new()
-            return
-        current = self._prefs.value("currentMotor", "")
-        i = next((i for i, motor in enumerate(self._motors()) if motor.path == current), 0)
-        self.motor_tabs.setCurrentIndex(i)
-        self._on_motor_tab(i)
+        else:
+            i = min(int(data.get("current", 0)), self.motor_tabs.count() - 1)
+            self.motor_tabs.setCurrentIndex(i)
+            self._on_motor_tab(i)
+        if 0 <= int(data.get("page", -1)) < self.tabs.count():
+            self.tabs.setCurrentIndex(int(data["page"]))
+        if data.get("geometry"):
+            self.restoreGeometry(QByteArray.fromBase64(data["geometry"].encode()))
+        try:
+            self.study_page.load_runs((self._session_dir / "study_runs.pickle").read_bytes())
+        except Exception:  # missing, or saved by a version whose classes changed
+            pass
 
     def _export(self, kind: str):
         if self._output is None or self._settings is None:
@@ -1388,6 +1540,7 @@ def main():
     _prepare_qt_environment()
     try:
         app = QApplication(sys.argv)
+        app.setOrganizationName("HCAT")
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion(__version__)
         app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icon.ico")))

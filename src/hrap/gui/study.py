@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
@@ -223,6 +224,7 @@ class StudyWorker(QObject):
 class StudyPage(QWidget):
     started = Signal()
     finished = Signal()
+    runs_changed = Signal()
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open,
                  get_unapplied: Callable[[], list[str]] = lambda: []):
@@ -516,10 +518,7 @@ class StudyPage(QWidget):
             return
         result.name = f"{cfg.get('mtr_nm') or 'Motor'} · " + " × ".join(INPUTS[k].label for k, _ in axes)
         self.runs.append(result)
-        item = QListWidgetItem(result.name)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        item.setToolTip(f"{result.name}\n{result.total} runs. Double-click to rename.")
-        self.history.addItem(item)
+        self.history.addItem(self._history_item(result))
         self.history.setCurrentRow(len(self.runs) - 1)
         self.result = result
         self.progress.setRange(0, result.total)
@@ -559,6 +558,7 @@ class StudyPage(QWidget):
         self.progress.hide()
         self.refresh()
         self.finished.emit()
+        self.runs_changed.emit()
 
     def _renamed(self, item):
         row = self.history.row(item)
@@ -566,8 +566,33 @@ class StudyPage(QWidget):
         if 0 <= row < len(self.runs):
             if name:
                 self.runs[row].name = name
+                self.runs_changed.emit()
             else:
                 item.setText(self.runs[row].name)
+
+    def dump_runs(self) -> bytes:
+        """The finished runs, for the session."""
+        return pickle.dumps([r for r in self.runs if r is not self.result or not self.busy()])
+
+    def load_runs(self, data: bytes):
+        """Bring back a session's runs, showing the last one."""
+        runs = pickle.loads(data)
+        if not all(isinstance(r, StudyRun) for r in runs):
+            return
+        self.runs = runs
+        self.history.blockSignals(True)
+        self.history.clear()
+        for run in runs:
+            self.history.addItem(self._history_item(run))
+        self.history.blockSignals(False)
+        if runs:
+            self.history.setCurrentRow(len(runs) - 1)
+
+    def _history_item(self, run: StudyRun) -> QListWidgetItem:
+        item = QListWidgetItem(run.name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setToolTip(f"{run.name}\n{run.total} runs. Double-click to rename.")
+        return item
 
     def _show_run(self, index):
         if 0 <= index < len(self.runs):

@@ -20,7 +20,7 @@ def window(app, tmp_path, monkeypatch):
 
     from hrap.gui.main import MainWindow
 
-    # Closing asks about unsaved motors; don't let the question block the tests.
+    # Closing a tab with unsaved edits asks first; don't let the question block the tests.
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Discard)
     win = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
     win.tmax.setValue(.02)
@@ -57,58 +57,40 @@ def test_close_waits_for_worker(window):
     assert window._worker is None
 
 
-@pytest.mark.parametrize("outcome", ["save", "cancel", "discard", "cancel_path", "write_error"])
-def test_quit_with_unsaved_motors(window, tmp_path, monkeypatch, outcome):
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
+    import pickle
 
+    from PySide6.QtCore import QSettings
+
+    from hrap.gui.main import MainWindow
+    from hrap.gui.study import StudyRun
     from hrap.io.config import default_cfg, load_json, save_json
 
     first = window._shown
     first.path = str(tmp_path / "first.json")
     save_json(first.path, first.saved)
-    original = load_json(first.path)
     window.mfg.setText("Edited first motor")
     window._add_motor(default_cfg(), title="Second motor")
-    second = window._shown
     window.mfg.setText("Edited second motor")
-    second_path = tmp_path / "second.json"
-    errors = []
+    window.tabs.setCurrentIndex(2)
+    window.study_page.load_runs(pickle.dumps([StudyRun(default_cfg(), [("grain_L", [0.3])], ["Shifting OF"],
+                                                                      name="Named run")]))
+    window.study_page.runs_changed.emit()
+    assert window.close()  # no prompt: the session keeps the edits
+    assert load_json(first.path)["mfg"] != "Edited first motor"  # the file itself isn't touched
 
-    def answer(parent, title, text, buttons, default):
-        assert buttons & QMessageBox.StandardButton.SaveAll
-        assert default == QMessageBox.StandardButton.SaveAll
-        return {
-            "cancel": QMessageBox.StandardButton.Cancel,
-            "discard": QMessageBox.StandardButton.Discard,
-        }.get(outcome, QMessageBox.StandardButton.SaveAll)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(QMessageBox, "question", answer)
-        patch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[-1]))
-        patch.setattr(QFileDialog, "getSaveFileName", lambda *args: (
-            "" if outcome == "cancel_path" else str(second_path), "",
-        ))
-
-        def write(path, cfg):
-            if outcome == "write_error" and path == str(second_path):
-                raise PermissionError("Permission denied")
-            save_json(path, cfg)
-
-        patch.setattr("hrap.gui.main.save_json", write)
-        assert window.close() == (outcome in ("save", "discard"))
-
-    assert load_json(first.path)["mfg"] == (
-        original["mfg"] if outcome in ("cancel", "discard") else "Edited first motor"
-    )
-    if outcome == "save":
-        assert load_json(second_path)["mfg"] == "Edited second motor"
-        assert not any(window._edited(m) for m in window._motors())
-        assert window._prefs.value("openMotors") == [first.path, str(second_path)]
-    else:
-        assert not second_path.exists()
-        assert second.path == ""
-        assert window._edited(second)
-    assert bool(errors) == (outcome == "write_error")
+    again = MainWindow(QSettings(window._prefs.fileName(), QSettings.Format.IniFormat))
+    try:
+        motors = again._motors()
+        assert [m.title for m in motors] == [first.title, "Second motor"]
+        assert [m.cfg["mfg"] for m in motors] == ["Edited first motor", "Edited second motor"]
+        assert all(again._edited(m) for m in motors)
+        assert motors[0].path == first.path and motors[1].path == ""
+        assert again.tabs.currentIndex() == 2
+        assert [r.name for r in again.study_page.runs] == ["Named run"]
+    finally:
+        again._session_timer.stop()
+        again.deleteLater()
 
 
 def test_editing_inputs_invalidates_completed_results(window):
