@@ -267,7 +267,8 @@ class MainWindow(QMainWindow):
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
-        self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case)
+        self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case,
+                                    self.sizing_page.unapplied)
         self.study_page.started.connect(self._sync_busy)
         self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
@@ -335,7 +336,7 @@ class MainWindow(QMainWindow):
         self.unapplied_text.setObjectName("notApplied")
         self.unapplied_text.setWordWrap(True)
         apply_btn = QPushButton("Apply")
-        apply_btn.setToolTip("Make the sized parts on the Motor tab the motor's.")
+        apply_btn.setToolTip("Copy the Motor tab's sized parts into the motor.")
         apply_btn.clicked.connect(lambda: self.sizing_page.apply())
         ul.addWidget(self.unapplied_text, 1)
         ul.addWidget(apply_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -350,12 +351,11 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
 
         # Run
-        self.solve_tank_cooling = QCheckBox("Solve tank cooling each step (not MATLAB-identical)")
+        self.solve_tank_cooling = QCheckBox("Solve tank cooling each step")
         self.solve_tank_cooling.setToolTip(
-            "HRAP cools the tank after splitting liquid and vapor. When the liquid runs low that overcools\n"
-            "the tank, and HRAP switches to an averaged pressure drop until the liquid is gone.\n"
-            "This solves the cooling at the step's end temperature instead, so the fallback never runs.\n"
-            "Total impulse usually changes by under 1%."
+            "Near the end of the liquid, HRAP's tank model runs into a numerical problem and switches to an\n"
+            "averaged pressure drop. This works out the tank cooling properly instead.\n"
+            "Total impulse usually changes by under 1%. Works without Enable advanced options."
         )
         self.tmax = PlainDoubleSpinBox()
         self.tmax.setRange(0.01, 120)
@@ -367,32 +367,32 @@ class MainWindow(QMainWindow):
         self.dt.setDecimals(3)
         self.dt.setRange(0.01, 100)
         self.dt.setValue(1.0)
-        self.dt.setToolTip("1 ms is usually within 0.1% of finer steps. Check a new motor by comparing with 0.2 ms.")
+        self.dt.setToolTip("1 ms is usually accurate to about 0.1%. To check a new motor, rerun at 0.2 ms and compare.")
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
-        self.P_cmbr.setToolTip("Chamber pressure before ignition.")
+        self.P_cmbr.setToolTip("Chamber pressure before ignition. Leave it at 1 atm.")
         sim = CollapsibleBox("Run")
         sf = sim.form()
         sf.addRow("Max run time [s]", self.tmax)
         sf.addRow("Close valve at [s]", self.tburn)
         sf.addRow("Timestep [ms]", self.dt)
         sf.addRow("Chamber start pressure", self.P_cmbr)
-        sf.addRow(self.solve_tank_cooling)
         root.addWidget(sim)
 
         # Advanced
-        adv = CollapsibleBox("Advanced (not MATLAB-identical)")
+        adv = CollapsibleBox("Advanced (not necessarily MATLAB-identical)")
         af = adv.form()
         self.adv_on = QCheckBox("Enable advanced options")
-        self.live_chem = QCheckBox("Live chemistry (NASA thermo.dat Gibbs solver)")
+        self.live_chem = QCheckBox("Live chemistry (WIP)")
         self.ox_fluid = PlainComboBox()
         self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
-        self.ox_fluid.setToolTip("Nitrous properties for the tank with the SPI injector model.\n"
+        self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
                                  "HEM and Dyer always use CoolProp.")
         self.grain_shape = PlainComboBox()
         self.grain_shape.addItems(["cylindrical", "star"])
         self.star_tips = PlainSpinBox()
         self.star_tips.setRange(3, 16)
         self.star_tips.setValue(6)
+        af.addRow(self.solve_tank_cooling)
         af.addRow(self.adv_on)
         af.addRow(self.live_chem)
         af.addRow("Oxidizer fluid", self.ox_fluid)
@@ -488,7 +488,7 @@ class MainWindow(QMainWindow):
         self._syncing_time = False
         self._time_range = (0.0, 1.0)
         self.plot.currentChanged.connect(lambda _: self._reset_viz_to_start())
-        self.plot_readout = QLabel("Run a simulation, then hover over a plot to inspect a time.")
+        self.plot_readout = QLabel("Hover a plot to read values.")
         self.plot_readout.setWordWrap(True)
         self.plot_readout.setMinimumHeight(36)
         self.trace_list = QListWidget()
@@ -628,7 +628,7 @@ class MainWindow(QMainWindow):
         self.unapplied.setVisible(bool(changes))
 
     def _on_applied(self):
-        self.statusBar().showMessage("Applied to the motor. Run the simulation to check it over the whole burn.")
+        self.statusBar().showMessage("Applied to motor.")
         self.tabs.setCurrentIndex(1)
 
     def _connect_derived(self):
@@ -823,7 +823,7 @@ class MainWindow(QMainWindow):
     def _reset_viz_to_start(self):
         for line in self._hover_lines:
             line.setVisible(False)
-        self.plot_readout.setText("Hover over a plot to inspect a time.")
+        self.plot_readout.setText("Hover a plot to read values.")
         if self._hover_index is None:
             return
         self._hover_index = None
@@ -872,7 +872,7 @@ class MainWindow(QMainWindow):
         self.summary.clear()
         self._clear_plot()
         self._refresh_viz()
-        self.statusBar().showMessage("Inputs changed — run again to update results.")
+        self.statusBar().showMessage("Inputs changed, run again to update.")
 
     def _run(self):
         if self._thread is not None:
@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):
         self.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
                                    f"{u.text(limit, 'pressure')} chamber pressure limit.")
         self.limit_warning.setVisible(over)
-        self.statusBar().showMessage(f"Done — {o.sim_end_cond}  Total impulse: {u.text(info['total_impulse'], 'impulse')}"
+        self.statusBar().showMessage(f"Done: {o.sim_end_cond}. Total impulse {u.text(info['total_impulse'], 'impulse')}"
                                      + ("  ⚠ Over the chamber pressure limit" if over else ""))
 
     def _on_failed(self, msg: str):
@@ -1002,7 +1002,7 @@ class MainWindow(QMainWindow):
         for widget in self._plot_widgets.values():
             widget.deleteLater()
         self._plot_widgets.clear()
-        self.plot_readout.setText("Run a simulation, then hover over a plot to inspect a time.")
+        self.plot_readout.setText("Hover a plot to read values.")
 
     def _sync_time_range(self, _view, time_range):
         if self._syncing_time:
@@ -1172,7 +1172,7 @@ class MainWindow(QMainWindow):
         i = self._motors().index(motor)
         self.motor_tabs.setTabText(i, motor.title + (" •" if self._edited(motor) else ""))
         self.motor_tabs.setTabToolTip(i, motor.path or "Not saved to a file yet")
-        self.setWindowTitle(f"{motor.title} — {APP_NAME} {__version__}")
+        self.setWindowTitle(f"{motor.title} · {APP_NAME} {__version__}")
 
     def _step_motor(self, step: int):
         if self.motor_tabs.isEnabled() and self.motor_tabs.count() > 1:
@@ -1304,9 +1304,7 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Display units")
         layout = QVBoxLayout(dialog)
-        note = QLabel("Used in plots, the motor diagram, and results.\n"
-                      "Input fields keep their own labeled unit selectors.\n"
-                      "Pressure is absolute; injector ΔP is a pressure difference.")
+        note = QLabel("Pressures include the atmosphere (gauge + 14.7 psi).")
         layout.addWidget(note)
         form = QFormLayout()
         controls = {}
@@ -1335,7 +1333,7 @@ class MainWindow(QMainWindow):
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
             self.summary.setPlainText(format_summary(info, units))
-            self.statusBar().showMessage(f"Done — {self._output.sim_end_cond}  Total impulse: {units.text(info['total_impulse'], 'impulse')}")
+            self.statusBar().showMessage(f"Done: {self._output.sim_end_cond}. Total impulse {units.text(info['total_impulse'], 'impulse')}")
 
     def _set_theme(self, name: str):
         self._theme = name

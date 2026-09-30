@@ -224,9 +224,12 @@ class StudyPage(QWidget):
     started = Signal()
     finished = Signal()
 
-    def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open):
+    def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open,
+                 get_unapplied: Callable[[], list[str]] = lambda: []):
         super().__init__()
         self._get_cfg, self._get_units, self._on_open = get_cfg, get_units, on_open
+        self._get_unapplied = get_unapplied
+        self._loaded_from = ""
         self._thread = self._worker = None
         self.runs: list[StudyRun] = []
         self.result = None
@@ -247,10 +250,10 @@ class StudyPage(QWidget):
             axis.key.activated.connect(lambda *_: self.preset.setCurrentIndex(3))
             axis.values.textEdited.connect(lambda *_: self.preset.setCurrentIndex(3))
         self.source = _small("")
+        self.source.setStyleSheet(f"color: {WARN.lighter(150).name()};")
+        self.source.hide()
 
         self.setup, setup = card_frame("Study")
-        setup.addWidget(_small("Vary one or two inputs; everything else stays as the motor is set. "
-                               "Each cell is a full simulation."))
         fields = QGridLayout()
         fields.setHorizontalSpacing(10)
         fields.setVerticalSpacing(8)
@@ -263,7 +266,6 @@ class StudyPage(QWidget):
         fields.addWidget(QLabel("Fuel model"), 3, 0)
         fields.addWidget(self.models, 3, 1)
         setup.addLayout(fields)
-        setup.addWidget(_small("Values: 12, 15, 18 or start:end:count."))
         self.run_btn = QPushButton("Run study")
         self.run_btn.setObjectName("runButton")
         self.run_btn.clicked.connect(self._run)
@@ -290,13 +292,16 @@ class StudyPage(QWidget):
         self.min_pressure.setToolTip("Lowest acceptable peak chamber pressure (absolute).")
         self.max_dp = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.max_dp.set_si(to_si(300, "psi", "pressure"), "pressure")
-        self.max_dp.setToolTip("Above this burn-average injector ΔP, the SPI injector model overpredicts nitrous flow.")
+        self.max_dp.setToolTip("The SPI injector model treats the nitrous as liquid all the way through the hole. Above roughly\n"
+            "300 psi of pressure drop, real nitrous starts boiling in the hole and flows less, so SPI\n"
+            "overpredicts the flow, and with it the thrust and chamber pressure. Cells whose burn-average\n"
+            "injector ΔP is over this are marked. It only applies to motors using SPI.")
         grid_l = QGridLayout()
         grid_l.setHorizontalSpacing(10)
         grid_l.setVerticalSpacing(8)
         grid_l.setColumnStretch(1, 1)
         for r, (label, control) in enumerate((("Max peak Pc", self.max_pressure), ("Min peak Pc", self.min_pressure),
-                                               ("SPI ΔP warning", self.max_dp))):
+                                               ("Injector ΔP warning", self.max_dp))):
             grid_l.addWidget(QLabel(label), r, 0)
             grid_l.addWidget(control, r, 1)
         limits_l.addLayout(grid_l)
@@ -307,6 +312,8 @@ class StudyPage(QWidget):
         runs, runs_l = card_frame("Runs")
         self.history = QListWidget()
         self.history.setMinimumHeight(90)
+        self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.history.setToolTip("Double-click a run to rename it.")
         self.history.currentRowChanged.connect(self._show_run)
         self.history.itemChanged.connect(self._renamed)
@@ -368,14 +375,7 @@ class StudyPage(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.itemSelectionChanged.connect(self._selection)
         self.table.cellDoubleClicked.connect(lambda *_: self._open())
-        self.empty = QLabel("Pick what to vary on the left and press Run study.\n"
-                            "Each cell becomes one simulation; click cells to compare their curves below.")
-        self.empty.setObjectName("cardLabel")
-        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty.setMinimumHeight(160)
-        results_l.addWidget(self.empty, 1)
         results_l.addWidget(self.table, 1)
-        self.table.hide()
         legend = QHBoxLayout()
         legend.setSpacing(16)
         for color, text in ((OK, "Within limits"), (WARN, "Warning (click a cell for why)"), (BAD, "Over the pressure limit or burned out")):
@@ -388,7 +388,7 @@ class StudyPage(QWidget):
         results_l.addWidget(self.legend)
 
         # Curves of the selected cases.
-        compare, compare_l = card_frame("Compare selected cases")
+        compare, compare_l = card_frame("Compare")
         head = compare_l.itemAt(0).widget()
         compare_l.removeWidget(head)
         line = QHBoxLayout()
@@ -411,7 +411,7 @@ class StudyPage(QWidget):
         self.warnings.setStyleSheet(f"color: {WARN.lighter(150).name()}; font-weight: 600;")
         self.warnings.hide()
         compare_l.addWidget(self.warnings)
-        self.details = _small("Click cells to plot them; ⌘/Ctrl-click to add more. Double-click opens a case as a motor.")
+        self.details = _small("Click cells to plot them, ⌘/Ctrl-click to add more. Double-click a cell to open it as a motor in a new tab.")
         self.details.setWordWrap(True)
         compare_l.addWidget(self.details)
         self.plot = pg.PlotWidget()
@@ -445,8 +445,24 @@ class StudyPage(QWidget):
         for axis in self.axes:
             axis.cfg = cfg
         self._preset(self.preset.currentIndex())
-        self.source.setText(f"Runs on: {cfg.get('mtr_nm') or 'this motor'}, as set now. Apply any Motor-tab sizing first.")
+        self._loaded_from = ""
+        self._update_source()
         self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_source()
+
+    def _update_source(self):
+        """Warn when the study won't include Motor-tab sizing that hasn't been applied, or runs a loaded motor."""
+        if self._loaded_from:
+            text = f"Runs the motor saved in {self._loaded_from}, not the open one."
+        else:
+            changes = self._get_unapplied()
+            text = (f"Not applied from the Motor tab: {', '.join(changes)}. The study runs the motor without these."
+                    if changes else "")
+        self.source.setText(text)
+        self.source.setVisible(bool(text))
 
     def _preset(self, index):
         self.preset.setCurrentIndex(index)
@@ -502,7 +518,7 @@ class StudyPage(QWidget):
         self.runs.append(result)
         item = QListWidgetItem(result.name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        item.setToolTip(f"{result.total} simulations. Double-click to rename.")
+        item.setToolTip(f"{result.name}\n{result.total} runs. Double-click to rename.")
         self.history.addItem(item)
         self.history.setCurrentRow(len(self.runs) - 1)
         self.result = result
@@ -589,8 +605,6 @@ class StudyPage(QWidget):
         self.max_pressure.setText(f"{u.text(chamber_limit(cfg), 'pressure')} (Motor tab)")
         if r is None:
             return
-        self.empty.hide()
-        self.table.show()
         self.legend.show()
         selected = {(i.row(), i.column()) for i in self.table.selectedItems()}
         self.table.blockSignals(True)
@@ -636,9 +650,15 @@ class StudyPage(QWidget):
         self.table.blockSignals(False)
         n = len(r.cases)
         warned = sum(bool(self._flags(c)) for c in r.cases)
-        state = "Running" if self.busy() else "Stopped" if r.stopped else "Failed" if r.error else "Done"
-        self.status.setText(f"{state}: {n} of {r.total} simulations · {warned} with warnings"
-                            + (f"\n{r.error}" if r.error else ""))
+        if self.busy():
+            text = f"Running {n} of {r.total}"
+        elif r.error:
+            text = f"Failed after {n} of {r.total} runs: {r.error}"
+        elif r.stopped:
+            text = f"Stopped after {n} of {r.total} runs · {warned} with warnings"
+        else:
+            text = f"{n} runs · {warned} with warnings"
+        self.status.setText(text)
         if n == r.total and not r.error and not self.busy():
             passing = passing_values(r.cases, xkey, self.min_pressure.si("pressure"), chamber_limit(r.cfg),
                                      self.max_dp.si("pressure") if uses_spi(r.cfg) else float("inf"))
@@ -677,7 +697,7 @@ class StudyPage(QWidget):
                                  f"end: {c.end_cond}")
         else:
             self.warnings.hide()
-            self.details.setText(f"{len(cases)} selected; overlay shows up to 8. Ctrl/⌘-click cells to compare them.")
+            self.details.setText(f"{len(cases)} selected. Up to 8 are plotted.")
 
     def _why(self, case) -> list[str]:
         """Each warning on a case, with the numbers behind it."""
@@ -707,7 +727,7 @@ class StudyPage(QWidget):
         c = selected[0]
         cfg = case_cfg(self.result.cfg, c.values, c.model)
         cfg["sizing"] = {}  # open the exact built geometry, without old target sizing
-        cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} — {self._label(c)}"
+        cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} ({self._label(c).replace(' · ', ', ')})"
         self._on_open(cfg)
 
     def _save(self):
@@ -748,7 +768,8 @@ class StudyPage(QWidget):
             self.preset.setCurrentIndex(3)
             self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")
             self.max_dp.set_si(float(data.get("max_dp", to_si(300, "psi", "pressure"))), "pressure")
-            self.source.setText(f"Runs on: the motor saved in {Path(path).name}. Switching motors goes back to the open one.")
+            self._loaded_from = Path(path).name
+            self._update_source()
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as exc:
             self.status.setText(f"Could not load study: {exc}")
 

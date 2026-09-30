@@ -200,24 +200,23 @@ class SizingPage(QWidget):
         self.OF.setRange(0.1, 50)
         self.OF.setDecimals(2)
         self.P_cmbr.setToolTip("Chamber pressure at the start of the burn (absolute). It falls as the tank cools.")
-        self.burn_time.setToolTip("How long the liquid lasts at the starting oxidizer flow. It sets the oxidizer flow,\n"
-                                  "and the hole count follows from it. The real flow falls during the burn, so the\n"
-                                  "liquid lasts somewhat longer. A weak vapor tail follows once the liquid runs out.")
+        self.burn_time.setToolTip("How long the liquid should last. It sets the oxidizer flow, and the hole count follows.\n"
+                                  "The real burn runs a little longer, because the flow drops as the tank cools.")
         self.size_from = PlainComboBox()
         self.size_from.addItems(["As built", "For liquid burn time", "For O/F"])
-        self.size_from.setToolTip("As built: the holes or swirlers you enter; the flow and burn time follow.\n"
-                                  "For liquid burn time: the flow that empties the liquid in that time, and the holes for it.\n"
-                                  "For O/F: the flow that gives the starting O/F with the grain as built.")
+        self.size_from.setToolTip("As built: use the holes or swirlers you enter.\n"
+                                  "For liquid burn time: size the injector to empty the liquid in that time.\n"
+                                  "For O/F: size the injector for the starting O/F, with the grain as built.")
         self.holes = PlainSpinBox()
         self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count. The oxidizer flow and burn time follow from it.")
         self.OF.setToolTip("Oxidizer-to-fuel ratio at the start of the burn. It sets the grain length,\n"
                            "or the oxidizer flow when the injector is sized from O/F.\n"
-                           "With a regression law it drifts during the burn.")
+                           "With the burn-rate law it drifts during the burn.")
         self.grain_from = PlainComboBox()
         self.grain_from.addItems(["As built", "For O/F"])
-        self.grain_from.setToolTip("As built: the grain length you enter; the starting O/F follows.\n"
-                                   "For O/F: the grain length that gives the starting O/F.")
+        self.grain_from.setToolTip("As built: use the grain length you enter.\n"
+                                   "For O/F: size the grain length for the starting O/F.")
         self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_OD = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_L = UnitRow(LENGTH_ITEMS, "in", 4)
@@ -226,7 +225,7 @@ class SizingPage(QWidget):
         self.grain_L.setToolTip("Grain length. The fuel flow and starting O/F follow from it.")
 
         self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
-        self.P_limit.setToolTip("The chamber's design pressure (absolute). This page, runs and studies warn above it.")
+        self.P_limit.setToolTip("The chamber's design pressure (absolute). The Motor, Simulation and Study tabs warn above it.")
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
@@ -320,20 +319,21 @@ class SizingPage(QWidget):
         self.inj_Cd.setDecimals(4)
         self.inj_model = PlainComboBox()
         self.inj_model.addItems(["SPI", "HEM", "Dyer"])
-        self.inj_model.setToolTip("SPI: pure liquid through the injector (original HRAP); overpredicts flow at high ΔP.\n"
-                                  "HEM: liquid boils instantly in the orifice; underpredicts flow and chokes.\n"
-                                  "Dyer: κ/(1+κ)·SPI + 1/(1+κ)·HEM.\n"
-                                  "HEM and Dyer use CoolProp nitrous properties for the tank too.")
+        self.inj_model.setToolTip("SPI: treats the nitrous as liquid all the way through the hole (original HRAP).\n"
+                                  "  Overpredicts flow above roughly 300 psi of ΔP.\n"
+                                  "HEM: the nitrous boils instantly in the hole. Underpredicts flow.\n"
+                                  "Dyer: a blend of the two, weighted by κ. The usual choice for nitrous.\n"
+                                  "HEM and Dyer also use CoolProp nitrous properties in the tank.")
         self.inj_Cd_HEM = PlainDoubleSpinBox()
         self.inj_Cd_HEM.setRange(0.01, 1)
         self.inj_Cd_HEM.setDecimals(3)
-        self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it; a nitrous cold flow can.")
+        self.inj_Cd_HEM.setToolTip("Discharge coefficient for the HEM part. Water flow tests can't measure it. A nitrous cold flow can.")
         self.hem_same = QCheckBox("Same as Cd")
         self.dyer_kappa = PlainDoubleSpinBox()
         self.dyer_kappa.setRange(0.01, 100)
         self.dyer_kappa.setDecimals(2)
-        self.dyer_kappa.setToolTip("Dyer weighting. 1 = the formula's value for a tank at its own vapor pressure (even blend). "
-                                   "Larger leans toward SPI.")
+        self.dyer_kappa.setToolTip("How the Dyer model weights SPI against HEM. 1 is an even blend, the formula's value for a tank\n"
+                                   "at its own vapor pressure. Higher leans toward SPI.")
         self.inj_type = PlainComboBox()
         self.inj_type.addItems(["Holes", "Swirler"])
         self.inj_type.setToolTip("Holes: straight drilled holes.\n"
@@ -389,7 +389,7 @@ class SizingPage(QWidget):
         self.show_layouts.setToolTip("Swirler hole drills that give the target flow through this PTC bore.")
         self.show_layouts.toggled.connect(lambda _on: self._show_size_from_rows())
         self._layouts_row = inj_form.add("Drill layouts", self.show_layouts)
-        self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "ΔP / chamber", "Flow per hole",
+        self.injector = Card("Injector", ["Oxidizer flow", "Injector ΔP", "Stiffness (ΔP / Pc)", "Flow per hole",
                                           "Holes", "Total CdA", "Hole drill", "Swirler Cd", "Limits the flow",
                                           "Liquid lasts"],
                              InjectorSketch(), inj_form, sketch_over_results=True)
@@ -402,13 +402,13 @@ class SizingPage(QWidget):
         self.noz_eff = PlainDoubleSpinBox()
         self.noz_eff.setRange(0, 100)
         self.noz_eff.setDecimals(1)
-        self.noz_eff.setToolTip("Thrust lost to the nozzle's cone angle and friction; scales thrust only.\n"
+        self.noz_eff.setToolTip("Thrust lost to the nozzle's cone angle and friction. It scales thrust only.\n"
                                 "A 15° cone loses about 2% to the angle alone. 92–97% is typical.")
         self.Pa = UnitRow(PRESSURE_ITEMS, "atm", 3)
         self.Pa.setToolTip("Outside pressure. A sized expansion ratio matches it. Lower it to model a motor at altitude.")
         self.nozzle_from = PlainComboBox()
         self.nozzle_from.addItems(["As built", "For chamber pressure"])
-        self.nozzle_from.setToolTip("As built: the throat and expansion ratio you enter; the chamber pressure follows.\n"
+        self.nozzle_from.setToolTip("As built: use the throat and expansion ratio you enter.\n"
                                     "For chamber pressure: size them for the chamber pressure target.")
         self.throat_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.noz_ER = PlainDoubleSpinBox()
@@ -438,7 +438,7 @@ class SizingPage(QWidget):
         grain_form.add("Post-combustion", self.post_L)
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "O/F", "Port at liquid burnout",
                                     "O/F at liquid burnout", "Fuel burned"], GrainSketch(), grain_form)
-        self.performance = Card("Performance at the start", ["Thrust", "Isp", "Impulse over the burn time"])
+        self.performance = Card("Start of burn", ["Thrust", "Isp", "Impulse over the burn time"])
 
         self.limit_warning = QLabel("")
         self.limit_warning.setObjectName("sizingError")
@@ -464,10 +464,6 @@ class SizingPage(QWidget):
         injector_layout = self.injector.layout()
         injector_layout.insertWidget(injector_layout.count() - 1, self.swirler_options)  # above the card's closing stretch
 
-        intro = QLabel("The whole motor, with its state at the start of the burn. To redesign a part, set its Sizing to "
-                       "a target; Apply to motor then makes the sized part the motor's. The Simulation tab runs the whole burn.")
-        intro.setObjectName("cardLabel")
-        intro.setWordWrap(True)
 
         # Two columns of about the same height; the last card in each takes up any difference.
         left_column = QWidget()
@@ -496,7 +492,6 @@ class SizingPage(QWidget):
         page = QVBoxLayout(inner)
         page.setContentsMargins(16, 16, 16, 16)
         page.setSpacing(12)
-        page.addWidget(intro)
         page.addLayout(body, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -640,10 +635,9 @@ class SizingPage(QWidget):
         self._hole_D_row[0].setText("Stock PTC acts like (rough)" if rough else "Stock PTC acts like" if stock else
                                     "PTC bore" if swirler else "Hole diameter")
         self.hole_D.setToolTip(
-            f"The clean hole a stock PTC flows like. {STOCK_PTC_D / 0.0254:.3f} in is a very rough estimate: the size that\n"
-            "makes HPS01-1's liquid run out at 5.8 s in the fire video. That's one timing off a video, with a guessed\n"
-            "0.10 in hole offset and assumed flow settings (Dyer κ 1, burn-rate law, tank cooling); SPI and a fixed O/F 6\n"
-            "give 0.100 in instead. Replace it with a cold flow of a bare stock PTC (Measured CdA → Fit)." if stock else
+            f"The clean hole a stock PTC flows like. {STOCK_PTC_D / 0.0254:.3f} in is a very rough estimate, fit to HPS01-1's\n"
+            "liquid running out at 5.8 s in the fire video, with a guessed hole offset. Replace it with a cold flow\n"
+            "of a bare stock PTC (Measured CdA, then Fit)." if stock else
             "The PTC fitting's bore after the swirler: the narrowest point the swirling flow leaves through." if swirler else
             "Diameter of each injector hole.")
         self.ptc_stock.setVisible(swirler)
@@ -889,10 +883,10 @@ class SizingPage(QWidget):
                               f"liquid oxidizer ÷ liquid burn time = {u.text(z.ox_liquid, 'mass')} ÷ {t.burn_time:.3g} s = {flow}")
         self.injector.set("Injector ΔP", dP,
                           f"tank pressure − chamber pressure = {u.text(z.P_tnk, 'pressure')} − {P_cmbr} = {dP}")
-        self.injector.set("ΔP / chamber", f"{100 * z.inj_dP / z.P_cmbr:.0f}%",
+        self.injector.set("Stiffness (ΔP / Pc)", f"{100 * z.inj_dP / z.P_cmbr:.0f}%",
                           f"Injector ΔP as a share of chamber pressure: {dP} ÷ {P_cmbr}.\n"
                           "Above about 20%, chamber pressure swings barely change the injector flow,\n"
-                          "which avoids feed-coupled combustion instability.")
+                          "which keeps the motor from chugging.")
         self.injector.set("Flow per hole", per_hole,
                           f"Flow through one {hole} {'swirler exit' if self._swirler else 'hole'} at Cd {inj_Cd:.3g} with {dP} across it,\n"
                           f"from the {model} injector model.")
