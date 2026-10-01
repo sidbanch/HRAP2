@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -36,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.engine.study import INPUTS, MODELS, OUTPUTS, Case, case_cfg, grid, passing_values, study, uses_spi
+from hrap.engine.study import INPUTS, MODELS, OUTPUTS, Case, case_cfg, check_axes, grid, passing_values, study, uses_spi
 from hrap.gui.sizing import card_frame
 from hrap.gui.widgets import UnitRow
 from hrap.io.config import chamber_limit, clone_cfg
@@ -76,7 +77,8 @@ class TileDelegate(QStyledItemDelegate):
             return
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = option.rect.adjusted(3, 3, -3, -3)
+        gap = 3 if min(option.rect.width(), option.rect.height()) > 30 else 1
+        rect = option.rect.adjusted(gap, gap, -gap, -gap)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
         painter.drawRoundedRect(rect, 5, 5)
@@ -84,8 +86,15 @@ class TileDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor("white"), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 4, 4)
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        font = painter.font()
+        bounds = painter.fontMetrics().boundingRect(text)
+        scale = min(1.0, (rect.width() - 4) / max(1, bounds.width()), rect.height() / max(1, bounds.height()))
+        if scale < 1.0:
+            font.setPointSizeF(max(6.0, font.pointSizeF() * scale))
+            painter.setFont(font)
         painter.setPen(QColor("white"))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(index.data(Qt.ItemDataRole.DisplayRole) or ""))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         painter.restore()
 
 
@@ -187,10 +196,11 @@ class StudyRun:
     error: str = ""
     stopped: bool = False
     name: str = ""
+    throat_P: float | None = None  # Pa; each case's throat was sized for this chamber pressure
 
     def key(self) -> str:
-        """Identifies what was run: the motor, the input values and the fuel models."""
-        return json.dumps([self.cfg, self.axes, self.models], sort_keys=True, default=str)
+        """Identifies what was run: the motor, the input values, the fuel models and the throat sizing."""
+        return json.dumps([self.cfg, self.axes, self.models, self.throat_P], sort_keys=True, default=str)
 
     @property
     def complete(self) -> bool:
@@ -213,7 +223,8 @@ class StudyWorker(QObject):
 
     def run(self):
         try:
-            for case in study(self.result.cfg, self.result.axes, self.result.models, stopped=self.stop.is_set):
+            r = self.result
+            for case in study(r.cfg, r.axes, r.models, stopped=self.stop.is_set, throat_P=r.throat_P):
                 self.case_done.emit(case)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -253,6 +264,10 @@ class StudyPage(QWidget):
         for axis in self.axes:
             axis.key.activated.connect(lambda *_: self.preset.setCurrentIndex(3))
             axis.values.textEdited.connect(lambda *_: self.preset.setCurrentIndex(3))
+        self.size_throat = QCheckBox("Size the throat for each case")
+        self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
+                                    "chamber pressure target, instead of the motor's own nozzle.")
+        self.size_throat.toggled.connect(lambda *_: self._update_source())
         self.source = _small("")
         self.source.setStyleSheet(f"color: {WARN.lighter(150).name()};")
         self.source.hide()
@@ -269,6 +284,7 @@ class StudyPage(QWidget):
             fields.addWidget(axis, 1 + i, 1)
         fields.addWidget(QLabel("Fuel model"), 3, 0)
         fields.addWidget(self.models, 3, 1)
+        fields.addWidget(self.size_throat, 4, 0, 1, 2)
         setup.addLayout(fields)
         self.run_btn = QPushButton("Run study")
         self.run_btn.setObjectName("runButton")
@@ -376,7 +392,9 @@ class StudyPage(QWidget):
         self.table.verticalHeader().setHighlightSections(False)
         self.table.setStyleSheet("QTableWidget { border: none; background: transparent; selection-background-color: transparent; }")
         self.table.setItemDelegate(TileDelegate(self.table))
-        self.table.verticalHeader().setDefaultSectionSize(40)
+        for header in (self.table.horizontalHeader(), self.table.verticalHeader()):
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            header.setMinimumSectionSize(16)
         self.table.itemSelectionChanged.connect(self._selection)
         self.table.cellDoubleClicked.connect(lambda *_: self._open())
         results_l.addWidget(self.table, 1)
@@ -449,6 +467,7 @@ class StudyPage(QWidget):
         for axis in self.axes:
             axis.cfg = cfg
         self._preset(self.preset.currentIndex())
+        self._show_throat_target(cfg)
         self._loaded_from = ""
         self._update_source()
         self.refresh()
@@ -463,6 +482,8 @@ class StudyPage(QWidget):
             text = f"Runs the motor saved in {self._loaded_from}, not the open one."
         else:
             changes = self._get_unapplied()
+            if self.size_throat.isChecked():  # each case sizes its own nozzle
+                changes = [c for c in changes if not c.startswith(("throat ", "expansion ratio "))]
             text = (f"Not applied from the Motor tab: {', '.join(changes)}. The study runs the motor without these."
                     if changes else "")
         self.source.setText(text)
@@ -480,6 +501,18 @@ class StudyPage(QWidget):
         self.axes[1].set_axis(second)
         self.models.setCurrentIndex(2 if index == 2 else 0)
 
+    def _show_throat_target(self, cfg: dict):
+        target = self._throat_target(cfg)
+        self.size_throat.setEnabled(target is not None)
+        self.size_throat.setText("Size the throat for each case"
+                                 + (f" ({self._get_units().text(target, 'pressure')} target)" if target else ""))
+
+    @staticmethod
+    def _throat_target(cfg: dict) -> float | None:
+        """The Motor tab's chamber pressure target (Pa)."""
+        target = (cfg.get("sizing") or {}).get("P_cmbr")
+        return float(target) if target else None
+
     def busy(self):
         return self._thread is not None
 
@@ -496,16 +529,11 @@ class StudyPage(QWidget):
         try:
             axes = [a.read() for a in self.axes]
             axes = [a for a in axes if a]
-            if len({key for key, _ in axes}) != len(axes):
-                raise ValueError("Choose different inputs for the two axes.")
             cfg = clone_cfg(self._base_override or self._get_cfg())
             models = self.models.currentData() or [cfg.get("reg_model", "Shifting OF")]
-            keys = [key for key, _ in axes]
-            if "OF" in keys and models != ["Constant OF"]:
-                raise ValueError("Choose Fixed O/F to vary its value; the burn-rate law ignores that setting.")
-            if "a_scale" in keys and models != ["Shifting OF"]:
-                raise ValueError("Choose Burn-rate law to vary a; fixed O/F ignores that setting.")
-            result = StudyRun(cfg, axes, models)
+            check_axes(cfg, [key for key, _ in axes], models)
+            throat_P = self._throat_target(cfg) if self.size_throat.isChecked() else None
+            result = StudyRun(cfg, axes, models, throat_P=throat_P)
             same = next((i for i, run in enumerate(self.runs) if run.complete and run.key() == result.key()), None)
             if same is not None:
                 self.history.setCurrentRow(same)
@@ -514,7 +542,7 @@ class StudyPage(QWidget):
             if result.total > 500:
                 raise ValueError(f"That is {result.total} simulations. Narrow the ranges to at most 500.")
             for values in grid(axes):
-                case_cfg(cfg, values, models[0])
+                case_cfg(cfg, values, models[0], throat_P)
         except Exception as exc:
             self.status.setText(str(exc))
             return
@@ -602,9 +630,17 @@ class StudyPage(QWidget):
             self.table.clearSelection()
             self.refresh()
 
-    def _value_text(self, key, value):
+    def _value_text(self, key, value, digits=4):
         spec = INPUTS[key]
-        return self._get_units().text(value, spec.quantity, 5) if spec.quantity else f"{value:.5g}"
+        return self._get_units().text(value, spec.quantity, digits) if spec.quantity else f"{value:.{digits}g}"
+
+    def _value_texts(self, key, values) -> list[str]:
+        """Labels with the fewest digits (at least 3) that still tell the values apart."""
+        for digits in range(3, 10):
+            texts = [self._value_text(key, v, digits) for v in values]
+            if len(set(texts)) == len(texts):
+                return texts
+        return texts
 
     def _label(self, case):
         return ", ".join(f"{INPUTS[key].label} {self._value_text(key, v)}" for key, v in case.values) + " · " + MODELS[case.model]
@@ -639,21 +675,21 @@ class StudyPage(QWidget):
         xkey, xs = r.axes[0]
         ykey, ys = r.axes[1] if len(r.axes) > 1 else (None, [None])
         rows = [(y, model) for y in ys for model in r.models]
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch if len(xs) <= 8 else QHeaderView.ResizeMode.ResizeToContents)
         self.table.setColumnCount(len(xs))
         self.table.setRowCount(len(rows))
-        self.table.setHorizontalHeaderLabels([self._value_text(xkey, x) for x in xs])
+        self.table.setHorizontalHeaderLabels(self._value_texts(xkey, xs))
         many_models = len(r.models) > 1
+        y_texts = dict(zip(ys, self._value_texts(ykey, ys))) if ykey else {}
         self.table.setVerticalHeaderLabels([
-            "  " + " · ".join(filter(None, [self._value_text(ykey, y) if ykey else "",
-                                             MODELS[model] if many_models or not ykey else ""])) + "  "
+            "  " + " · ".join(filter(None, [y_texts.get(y, ""), MODELS[model] if many_models or not ykey else ""])) + "  "
             for y, model in rows])
-        rows_label = INPUTS[ykey].label if ykey else "Fuel model"
-        self.col_caption.setText(f"Columns: {INPUTS[xkey].label}   ·   Rows: {rows_label}"
-                                 + ("" if many_models or not ykey else f" ({MODELS[r.models[0]]})"))
-        self._cells = {}
         label, name, quantity = OUTPUTS[self.shown_output.currentIndex()]
+        unit = u.unit(quantity) if quantity else "s"
+        rows_label = INPUTS[ykey].label if ykey else "Fuel model"
+        self.col_caption.setText(f"{label}{f' ({unit})' if unit else ''}   ·   Columns: {INPUTS[xkey].label}   ·   "
+                                 f"Rows: {rows_label}" + ("" if many_models or not ykey else f" ({MODELS[r.models[0]]})")
+                                 + ("   ·   Throat sized for each case" if r.throat_P else ""))
+        self._cells = {}
         for case in r.cases:
             col = xs.index(case.value(xkey))
             row = rows.index((case.value(ykey) if ykey else None, case.model))
@@ -662,11 +698,10 @@ class StudyPage(QWidget):
             flags = self._flags(case)
             if not math.isfinite(value):
                 text = "—"
-            elif quantity:
-                text = u.text(value, quantity)
             else:
-                text = f"{value:.3g} s"
-            item = QTableWidgetItem(text + ("  ⚠" if flags else ""))
+                shown = u.value(value, quantity) if quantity else value
+                text = f"{shown:.0f}" if abs(shown) >= 1e4 else f"{shown:.4g}"
+            item = QTableWidgetItem(text + (" ⚠" if flags else ""))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             bad = case.burnout or case.peak_P_cmbr > chamber_limit(r.cfg)
             item.setBackground(BAD if bad else WARN if flags else OK)
@@ -691,7 +726,7 @@ class StudyPage(QWidget):
                                      self.max_dp.si("pressure") if uses_spi(r.cfg) else float("inf"))
             every = "every row" if len(rows) > 1 else "this run"
             if passing:
-                listed = ", ".join(self._value_text(xkey, v) for v in passing)
+                listed = ", ".join(self._value_texts(xkey, passing))
                 self.answer.setText(f"{INPUTS[xkey].label} within limits for {every}: {listed}")
             else:
                 self.answer.setText(f"No {INPUTS[xkey].label.lower()} stays within limits for {every}.")
@@ -719,9 +754,14 @@ class StudyPage(QWidget):
             why = self._why(c)
             self.warnings.setText("\n".join(f"⚠ {w}" for w in why))
             self.warnings.setVisible(bool(why))
+            sized = []
+            if "start_OF" in dict(c.values):
+                sized.append(f"injector CdA {u.text(c.inj_CdA, 'area', 3)}")
+            if self.result.throat_P:
+                sized.append(f"throat {u.text(c.throat, 'length', 3)}")
             self.details.setText(f"{self._label(c)}\nPeak Pc {u.text(c.peak_P_cmbr, 'pressure')} · "
                                  f"O/F {c.OF_liquid:.3g} · impulse {u.text(c.total_impulse, 'impulse')} · "
-                                 f"end: {c.end_cond}")
+                                 + "".join(f"{x} · " for x in sized) + f"end: {c.end_cond}")
         else:
             self.warnings.hide()
             self.details.setText(f"{len(cases)} selected. Up to 8 are plotted.")
@@ -752,7 +792,7 @@ class StudyPage(QWidget):
         if self.busy() or len(selected) != 1:
             return
         c = selected[0]
-        cfg = case_cfg(self.result.cfg, c.values, c.model)
+        cfg = case_cfg(self.result.cfg, c.values, c.model, self.result.throat_P)
         cfg["sizing"] = {}  # open the exact built geometry, without old target sizing
         cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} ({self._label(c).replace(' · ', ', ')})"
         self._on_open(cfg)
@@ -766,6 +806,7 @@ class StudyPage(QWidget):
         if path:
             try:
                 Path(path).write_text(json.dumps({"name": r.name, "motor": r.cfg, "axes": r.axes, "models": r.models,
+                                                 "throat_P": r.throat_P,
                                                  "min_pressure": self.min_pressure.si("pressure"),
                                                  "max_dp": self.max_dp.si("pressure")}, indent=2) + "\n")
             except OSError as exc:
@@ -784,9 +825,13 @@ class StudyPage(QWidget):
                 raise ValueError("Invalid axes or fuel models.")
             if math.prod(len(v) for _, v in axes) * len(models) > 500:
                 raise ValueError("A study can contain at most 500 cases.")
+            check_axes(cfg, [k for k, _ in axes], models)
+            throat_P = data.get("throat_P")
             for values in grid(axes):
-                case_cfg(cfg, values, models[0])
+                case_cfg(cfg, values, models[0], throat_P)
             self._base_override = cfg
+            self._show_throat_target(cfg)
+            self.size_throat.setChecked(bool(throat_P))
             for axis in self.axes:
                 axis.cfg = cfg
             for axis, (key, values) in zip(self.axes, axes + [["", []]]):

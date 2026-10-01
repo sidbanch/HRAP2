@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterator, Sequence
 import numpy as np
 
 from hrap.engine.sim import run
+from hrap.engine.sizing import SizingTargets, size_motor
 from hrap.engine.summary import summarize
 from hrap.io.config import clone_cfg, injector_cd, resolve
 from hrap.units import to_si
@@ -52,7 +53,7 @@ def _length_si(unit: str) -> float:
 class Input:
     label: str
     quantity: str | None      # display quantity for the value; None for a bare number
-    apply: Callable[[dict, float], None]
+    apply: Callable[[dict, float], None] | None  # None: case_cfg sizes the motor for it after the other inputs
     current: Callable[[dict], float]
 
 
@@ -64,6 +65,21 @@ def total_cda(cfg: dict) -> float:
     """Total injector Cd × area (m²) over every injector."""
     D = _current_length("inj_D")(cfg)
     return int(cfg["inj_N"]) * 0.25 * math.pi * D ** 2 * injector_cd(cfg)
+
+
+def _sizing(cfg: dict, P_cmbr: float | None, start_OF: float | None):
+    """The motor at the start of the burn, with the injector sized for a starting O/F and/or the throat for a chamber pressure."""
+    return size_motor(cfg, SizingTargets(P_cmbr=P_cmbr, burn_time=None, OF=start_OF or 0.0,
+                                         port_D=_current_length("grn_ID")(cfg),
+                                         holes=None if start_OF else int(cfg["inj_N"]),
+                                         grain_L=_current_length("grn_L")(cfg)))
+
+
+def _current_start_OF(cfg: dict) -> float:
+    try:
+        return _sizing(cfg, None, None).OF
+    except (ValueError, KeyError):
+        return 6.0
 
 
 def _current_temperature(cfg: dict) -> float:
@@ -81,6 +97,7 @@ INPUTS: dict[str, Input] = {
     "tank_T": Input("Tank temperature", "temperature", _set_temperature, _current_temperature),
     "fill": Input("Fill (%)", None, _set_fill, lambda c: float(c.get("fill") or 0.0)),
     "OF": Input("Fixed O/F", None, lambda c, v: c.update(const_OF=v), lambda c: float(c.get("const_OF") or 6.0)),
+    "start_OF": Input("Starting O/F", None, None, _current_start_OF),
     "a_scale": Input("Burn rate a ×", None, _scale_a, lambda c: 1.0),
     "cstar_eff": Input("C* efficiency (%)", None, lambda c, v: c.update(cstar_eff=v), lambda c: float(c["cstar_eff"])),
 }
@@ -106,6 +123,8 @@ class Case:
     end_cond: str
     outside_table: bool
     traces: dict[str, np.ndarray] = field(repr=False, compare=False)
+    inj_CdA: float = math.nan  # m², total; set by the inputs or sized for a starting O/F
+    throat: float = math.nan   # m; set by the inputs or sized for the chamber pressure target
 
     def value(self, key: str) -> float:
         return dict(self.values)[key]
@@ -122,25 +141,38 @@ OUTPUTS = [  # (label, Case field, display quantity)
     ("Fuel burned", "fuel_burned", "mass"),
     ("Port at the end", "port_end", "length"),
     ("Average injector ΔP", "avg_inj_dP", "pressure"),
+    ("Injector CdA (total)", "inj_CdA", "area"),
+    ("Throat", "throat", "length"),
 ]
 
 
-def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None) -> dict[str, Any]:
-    """The motor with the study's input values and fuel-flow model applied."""
+def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None,
+             throat_P: float | None = None) -> dict[str, Any]:
+    """The motor with the study's input values and fuel-flow model applied. A starting O/F sizes the
+    injector, and throat_P (Pa) sizes the throat and expansion ratio, as the Motor tab would."""
     c = clone_cfg(cfg)
     for key, value in values:
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{INPUTS[key].label} must be finite and above zero.")
         if key in ("fill", "cstar_eff") and value > 100:
             raise ValueError(f"{INPUTS[key].label} cannot exceed 100%.")
-        INPUTS[key].apply(c, float(value))
+        if INPUTS[key].apply:
+            INPUTS[key].apply(c, float(value))
     if model:
         c["reg_model"] = model
+    start_OF = dict(values).get("start_OF")
+    if start_OF or throat_P:
+        z = _sizing(c, throat_P, start_OF)
+        if start_OF:
+            _set_cda(c, z.inj_CdA)
+        if throat_P:
+            c.update(noz_thrt=z.throat_D, noz_thrt_unit="m", noz_def="Nozzle Expansion Ratio", noz_ex=z.ER)
     return c
 
 
-def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None) -> Case:
-    c = case_cfg(cfg, values, model)
+def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None,
+             throat_P: float | None = None) -> Case:
+    c = case_cfg(cfg, values, model, throat_P)
     s, x = resolve(c)
     if not 0 < s.grn_ID0 < s.grn_OD or s.grn_L <= 0:
         raise ValueError("Starting port must be smaller than the grain outside diameter; length must be positive.")
@@ -178,6 +210,8 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
         end_cond=info["end_cond"],
         outside_table=bool(np.any((o.OF[burning] < np.min(s.prop_OF)) | (o.OF[burning] > np.max(s.prop_OF)))),
         traces={name: getattr(o, name)[indices] for name in ("t", "F_thr", "P_cmbr", "OF", "grn_ID")},
+        inj_CdA=total_cda(c),
+        throat=s.noz_thrt,
     )
 
 
@@ -187,17 +221,28 @@ def grid(axes: Sequence[tuple[str, Sequence[float]]]) -> list[tuple[tuple[str, f
     return [tuple(zip(keys, combo)) for combo in itertools.product(*(values for _, values in axes))]
 
 
-def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
-          models: Sequence[str | None] = (None,),
-          stopped: Callable[[], bool] = lambda: False) -> Iterator[Case]:
-    """Run combinations in parallel; stop queues no further cases and drains running workers."""
-    keys = [key for key, _ in axes]
+def check_axes(cfg: dict[str, Any], keys: Sequence[str], models: Sequence[str | None]):
+    """Reject input and fuel-model combinations that can't run or wouldn't change anything."""
     if len(set(keys)) != len(keys):
         raise ValueError("Choose different inputs for the two axes.")
-    if "OF" in keys and any((m or cfg.get("reg_model")) != "Constant OF" for m in models):
-        raise ValueError("Fixed O/F only varies the fixed-O/F model. Choose that model to sweep it.")
-    if "a_scale" in keys and any((m or cfg.get("reg_model")) != "Shifting OF" for m in models):
-        raise ValueError("Burn rate a only varies the burn-rate-law model. Choose that model to sweep it.")
+    law = {m or cfg.get("reg_model") or "Shifting OF" for m in models} == {"Shifting OF"}
+    fixed = {m or cfg.get("reg_model") for m in models} == {"Constant OF"}
+    if "OF" in keys and not fixed:
+        raise ValueError("Fixed O/F only changes the Fixed O/F model. With the burn-rate law, use Starting O/F.")
+    if "start_OF" in keys and not law:
+        raise ValueError("Starting O/F sizes the injector through the burn-rate law. Choose Burn-rate law.")
+    if "start_OF" in keys and {"inj_Cd", "inj_CdA"} & set(keys):
+        raise ValueError("Starting O/F sizes the injector, so it can't be studied with the injector Cd or CdA.")
+    if "a_scale" in keys and not law:
+        raise ValueError("Burn rate a only changes the burn-rate law. Choose Burn-rate law.")
+
+
+def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
+          models: Sequence[str | None] = (None,),
+          stopped: Callable[[], bool] = lambda: False, throat_P: float | None = None) -> Iterator[Case]:
+    """Run combinations in parallel; stop queues no further cases and drains running workers.
+    throat_P (Pa) sizes each case's throat for that chamber pressure."""
+    check_axes(cfg, [key for key, _ in axes], models)
     jobs = [(values, model) for values in grid(axes) for model in models]
     if not jobs:
         raise ValueError("Choose at least one value and fuel model.")
@@ -209,7 +254,7 @@ def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
             job = next(pending, None)
             if job is not None:
                 values, model = job
-                futures[pool.submit(run_case, cfg, values, model)] = job
+                futures[pool.submit(run_case, cfg, values, model, throat_P)] = job
         for _ in range(workers):
             if not stopped():
                 submit()
