@@ -82,11 +82,12 @@ def _linspace(text: str) -> np.ndarray:
 
 
 def sweep_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sweep nozzle throat diameter and injector Cd for a motor JSON.")
+    parser = argparse.ArgumentParser(description="Sweep nozzle throat diameter and total injector CdA for a motor JSON.")
     parser.add_argument("motor", type=Path)
     parser.add_argument("--throat", required=True, type=_linspace, help="min:max:count, e.g. 0.3:0.6:7")
     parser.add_argument("--throat-unit", default="in")
-    parser.add_argument("--cd", required=True, type=_linspace, help="min:max:count, e.g. 0.15:0.4:6")
+    parser.add_argument("--cda", required=True, type=_linspace, help="total injector CdA, min:max:count, e.g. 0.01:0.04:7")
+    parser.add_argument("--cda-unit", default="in^2")
     parser.add_argument("--min-chamber", type=float, default=0.0, help="lowest acceptable peak chamber pressure, psi absolute")
     parser.add_argument("--max-chamber", type=float, default=500.0, help="chamber pressure limit, psi absolute")
     parser.add_argument("--max-dp", type=float, default=300.0,
@@ -105,29 +106,30 @@ def sweep_main(argv: list[str] | None = None) -> int:
         return from_si(pa, "psi", "pressure")
     def unit(m):
         return from_si(m, args.throat_unit, "length")
-    total = len(throats) * len(args.cd)
+    cdas = [to_si(v, args.cda_unit, "area") for v in args.cda]
+    total = len(throats) * len(cdas)
     cases = []
-    for c in study(cfg, [("throat", throats), ("inj_Cd", args.cd)]):
+    for c in study(cfg, [("throat", throats), ("inj_CdA", cdas)]):
         cases.append(c)
         print(f"\r{len(cases)}/{total} cases", end="", flush=True)
     print()
-    cases.sort(key=lambda c: (c.value("throat"), c.value("inj_Cd")))
-    header = (f"throat_{args.throat_unit},inj_Cd,peak_P_cmbr_psi,avg_inj_dP_psi,"
+    cases.sort(key=lambda c: (c.value("throat"), c.value("inj_CdA")))
+    header = (f"throat_{args.throat_unit},inj_CdA_{args.cda_unit},peak_P_cmbr_psi,avg_inj_dP_psi,"
               "total_impulse_Ns,peak_thrust_N,burn_time_s,end_cond,flags")
     lines = [header]
     for c in cases:
         flags = [f for f, bad in (("over_chamber_limit", psi(c.peak_P_cmbr) > args.max_chamber),
                                   ("under_chamber_min", psi(c.peak_P_cmbr) < args.min_chamber),
                                   ("high_injector_dP", psi(c.avg_inj_dP) > args.max_dp)) if bad]
-        lines.append(f"{unit(c.value('throat')):.6g},{c.value('inj_Cd'):.6g},{psi(c.peak_P_cmbr):.6g},{psi(c.avg_inj_dP):.6g},"
+        lines.append(f"{unit(c.value('throat')):.6g},{from_si(c.value('inj_CdA'), args.cda_unit, 'area'):.6g},{psi(c.peak_P_cmbr):.6g},{psi(c.avg_inj_dP):.6g},"
                      f"{c.total_impulse:.6g},{c.peak_thrust:.6g},{c.burn_time:.6g},{c.end_cond},{' '.join(flags)}")
     args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ok = passing_values(cases, "throat", to_si(args.min_chamber, "psi", "pressure"), to_si(args.max_chamber, "psi", "pressure"),
                          to_si(args.max_dp, "psi", "pressure"))
     if ok:
-        print(f"Throats that pass for every Cd: {', '.join(f'{unit(t):.4g}' for t in ok)} {args.throat_unit}")
+        print(f"Throats that pass for every CdA: {', '.join(f'{unit(t):.4g}' for t in ok)} {args.throat_unit}")
     else:
-        print("No throat in this range passes for every Cd.")
+        print("No throat in this range passes for every CdA.")
     print(f"wrote {args.output}")
     return 0
 

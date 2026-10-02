@@ -209,9 +209,9 @@ def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatc
     from hrap.units import DisplayUnits
 
     page = window.study_page
+    page.models.setCurrentIndex(page.models.findText("Both"))
     page.axes[0].set_axis("grain_L", [.25, .3])
     page.axes[1].set_axis("")
-    page.models.setCurrentIndex(1)
     page._run()
     assert not window.motor_tabs.isEnabled()
     wait_for_study(window)

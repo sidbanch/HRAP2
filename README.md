@@ -104,7 +104,7 @@ Tank and chamber dry masses and positions give the empty mass and CG, and the CG
 
 ```sh
 python -m hrap.cli motor.json -o HRAP_output.csv          # one run
-hrap-sweep motor.json --throat 0.3:0.5:5 --cd 0.4:0.9:6   # throat × Cd sweep to CSV
+hrap-sweep motor.json --throat 0.3:0.5:5 --cda 0.01:0.04:7   # throat × total injector CdA sweep to CSV
 hrap-compare motor.json golden.csv                        # compare against a saved MATLAB trace
 ```
 

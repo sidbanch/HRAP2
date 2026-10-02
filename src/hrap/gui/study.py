@@ -37,7 +37,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.engine.study import INPUTS, MODELS, OUTPUTS, Case, case_cfg, check_axes, grid, passing_values, study, uses_spi
+from hrap.engine.study import (
+    INPUTS,
+    MODELS,
+    OUTPUTS,
+    Case,
+    allowed_inputs,
+    case_cfg,
+    check_axes,
+    grid,
+    passing_values,
+    study,
+    uses_spi,
+)
 from hrap.gui.sizing import card_frame
 from hrap.gui.widgets import UnitRow
 from hrap.io.config import chamber_limit, clone_cfg
@@ -101,11 +113,9 @@ class TileDelegate(QStyledItemDelegate):
 class Axis(QWidget):
     def __init__(self, optional=False):
         super().__init__()
+        self.optional = optional
         self.key = QComboBox()
-        if optional:
-            self.key.addItem("None", "")
-        for key, spec in INPUTS.items():
-            self.key.addItem(spec.label, key)
+        self.set_choices(list(INPUTS), [])
         self.values = QLineEdit()
         self.values.setPlaceholderText("12, 15, 18, 24   or   12:24:5")
         self.values.setToolTip("Comma-separated values, or start:end:count for evenly spaced values including both ends.")
@@ -123,6 +133,23 @@ class Axis(QWidget):
         self.cfg = {}
         self._unit = ""
         self._changed()
+
+    def set_choices(self, keys: list[str], models: list[str]):
+        """List only these inputs, keeping the chosen one if it's still there."""
+        current = self.key.currentData()
+        self.key.blockSignals(True)
+        self.key.clear()
+        if self.optional:
+            self.key.addItem("None", "")
+        for key in keys:
+            self.key.addItem(INPUTS[key].label, key)
+            if "Constant OF" in models and INPUTS[key].fixed_OF_note:
+                self.key.setItemData(self.key.count() - 1, INPUTS[key].fixed_OF_note, Qt.ItemDataRole.ToolTipRole)
+        index = self.key.findData(current)
+        self.key.setCurrentIndex(max(index, 0))
+        self.key.blockSignals(False)
+        if current is not None and self.key.currentData() != current:
+            self._changed()
 
     def _convert(self, unit):
         key = self.key.currentData()
@@ -254,15 +281,19 @@ class StudyPage(QWidget):
         # Left: what to study. Right: the result grid, and the curves of the selected cases.
         self.axes = [Axis(), Axis(optional=True)]
         self.models = QComboBox()
-        self.models.addItem("Current motor's fuel model", None)
-        self.models.addItem("Both fuel models", list(MODELS))
         for key, label in MODELS.items():
             self.models.addItem(label, [key])
+        self.models.addItem("Both", list(MODELS))
+        self.models.setToolTip("The inputs listed are the ones that change something with this fuel model.\n"
+                               "Both runs every case with each model, for comparing them.")
+        self.models.activated.connect(self._edited)
+        self.models.currentIndexChanged.connect(lambda *_: self._sync_choices())
         self.axes[1].key.setCurrentIndex(self.axes[1].key.findData("inj_CdA"))
         for axis in self.axes:
             axis.key.activated.connect(self._edited)
-            axis.key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
             axis.values.textEdited.connect(self._edited)
+        self.axes[0].key.currentIndexChanged.connect(lambda *_: self._sync_choices())
+        self.axes[1].key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
         self._axes_edited = False  # until then, the values follow the open motor
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
@@ -278,11 +309,11 @@ class StudyPage(QWidget):
         fields.setHorizontalSpacing(10)
         fields.setVerticalSpacing(8)
         fields.setColumnStretch(1, 1)
+        fields.addWidget(QLabel("Fuel model"), 0, 0)
+        fields.addWidget(self.models, 0, 1)
         for i, (name, axis) in enumerate(zip(("Columns", "Rows"), self.axes)):
-            fields.addWidget(QLabel(name), i, 0, Qt.AlignmentFlag.AlignTop)
-            fields.addWidget(axis, i, 1)
-        fields.addWidget(QLabel("Fuel model"), 2, 0)
-        fields.addWidget(self.models, 2, 1)
+            fields.addWidget(QLabel(name), 1 + i, 0, Qt.AlignmentFlag.AlignTop)
+            fields.addWidget(axis, 1 + i, 1)
         fields.addWidget(self.size_throat, 3, 0, 1, 2)
         setup.addLayout(fields)
         self.run_btn = QPushButton("Run study")
@@ -465,7 +496,11 @@ class StudyPage(QWidget):
         cfg = self._get_cfg()
         for axis in self.axes:
             axis.cfg = cfg
-            if not self._axes_edited:
+        if not self._axes_edited:  # start on the motor's own fuel model
+            self.models.setCurrentIndex(self.models.findData([cfg.get("reg_model") or "Shifting OF"]))
+        self._sync_choices()
+        if not self._axes_edited:
+            for axis in self.axes:
                 axis._changed()
         self._loaded_from = ""
         self._show_throat_option()
@@ -491,6 +526,13 @@ class StudyPage(QWidget):
 
     def _edited(self, *_):
         self._axes_edited = True
+
+    def _sync_choices(self):
+        """Columns list the inputs that work with the fuel model; Rows also leave out the Columns' input and its clashes."""
+        models = self.models.currentData()
+        self.axes[0].set_choices(allowed_inputs(models), models)
+        self.axes[1].set_choices(allowed_inputs(models, self.axes[0].key.currentData()), models)
+        self._show_throat_option()
 
     def _show_throat_option(self):
         """Only when the Motor tab sizes the nozzle for a chamber pressure, and the study isn't varying the throat."""
@@ -524,7 +566,7 @@ class StudyPage(QWidget):
             axes = [a.read() for a in self.axes]
             axes = [a for a in axes if a]
             cfg = clone_cfg(self._base_override or self._get_cfg())
-            models = self.models.currentData() or [cfg.get("reg_model", "Shifting OF")]
+            models = self.models.currentData()
             check_axes(cfg, [key for key, _ in axes], models)
             throat_P = self._throat_target(cfg) if self.size_throat.isChecked() and self.size_throat.isVisibleTo(self) else None
             result = StudyRun(cfg, axes, models, throat_P=throat_P)
@@ -603,6 +645,7 @@ class StudyPage(QWidget):
         runs = pickle.loads(data)
         if not all(isinstance(r, StudyRun) for r in runs):
             return
+        runs = [r for r in runs if all(key in INPUTS for key, _ in r.axes)]  # inputs since removed can't be shown
         self.runs = runs
         self.history.blockSignals(True)
         self.history.clear()
@@ -827,9 +870,10 @@ class StudyPage(QWidget):
             self.size_throat.setChecked(bool(throat_P))
             for axis in self.axes:
                 axis.cfg = cfg
+            self.models.setCurrentIndex(next(i for i in range(self.models.count()) if set(self.models.itemData(i)) == set(models)))
+            self._sync_choices()
             for axis, (key, values) in zip(self.axes, axes + [["", []]]):
                 axis.set_axis(key, values)
-            self.models.setCurrentIndex(next(i for i in range(self.models.count()) if self.models.itemData(i) == models))
             self._axes_edited = True
             self._show_throat_option()
             self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")

@@ -30,7 +30,7 @@ def test_liquid_phase_metrics_do_not_confuse_early_stop_with_runout():
 
 def test_invalid_model_axis_and_cancellation_before_start():
     cfg = bundled_motor("Rattworks_K240")
-    with pytest.raises(ValueError, match="Fixed O/F only changes"):
+    with pytest.raises(ValueError, match="only applies to the Fixed O/F model"):
         list(study(cfg, [("OF", [6, 7])], ["Shifting OF"]))
     with pytest.raises(ValueError, match="Starting port"):
         run_case(cfg, [("port_D", 10)], "Constant OF")

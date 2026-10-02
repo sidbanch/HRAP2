@@ -55,6 +55,8 @@ class Input:
     quantity: str | None      # display quantity for the value; None for a bare number
     apply: Callable[[dict, float], None] | None  # None: case_cfg sizes the motor for it after the other inputs
     current: Callable[[dict], float]
+    models: frozenset[str] = frozenset({"Shifting OF", "Constant OF"})  # fuel models it changes anything in
+    fixed_OF_note: str = ""  # what it still changes with a fixed O/F, when that's only part of the motor
 
 
 def _current_length(key: str) -> Callable[[dict], float]:
@@ -90,15 +92,17 @@ def _current_temperature(cfg: dict) -> float:
 
 INPUTS: dict[str, Input] = {
     "throat": Input("Throat", "length", lambda c, v: c.update(noz_thrt=v, noz_thrt_unit="m"), _current_length("noz_thrt")),
-    "inj_Cd": Input("Injector Cd", None, _set_cd, injector_cd),
     "inj_CdA": Input("Injector CdA (total)", "area", _set_cda, total_cda),
-    "grain_L": Input("Grain length", "length", _set_length("grn_L"), _current_length("grn_L")),
-    "port_D": Input("Starting port", "length", _set_length("grn_ID"), _current_length("grn_ID")),
+    "grain_L": Input("Grain length", "length", _set_length("grn_L"), _current_length("grn_L"),
+                     fixed_OF_note="With a fixed O/F the fuel flow is forced, so this only changes the end port and burnout."),
+    "port_D": Input("Starting port", "length", _set_length("grn_ID"), _current_length("grn_ID"),
+                    fixed_OF_note="With a fixed O/F the fuel flow is forced, so this only changes the end port and burnout."),
     "tank_T": Input("Tank temperature", "temperature", _set_temperature, _current_temperature),
     "fill": Input("Fill (%)", None, _set_fill, lambda c: float(c.get("fill") or 0.0)),
-    "OF": Input("Fixed O/F", None, lambda c, v: c.update(const_OF=v), lambda c: float(c.get("const_OF") or 6.0)),
-    "start_OF": Input("Starting O/F", None, None, _current_start_OF),
-    "a_scale": Input("Burn rate a ×", None, _scale_a, lambda c: 1.0),
+    "OF": Input("O/F", None, lambda c, v: c.update(const_OF=v), lambda c: float(c.get("const_OF") or 6.0),
+                frozenset({"Constant OF"})),
+    "start_OF": Input("Starting O/F", None, None, _current_start_OF, frozenset({"Shifting OF"})),
+    "a_scale": Input("Burn rate a ×", None, _scale_a, lambda c: 1.0, frozenset({"Shifting OF"})),
     "cstar_eff": Input("C* efficiency (%)", None, lambda c, v: c.update(cstar_eff=v), lambda c: float(c["cstar_eff"])),
 }
 
@@ -221,20 +225,26 @@ def grid(axes: Sequence[tuple[str, Sequence[float]]]) -> list[tuple[tuple[str, f
     return [tuple(zip(keys, combo)) for combo in itertools.product(*(values for _, values in axes))]
 
 
+CONFLICTS = [frozenset({"start_OF", "inj_CdA"})]  # inputs that set the same part of the motor
+
+
+def allowed_inputs(models: Sequence[str], other: str | None = None) -> list[str]:
+    """Inputs that change something in every one of the fuel models, and don't clash with the other axis's input."""
+    return [key for key, spec in INPUTS.items()
+            if set(models) <= spec.models and key != other and frozenset({key, other}) not in CONFLICTS]
+
+
 def check_axes(cfg: dict[str, Any], keys: Sequence[str], models: Sequence[str | None]):
     """Reject input and fuel-model combinations that can't run or wouldn't change anything."""
     if len(set(keys)) != len(keys):
         raise ValueError("Choose different inputs for the two axes.")
-    law = {m or cfg.get("reg_model") or "Shifting OF" for m in models} == {"Shifting OF"}
-    fixed = {m or cfg.get("reg_model") for m in models} == {"Constant OF"}
-    if "OF" in keys and not fixed:
-        raise ValueError("Fixed O/F only changes the Fixed O/F model. With the burn-rate law, use Starting O/F.")
-    if "start_OF" in keys and not law:
-        raise ValueError("Starting O/F sizes the injector through the burn-rate law. Choose Burn-rate law.")
-    if "start_OF" in keys and {"inj_Cd", "inj_CdA"} & set(keys):
-        raise ValueError("Starting O/F sizes the injector, so it can't be studied with the injector Cd or CdA.")
-    if "a_scale" in keys and not law:
-        raise ValueError("Burn rate a only changes the burn-rate law. Choose Burn-rate law.")
+    used = [m or cfg.get("reg_model") or "Shifting OF" for m in models]
+    for key in keys:
+        if key not in allowed_inputs(used):
+            only = " and ".join(MODELS[m] for m in INPUTS[key].models)
+            raise ValueError(f"{INPUTS[key].label} only applies to the {only} model.")
+    if len(keys) == 2 and frozenset(keys) in CONFLICTS:
+        raise ValueError(f"{INPUTS[keys[0]].label} and {INPUTS[keys[1]].label} both set the injector.")
 
 
 def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
