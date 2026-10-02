@@ -27,7 +27,7 @@ Motor files are JSON, and hold the Motor tab's Sizing settings and targets too. 
 
 Holds the whole motor: tank, fuel, injector, grain and nozzle, and shows its state at the start of the burn (flows, O/F, chamber pressure, thrust), using the same injector, combustion and nozzle math as the simulation.
 
-The Injector, Grain and Nozzle cards each have a **Sizing** setting. **As built**, the part is what you enter. Set **For** a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Sizing settings opens with every part as built.
+The Injector, Grain and Nozzle cards each have a **Sizing** setting. **Manual**, the part is what you enter. Set **For** a target instead, the card works out the part that meets it, and **Apply to motor** makes the sized throat, expansion ratio, hole count, swirler holes and grain length the motor's. A motor file without saved Sizing settings opens with every part manual.
 
 **Fuel: Fuel flow** is **Burn-rate law** (HRAP's Shifting OF), where the grain burns back at a × G^n and the O/F drifts as the port opens, or **Fixed O/F** (Constant OF), which holds the O/F you type and ignores the burn rate. Use Fixed O/F only without burn-rate data. With it, nothing can be sized for an O/F.
 
@@ -37,13 +37,13 @@ Motor files that give the tank by length, starting pressure or oxidizer mass, or
 
 | Sizing | You give | It gives |
 | --- | --- | --- |
-| As built | hole or swirler count and geometry | the flow |
+| Manual | hole or swirler count and geometry | the flow |
 | For liquid burn time | how long the liquid should last | flow = liquid in the tank ÷ burn time |
-| For O/F | a starting O/F, with the grain as built | the flow that gives that O/F |
+| For O/F | a starting O/F, with the grain length you enter | the flow that gives that O/F |
 
 Every mode shows **Total CdA**: the Cd × area the injector needs for that flow at this ΔP. Compare it with a cold-flow result. If the cold flow gives Cd on the exit area, Cd × exit area is the CdA.
 
-**Grain: Sizing** For O/F gives a grain length; As built gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; As built uses the nozzle's own and gives the chamber pressure.
+**Grain: Sizing** For O/F gives a grain length; Manual gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; Manual uses the nozzle's own and gives the chamber pressure.
 
 The throat × injector Cd sweep is now on the **Study** tab.
 

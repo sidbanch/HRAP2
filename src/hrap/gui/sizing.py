@@ -1,4 +1,4 @@
-"""Motor tab: the whole motor, with each part either as built or sized for targets at the start of the burn."""
+"""Motor tab: the whole motor, with each part either entered by hand or sized for targets at the start of the burn."""
 from __future__ import annotations
 
 import math
@@ -101,6 +101,11 @@ class FieldGrid(QGridLayout):
                 self.addWidget(row[-1], self._rows, 2)
         self._rows += 1
         return row
+
+    def add_below(self, widget: QWidget):
+        """A line under the last row's field."""
+        self.addWidget(widget, self._rows, 1, 1, 2, Qt.AlignmentFlag.AlignLeft)
+        self._rows += 1
 
 
 class Card(QFrame):
@@ -205,10 +210,10 @@ class SizingPage(QWidget):
         self.burn_time.setToolTip("How long the liquid should last. It sets the oxidizer flow, and the hole count follows.\n"
                                   "The real burn runs a little longer, because the flow drops as the tank cools.")
         self.size_from = PlainComboBox()
-        self.size_from.addItems(["As built", "For liquid burn time", "For O/F"])
-        self.size_from.setToolTip("As built: use the holes or swirlers you enter.\n"
+        self.size_from.addItems(["Manual", "For liquid burn time", "For O/F"])
+        self.size_from.setToolTip("Manual: use the holes or swirlers you enter.\n"
                                   "For liquid burn time: size the injector to empty the liquid in that time.\n"
-                                  "For O/F: size the injector for the starting O/F, with the grain as built.")
+                                  "For O/F: size the injector for the starting O/F, with the grain length you enter.")
         self.holes = PlainSpinBox()
         self.holes.setRange(1, 200)
         self.holes.setToolTip("Injector hole count. The oxidizer flow and burn time follow from it.")
@@ -216,8 +221,8 @@ class SizingPage(QWidget):
                            "or the oxidizer flow when the injector is sized from O/F.\n"
                            "With the burn-rate law it drifts during the burn.")
         self.grain_from = PlainComboBox()
-        self.grain_from.addItems(["As built", "For O/F"])
-        self.grain_from.setToolTip("As built: use the grain length you enter.\n"
+        self.grain_from.addItems(["Manual", "For O/F"])
+        self.grain_from.setToolTip("Manual: use the grain length you enter.\n"
                                    "For O/F: size the grain length for the starting O/F.")
         self.port_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.grain_OD = UnitRow(LENGTH_ITEMS, "in", 4)
@@ -240,12 +245,11 @@ class SizingPage(QWidget):
 
         targets, tl = card_frame("Targets")
         form = FieldGrid()
-        for row, (name, label, field, unit) in enumerate((("P_cmbr", "Chamber pressure", self.P_cmbr, ""),
-                                                          ("burn_time", "Liquid burn time", self.burn_time, "s"),
-                                                          ("OF", "O/F", self.OF, ""))):
-            widgets = form.add(label, field, unit)
-            form.addWidget(self._badges[name], row, 3)
-            setattr(self, f"_{name}_row", widgets)
+        for name, label, field, unit in (("P_cmbr", "Chamber pressure", self.P_cmbr, ""),
+                                         ("burn_time", "Liquid burn time", self.burn_time, "s"),
+                                         ("OF", "O/F", self.OF, "")):
+            setattr(self, f"_{name}_row", form.add(label, field, unit))
+            form.add_below(self._badges[name])
         form.add("Pressure limit", self.P_limit)
         tl.addLayout(form)
 
@@ -421,8 +425,8 @@ class SizingPage(QWidget):
         self.Pa = UnitRow(PRESSURE_ITEMS, "atm", 3)
         self.Pa.setToolTip("Outside pressure. A sized expansion ratio matches it. Lower it to model a motor at altitude.")
         self.nozzle_from = PlainComboBox()
-        self.nozzle_from.addItems(["As built", "For chamber pressure"])
-        self.nozzle_from.setToolTip("As built: use the throat and expansion ratio you enter.\n"
+        self.nozzle_from.addItems(["Manual", "For chamber pressure"])
+        self.nozzle_from.setToolTip("Manual: use the throat and expansion ratio you enter.\n"
                                     "For chamber pressure: size them for the chamber pressure target.")
         self.throat_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.noz_ER = PlainDoubleSpinBox()
@@ -597,7 +601,7 @@ class SizingPage(QWidget):
             w.setVisible(not fixed)
         for w in self._throat_rows:
             w.setVisible(fixed)
-        for name in ("Throat diameter", "Expansion ratio"):  # with the nozzle as built they're inputs
+        for name in ("Throat diameter", "Expansion ratio"):  # with a manual nozzle they're inputs
             self.nozzle.show_row(name, not fixed)
         self.nozzle.show_row("Chamber pressure", fixed)
 
@@ -627,7 +631,7 @@ class SizingPage(QWidget):
                 "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value()}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
-        """Load saved targets. A motor without any opens with every part as built, so nothing is sized."""
+        """Load saved targets. A motor without any opens with every part manual, so nothing is sized."""
         self._loading = True
         self.P_cmbr.set_si(saved.get("P_cmbr") or to_si(400.0, "psi", "pressure"), "pressure")
         self.burn_time.setValue(float(saved.get("burn_time") or 5.0))
@@ -1097,9 +1101,14 @@ class SizingPage(QWidget):
         for name, badge in self._badges.items():
             shown = built.get(name, (0.0, ""))[1]
             differs = bool(shown) and shown != self._target_shown(name)
-            badge.setText(shown.split(" ")[0])
-            badge.setToolTip(f"The current motor starts at {shown}. Click to make that the target.")
+            badge.setText(f"current motor: {shown}")
+            badge.setToolTip(f"The motor is currently sized for {shown}. Apply to motor sizes it for the target;\n"
+                             "click here (or Revert) to set the target back to this.")
             badge.setVisible(differs)
+            field = self.P_cmbr.spin if name == "P_cmbr" else getattr(self, name)
+            field.setProperty("changed", differs)
+            field.style().unpolish(field)
+            field.style().polish(field)
         self.revert_btn.setVisible(any(b.isVisibleTo(self) for b in self._badges.values()))
         self.apply_summary.setText("Applies: " + ", ".join(changes))
         self._apply_bar.setVisible(bool(changes))
