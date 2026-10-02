@@ -252,9 +252,6 @@ class StudyPage(QWidget):
         self._base_override = None
 
         # Left: what to study. Right: the result grid, and the curves of the selected cases.
-        self.preset = QComboBox()
-        self.preset.addItems(["Throat × injector Cd", "Grain length × total injector CdA", "Grain length × burn rate a", "Custom"])
-        self.preset.activated.connect(self._preset)
         self.axes = [Axis(), Axis(optional=True)]
         self.models = QComboBox()
         self.models.addItem("Current motor's fuel model", None)
@@ -262,8 +259,10 @@ class StudyPage(QWidget):
         for key, label in MODELS.items():
             self.models.addItem(label, [key])
         for axis in self.axes:
-            axis.key.activated.connect(lambda *_: self.preset.setCurrentIndex(3))
-            axis.values.textEdited.connect(lambda *_: self.preset.setCurrentIndex(3))
+            axis.key.activated.connect(self._edited)
+            axis.values.textEdited.connect(self._edited)
+        self.axes[1].key.setCurrentIndex(self.axes[1].key.findData("inj_CdA"))
+        self._axes_edited = False  # until then, the values follow the open motor
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
                                     "chamber pressure target, instead of the motor's own nozzle.")
@@ -277,14 +276,12 @@ class StudyPage(QWidget):
         fields.setHorizontalSpacing(10)
         fields.setVerticalSpacing(8)
         fields.setColumnStretch(1, 1)
-        fields.addWidget(QLabel("Preset"), 0, 0)
-        fields.addWidget(self.preset, 0, 1)
         for i, (name, axis) in enumerate(zip(("Columns", "Rows"), self.axes)):
-            fields.addWidget(QLabel(name), 1 + i, 0, Qt.AlignmentFlag.AlignTop)
-            fields.addWidget(axis, 1 + i, 1)
-        fields.addWidget(QLabel("Fuel model"), 3, 0)
-        fields.addWidget(self.models, 3, 1)
-        fields.addWidget(self.size_throat, 4, 0, 1, 2)
+            fields.addWidget(QLabel(name), i, 0, Qt.AlignmentFlag.AlignTop)
+            fields.addWidget(axis, i, 1)
+        fields.addWidget(QLabel("Fuel model"), 2, 0)
+        fields.addWidget(self.models, 2, 1)
+        fields.addWidget(self.size_throat, 3, 0, 1, 2)
         setup.addLayout(fields)
         self.run_btn = QPushButton("Run study")
         self.run_btn.setObjectName("runButton")
@@ -466,7 +463,8 @@ class StudyPage(QWidget):
         cfg = self._get_cfg()
         for axis in self.axes:
             axis.cfg = cfg
-        self._preset(self.preset.currentIndex())
+            if not self._axes_edited:
+                axis._changed()
         self._show_throat_target(cfg)
         self._loaded_from = ""
         self._update_source()
@@ -489,17 +487,8 @@ class StudyPage(QWidget):
         self.source.setText(text)
         self.source.setVisible(bool(text))
 
-    def _preset(self, index):
-        self.preset.setCurrentIndex(index)
-        if index == 3:
-            return
-        cfg = self._base_override or self._get_cfg()
-        for axis in self.axes:
-            axis.cfg = cfg
-        first, second = (("throat", "inj_Cd"), ("grain_L", "inj_CdA"), ("grain_L", "a_scale"))[index]
-        self.axes[0].set_axis(first)
-        self.axes[1].set_axis(second)
-        self.models.setCurrentIndex(2 if index == 2 else 0)
+    def _edited(self, *_):
+        self._axes_edited = True
 
     def _show_throat_target(self, cfg: dict):
         target = self._throat_target(cfg)
@@ -837,7 +826,7 @@ class StudyPage(QWidget):
             for axis, (key, values) in zip(self.axes, axes + [["", []]]):
                 axis.set_axis(key, values)
             self.models.setCurrentIndex(next(i for i in range(self.models.count()) if self.models.itemData(i) == models))
-            self.preset.setCurrentIndex(3)
+            self._axes_edited = True
             self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")
             self.max_dp.set_si(float(data.get("max_dp", to_si(300, "psi", "pressure"))), "pressure")
             self._loaded_from = Path(path).name
