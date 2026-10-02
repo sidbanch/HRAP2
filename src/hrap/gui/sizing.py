@@ -186,6 +186,7 @@ class SizingPage(QWidget):
         super().__init__()
         self._get_cfg, self._get_units = get_cfg, get_units
         self._result: Sizing | None = None
+        self._built: Sizing | None = None  # the motor as built, at the start of the burn
         self._cfg: dict | None = None
         self._layout: Layout | None = None  # the swirler drilled for the flow, when a burn time or O/F sets it
         self._port_error = ""
@@ -453,6 +454,7 @@ class SizingPage(QWidget):
         self.apply_btn.setToolTip("Set the motor's throat, expansion ratio, hole count, swirler holes and grain length to the sized ones.")
         self.apply_btn.clicked.connect(self.apply)
         self.apply_summary = QLabel("")
+        self.apply_summary.setWordWrap(True)
         bar = self._apply_bar = QFrame()
         bar.setObjectName("applyBar")
         buttons = QHBoxLayout(bar)
@@ -843,6 +845,12 @@ class SizingPage(QWidget):
             self._show_apply()
             return
         self._result, self._cfg = z, cfg
+        try:  # the motor as built, to show which targets the sized parts are for
+            t = self.targets()
+            self._built = size_motor(cfg, SizingTargets(P_cmbr=None, burn_time=None, OF=t.OF, port_D=t.port_D,
+                                                        holes=int(cfg["inj_N"]), grain_L=self.grain_L.si("length")))
+        except Exception:
+            self._built = None
         self._layout = None
         if self._solve_port():
             target = Target(z.inj_CdA, z.mdot_o, z.OF if self._by_length() else None, z.OF_exp, z.ox_liquid, self.holes.value(),
@@ -1029,10 +1037,26 @@ class SizingPage(QWidget):
             pairs.append(("grain", u.text(self.grain_L.si("length"), "length"), u.text(v["grain_L"], "length")))
         return [f"{name} {old} → {new}" for name, old, new in pairs if old != new]
 
+    def targets_vs_built(self) -> str:
+        """The targets the sized parts are for, next to what the motor as built gives at the start of the burn,
+        e.g. "O/F 10 (as built: 8.01)"."""
+        z, b, u, t = self._result, self._built, self._get_units(), self.targets()
+        if z is None or b is None:
+            return ""
+        pairs = []
+        if (self._by_OF() or not self._by_length()) and not self._fixed_OF():
+            pairs.append(("O/F", f"{t.OF:.3g}", f"{b.OF:.3g}"))
+        if self._by_burn_time():
+            pairs.append(("liquid burn", f"{t.burn_time:.3g} s", f"{b.burn_time:.3g} s"))
+        if not self._fixed_nozzle():
+            pairs.append(("chamber pressure", u.text(z.P_cmbr, "pressure"), u.text(b.P_cmbr, "pressure")))
+        return " and ".join(f"{name} {target} (as built: {built})" for name, target, built in pairs if target != built)
+
     def _show_apply(self):
         """The Apply bar only shows when a sized part differs from the motor's."""
         changes = self.unapplied()
-        self.apply_summary.setText("Applies: " + ", ".join(changes))
+        why = self.targets_vs_built()
+        self.apply_summary.setText((f"To reach {why}: " if why else "Applies: ") + ", ".join(changes))
         self._apply_bar.setVisible(bool(changes))
         self.sized.emit()
 

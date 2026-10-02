@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
         self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case,
-                                    self.sizing_page.unapplied, self._save_output)
+                                    self.sizing_page.unapplied, self._save_output, self.sizing_page.targets_vs_built)
         self.study_page.started.connect(self._sync_busy)
         self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
