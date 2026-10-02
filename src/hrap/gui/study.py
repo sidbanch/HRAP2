@@ -258,15 +258,17 @@ class StudyPage(QWidget):
         self.models.addItem("Both fuel models", list(MODELS))
         for key, label in MODELS.items():
             self.models.addItem(label, [key])
+        self.axes[1].key.setCurrentIndex(self.axes[1].key.findData("inj_CdA"))
         for axis in self.axes:
             axis.key.activated.connect(self._edited)
+            axis.key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
             axis.values.textEdited.connect(self._edited)
-        self.axes[1].key.setCurrentIndex(self.axes[1].key.findData("inj_CdA"))
         self._axes_edited = False  # until then, the values follow the open motor
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
                                     "chamber pressure target, instead of the motor's own nozzle.")
         self.size_throat.toggled.connect(lambda *_: self._update_source())
+        self.size_throat.hide()
         self.source = _small("")
         self.source.setStyleSheet(f"color: {WARN.lighter(150).name()};")
         self.source.hide()
@@ -465,8 +467,8 @@ class StudyPage(QWidget):
             axis.cfg = cfg
             if not self._axes_edited:
                 axis._changed()
-        self._show_throat_target(cfg)
         self._loaded_from = ""
+        self._show_throat_option()
         self._update_source()
         self.refresh()
 
@@ -480,7 +482,7 @@ class StudyPage(QWidget):
             text = f"Runs the motor saved in {self._loaded_from}, not the open one."
         else:
             changes = self._get_unapplied()
-            if self.size_throat.isChecked():  # each case sizes its own nozzle
+            if self.size_throat.isChecked() and self.size_throat.isVisibleTo(self):  # each case sizes its own nozzle
                 changes = [c for c in changes if not c.startswith(("throat ", "expansion ratio "))]
             text = (f"Not applied from the Motor tab: {', '.join(changes)}. The study runs the motor without these."
                     if changes else "")
@@ -490,17 +492,20 @@ class StudyPage(QWidget):
     def _edited(self, *_):
         self._axes_edited = True
 
-    def _show_throat_target(self, cfg: dict):
-        target = self._throat_target(cfg)
-        self.size_throat.setEnabled(target is not None)
-        self.size_throat.setText("Size the throat for each case"
-                                 + (f" ({self._get_units().text(target, 'pressure')} target)" if target else ""))
+    def _show_throat_option(self):
+        """Only when the Motor tab sizes the nozzle for a chamber pressure, and the study isn't varying the throat."""
+        target = self._throat_target(self._base_override or self._get_cfg())
+        varied = any(axis.key.currentData() == "throat" for axis in self.axes)
+        self.size_throat.setVisible(target is not None and not varied)
+        if target is not None:
+            self.size_throat.setText(f"Size the throat for each case ({self._get_units().text(target, 'pressure')} target)")
+        self._update_source()
 
     @staticmethod
     def _throat_target(cfg: dict) -> float | None:
-        """The Motor tab's chamber pressure target (Pa)."""
-        target = (cfg.get("sizing") or {}).get("P_cmbr")
-        return float(target) if target else None
+        """The Motor tab's chamber pressure target (Pa), when it sizes the nozzle for one."""
+        sizing = cfg.get("sizing") or {}
+        return float(sizing["P_cmbr"]) if sizing.get("nozzle_from") == "P_cmbr" and sizing.get("P_cmbr") else None
 
     def busy(self):
         return self._thread is not None
@@ -521,7 +526,7 @@ class StudyPage(QWidget):
             cfg = clone_cfg(self._base_override or self._get_cfg())
             models = self.models.currentData() or [cfg.get("reg_model", "Shifting OF")]
             check_axes(cfg, [key for key, _ in axes], models)
-            throat_P = self._throat_target(cfg) if self.size_throat.isChecked() else None
+            throat_P = self._throat_target(cfg) if self.size_throat.isChecked() and self.size_throat.isVisibleTo(self) else None
             result = StudyRun(cfg, axes, models, throat_P=throat_P)
             same = next((i for i, run in enumerate(self.runs) if run.complete and run.key() == result.key()), None)
             if same is not None:
@@ -819,7 +824,6 @@ class StudyPage(QWidget):
             for values in grid(axes):
                 case_cfg(cfg, values, models[0], throat_P)
             self._base_override = cfg
-            self._show_throat_target(cfg)
             self.size_throat.setChecked(bool(throat_P))
             for axis in self.axes:
                 axis.cfg = cfg
@@ -827,6 +831,7 @@ class StudyPage(QWidget):
                 axis.set_axis(key, values)
             self.models.setCurrentIndex(next(i for i in range(self.models.count()) if self.models.itemData(i) == models))
             self._axes_edited = True
+            self._show_throat_option()
             self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")
             self.max_dp.set_si(float(data.get("max_dp", to_si(300, "psi", "pressure"))), "pressure")
             self._loaded_from = Path(path).name

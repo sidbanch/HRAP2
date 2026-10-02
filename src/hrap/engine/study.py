@@ -243,6 +243,8 @@ def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
     """Run combinations in parallel; stop queues no further cases and drains running workers.
     throat_P (Pa) sizes each case's throat for that chamber pressure."""
     check_axes(cfg, [key for key, _ in axes], models)
+    if throat_P and any(key == "throat" for key, _ in axes):
+        raise ValueError("The throat can't be both studied and sized for each case.")
     jobs = [(values, model) for values in grid(axes) for model in models]
     if not jobs:
         raise ValueError("Choose at least one value and fuel model.")
