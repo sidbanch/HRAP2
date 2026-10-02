@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -186,7 +187,7 @@ class SizingPage(QWidget):
         super().__init__()
         self._get_cfg, self._get_units = get_cfg, get_units
         self._result: Sizing | None = None
-        self._built: Sizing | None = None  # the motor as built, at the start of the burn
+        self._built: Sizing | None = None  # the current motor, at the start of the burn
         self._cfg: dict | None = None
         self._layout: Layout | None = None  # the swirler drilled for the flow, when a burn time or O/F sets it
         self._port_error = ""
@@ -228,11 +229,23 @@ class SizingPage(QWidget):
         self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.P_limit.setToolTip("The chamber's design pressure (absolute). The Motor, Simulation and Study tabs warn above it.")
 
+        # Beside each target, what the current motor gives; clicking one makes it the target.
+        self._badges: dict[str, QToolButton] = {}
+        for name in ("P_cmbr", "burn_time", "OF"):
+            badge = self._badges[name] = QToolButton()
+            badge.setObjectName("builtBadge")
+            badge.setCursor(Qt.CursorShape.PointingHandCursor)
+            badge.hide()
+            badge.clicked.connect(lambda _=False, n=name: self._revert([n]))
+
         targets, tl = card_frame("Targets")
         form = FieldGrid()
-        self._P_cmbr_row = form.add("Chamber pressure", self.P_cmbr)
-        self._burn_time_row = form.add("Liquid burn time", self.burn_time, "s")
-        self._OF_row = form.add("O/F", self.OF)
+        for row, (name, label, field, unit) in enumerate((("P_cmbr", "Chamber pressure", self.P_cmbr, ""),
+                                                          ("burn_time", "Liquid burn time", self.burn_time, "s"),
+                                                          ("OF", "O/F", self.OF, ""))):
+            widgets = form.add(label, field, unit)
+            form.addWidget(self._badges[name], row, 3)
+            setattr(self, f"_{name}_row", widgets)
         form.add("Pressure limit", self.P_limit)
         tl.addLayout(form)
 
@@ -455,11 +468,15 @@ class SizingPage(QWidget):
         self.apply_btn.clicked.connect(self.apply)
         self.apply_summary = QLabel("")
         self.apply_summary.setWordWrap(True)
+        self.revert_btn = QPushButton("Revert")
+        self.revert_btn.setToolTip("Set the targets to what the current motor gives, instead of changing the motor.")
+        self.revert_btn.clicked.connect(lambda: self._revert(list(self._badges)))
         bar = self._apply_bar = QFrame()
         bar.setObjectName("applyBar")
         buttons = QHBoxLayout(bar)
         buttons.setContentsMargins(16, 10, 16, 10)
         buttons.addWidget(self.apply_summary, 1)
+        buttons.addWidget(self.revert_btn)
         buttons.addWidget(self.apply_btn)
         self.swirler_options = SwirlerOptions()
         self.swirler_options.picked.connect(self._on_layout_picked)
@@ -845,7 +862,7 @@ class SizingPage(QWidget):
             self._show_apply()
             return
         self._result, self._cfg = z, cfg
-        try:  # the motor as built, to show which targets the sized parts are for
+        try:
             t = self.targets()
             self._built = size_motor(cfg, SizingTargets(P_cmbr=None, burn_time=None, OF=t.OF, port_D=t.port_D,
                                                         holes=int(cfg["inj_N"]), grain_L=self.grain_L.si("length")))
@@ -1037,26 +1054,54 @@ class SizingPage(QWidget):
             pairs.append(("grain", u.text(self.grain_L.si("length"), "length"), u.text(v["grain_L"], "length")))
         return [f"{name} {old} → {new}" for name, old, new in pairs if old != new]
 
-    def targets_vs_built(self) -> str:
-        """The targets the sized parts are for, next to what the motor as built gives at the start of the burn,
-        e.g. "O/F 10 (as built: 8.01)"."""
-        z, b, u, t = self._result, self._built, self._get_units(), self.targets()
-        if z is None or b is None:
-            return ""
-        pairs = []
-        if (self._by_OF() or not self._by_length()) and not self._fixed_OF():
-            pairs.append(("O/F", f"{t.OF:.3g}", f"{b.OF:.3g}"))
-        if self._by_burn_time():
-            pairs.append(("liquid burn", f"{t.burn_time:.3g} s", f"{b.burn_time:.3g} s"))
+    def _built_targets(self) -> dict[str, tuple[float, str]]:
+        """For each target in use, what the current motor gives at the start of the burn: (value, as shown)."""
+        b = self._built
+        if self._result is None or b is None:
+            return {}
+        built = {}
         if not self._fixed_nozzle():
-            pairs.append(("chamber pressure", u.text(z.P_cmbr, "pressure"), u.text(b.P_cmbr, "pressure")))
-        return " and ".join(f"{name} {target} (as built: {built})" for name, target, built in pairs if target != built)
+            unit = self.P_cmbr.unit.currentText()
+            built["P_cmbr"] = (b.P_cmbr, f"{from_si(b.P_cmbr, unit, 'pressure'):.4g} {unit}")
+        if self._by_burn_time():
+            built["burn_time"] = (b.burn_time, f"{b.burn_time:.3g} s")
+        if (self._by_OF() or not self._by_length()) and not self._fixed_OF():
+            built["OF"] = (b.OF, f"{b.OF:.3g}")
+        return built
+
+    def _target_shown(self, name: str) -> str:
+        if name == "P_cmbr":
+            unit = self.P_cmbr.unit.currentText()
+            return f"{self.P_cmbr.spin.value():.4g} {unit}"
+        return f"{self.burn_time.value():.3g} s" if name == "burn_time" else f"{self.OF.value():.3g}"
+
+    def _revert(self, names: list[str]):
+        """Make the current motor's values the targets."""
+        built = self._built_targets()
+        self._loading = True
+        for name in names:
+            if name not in built:
+                continue
+            value = built[name][0]
+            if name == "P_cmbr":
+                self.P_cmbr.set_si(value, "pressure")
+            else:
+                getattr(self, name).setValue(value)
+        self._loading = False
+        self.refresh()
 
     def _show_apply(self):
         """The Apply bar only shows when a sized part differs from the motor's."""
         changes = self.unapplied()
-        why = self.targets_vs_built()
-        self.apply_summary.setText((f"To reach {why}: " if why else "Applies: ") + ", ".join(changes))
+        built = self._built_targets()
+        for name, badge in self._badges.items():
+            shown = built.get(name, (0.0, ""))[1]
+            differs = bool(shown) and shown != self._target_shown(name)
+            badge.setText(shown.split(" ")[0])
+            badge.setToolTip(f"The current motor starts at {shown}. Click to make that the target.")
+            badge.setVisible(differs)
+        self.revert_btn.setVisible(any(b.isVisibleTo(self) for b in self._badges.values()))
+        self.apply_summary.setText("Applies: " + ", ".join(changes))
         self._apply_bar.setVisible(bool(changes))
         self.sized.emit()
 

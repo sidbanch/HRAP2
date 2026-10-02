@@ -239,10 +239,10 @@ class StudyPage(QWidget):
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open,
                  get_unapplied: Callable[[], list[str]] = lambda: [],
-                 ask_save: Callable[[str, str, str], str] | None = None, get_targets: Callable[[], str] = lambda: ""):
+                 ask_save: Callable[[str, str, str], str] | None = None):
         super().__init__()
         self._get_cfg, self._get_units, self._on_open = get_cfg, get_units, on_open
-        self._get_unapplied, self._get_targets = get_unapplied, get_targets
+        self._get_unapplied = get_unapplied
         self._ask_save = ask_save or (lambda caption, name, filters: QFileDialog.getSaveFileName(self, caption, name, filters)[0])
         self._loaded_from = ""
         self._thread = self._worker = None
@@ -484,9 +484,8 @@ class StudyPage(QWidget):
             changes = self._get_unapplied()
             if self.size_throat.isChecked():  # each case sizes its own nozzle
                 changes = [c for c in changes if not c.startswith(("throat ", "expansion ratio "))]
-            why = self._get_targets()
-            text = (f"Not applied from the Motor tab: {f'to reach {why}, ' if why else ''}{', '.join(changes)}. "
-                    "The study runs the motor as built." if changes else "")
+            text = (f"Not applied from the Motor tab: {', '.join(changes)}. The study runs the motor without these."
+                    if changes else "")
         self.source.setText(text)
         self.source.setVisible(bool(text))
 
