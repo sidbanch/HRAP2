@@ -69,21 +69,21 @@ def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
     first = window._shown
     first.path = str(tmp_path / "first.json")
     save_json(first.path, first.saved)
-    window.mfg.setText("Edited first motor")
+    window.name.setText("Edited first motor")
     window._add_motor(default_cfg(), title="Second motor")
-    window.mfg.setText("Edited second motor")
+    window.name.setText("Edited second motor")
     window.tabs.setCurrentIndex(2)
     window.study_page.load_runs(pickle.dumps([StudyRun(default_cfg(), [("grain_L", [0.3])], ["Shifting OF"],
                                                                       name="Named run")]))
     window.study_page.runs_changed.emit()
     assert window.close()  # no prompt: the session keeps the edits
-    assert load_json(first.path)["mfg"] != "Edited first motor"  # the file itself isn't touched
+    assert load_json(first.path)["mtr_nm"] != "Edited first motor"  # the file itself isn't touched
 
     again = MainWindow(QSettings(window._prefs.fileName(), QSettings.Format.IniFormat))
     try:
         motors = again._motors()
         assert [m.title for m in motors] == [first.title, "Second motor"]
-        assert [m.cfg["mfg"] for m in motors] == ["Edited first motor", "Edited second motor"]
+        assert [m.cfg["mtr_nm"] for m in motors] == ["Edited first motor", "Edited second motor"]
         assert all(again._edited(m) for m in motors)
         assert motors[0].path == first.path and motors[1].path == ""
         assert again.tabs.currentIndex() == 2
@@ -122,16 +122,6 @@ def test_missing_coolprop_reports_error_and_reenables_run(window, monkeypatch):
     assert window.run_btn.isEnabled()
     assert window._output is None
     assert len(messages) == 1 and "CoolProp missing" in messages[0]
-
-
-def test_loading_restores_manufacturer(window):
-    from hrap.io.config import default_cfg
-
-    cfg = default_cfg()
-    cfg["mfg"] = "Saved manufacturer"
-    window.mfg.setText("Previous manufacturer")
-    window._cfg_to_form(cfg)
-    assert window._form_to_cfg()["mfg"] == "Saved manufacturer"
 
 
 def test_display_units_update_results_without_changing_simulation(window, tmp_path):

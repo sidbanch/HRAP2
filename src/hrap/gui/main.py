@@ -217,9 +217,8 @@ class MainWindow(QMainWindow):
                 for control in page.findChildren(control_type):
                     getattr(control, signal).connect(self._invalidate_results)
                     getattr(control, signal).connect(self._update_tab_marker)
-        for edit in (self.name, self.mfg):
-            edit.textChanged.connect(self._invalidate_results)
-            edit.textChanged.connect(self._update_tab_marker)
+        self.name.textChanged.connect(self._invalidate_results)
+        self.name.textChanged.connect(self._update_tab_marker)
         self.sizing_page.sized.connect(self._update_tab_marker)
         self._restore_session()
         self._session_timer = QTimer(self)
@@ -485,7 +484,6 @@ class MainWindow(QMainWindow):
         self.cmbr_m = UnitRow(MASS_ITEMS, "kg")
         self.dry_OD = UnitRow(LENGTH_ITEMS, "in")
         self.dry_L = UnitRow(LENGTH_ITEMS, "in")
-        self.mfg = QLineEdit("HRAP")
         self.mass_info = QLabel("Empty mass / CG: —")
         self.mass_info.setWordWrap(True)
         self._legacy_mtr_m = 0.0
@@ -509,7 +507,6 @@ class MainWindow(QMainWindow):
 
         export = CollapsibleBox("Export")
         ef = export.form()
-        ef.addRow("Manufacturer", self.mfg)
         ef.addRow("Motor OD", self.dry_OD)
         ef.addRow("Motor length", self.dry_L)
         buttons = QHBoxLayout()
@@ -618,14 +615,12 @@ class MainWindow(QMainWindow):
             },
             "export_OD": self.dry_OD.si("length"),
             "export_L": self.dry_L.si("length"),
-            "mfg": self.mfg.text() or "HRAP",
             "sizing": self.sizing_page.targets_cfg(),
         })
         return cfg
 
     def _cfg_to_form(self, cfg: dict):
         self.name.setText(str(cfg.get("mtr_nm") or ""))
-        self.mfg.setText(str(cfg.get("mfg") or "HRAP"))
         self.solve_tank_cooling.setChecked(bool(cfg.get("solve_tank_cooling")))
         self.mp_on.setChecked(bool(cfg.get("mp_state")))
         self._legacy_mtr_m = float(cfg.get("mtr_m") or 0.0)
@@ -1458,7 +1453,7 @@ class MainWindow(QMainWindow):
                     self._settings,
                     OD=cfg["export_OD"],
                     L=cfg["export_L"],
-                    mfg=cfg["mfg"],
+                    mfg=stem,
                 )
         else:
             path = self._save_output("Export ENG", f"{(Path(self._shown.path).stem if self._shown and self._shown.path else 'HRAP_output')}.eng", "ENG (*.eng)")
@@ -1470,7 +1465,7 @@ class MainWindow(QMainWindow):
                     self._settings,
                     OD=cfg["export_OD"],
                     L=cfg["export_L"],
-                    mfg=cfg["mfg"],
+                    mfg=cfg["mtr_nm"].strip() or "motor",
                 )
 
     def _choose_display_units(self):

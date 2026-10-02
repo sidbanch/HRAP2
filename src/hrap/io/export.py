@@ -195,7 +195,8 @@ def export_eng(
     cg0 = float(o.cg[i0]) if o.cg is not None and o.cg.size else float(s.mtr_cg if dry_cg is None else dry_cg)
     lines = [
         f"; HRAP-HCAT-Fork cg0={cg0:.6f} m dry={dry:.6f} kg (time-varying CG in .rse)",
-        f"{mfg} {1000.0 * OD} {1000.0 * L} P {m[0] - m[-1] if m.size else 0.0} {m[0] if m.size else 0.0} {code}{F_avg}",
+        f"{code}{F_avg} {1000.0 * OD} {1000.0 * L} P {m[0] - m[-1] if m.size else 0.0} {m[0] if m.size else 0.0}"
+        f" {mfg.replace(' ', '_')}",
     ]
     for i in range(min(32, t.size)):
         lines.append(f" {t[i]} {F[i]} ")
