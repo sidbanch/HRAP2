@@ -12,11 +12,11 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 
 | File | Injector CdA | Throat | O/F (liquid-burn avg) | Peak Pc | Peak thrust | Total impulse | Liquid burn | Fuel burned | Port at end |
 |---|---|---|---|---|---|---|---|---|---|
-| HPS01-2_24in_1x | 0.0215 in² (1x) | 0.845" | 4.8 | 467 psi | 1711 N | 9894 N·s | 5.8 s | 1.71 kg | 3.03" |
-| HPS01-2_24in_1p5x | 0.0323 in² (1.5x) | 1.012" | 6.4 | 465 psi | 2447 N | 9505 N·s | 3.9 s | 1.19 kg | 2.76" |
-| HPS01-2_24in_2x | 0.0430 in² (2x) | 1.164" | 7.9 | 455 psi | 3165 N | 9085 N·s | 2.9 s | 0.92 kg | 2.61" |
-| HPS01-2_24in_2p5x | 0.0537 in² (2.5x) | 1.298" | 9.3 | 447 psi | 3862 N | 8781 N·s | 2.2 s | 0.76 kg | 2.51" |
-| HPS01-2_24in_3x | 0.0645 in² (3x) | 1.418" | 10.6 | 441 psi | 4539 N | 8550 N·s | 1.8 s | 0.66 kg | 2.45" |
+| HPS01-2_24in_1x | 0.0215 in² (1x) | 0.845" | 4.8 | 467 psi | 1625 N | 9399 N·s | 5.8 s | 1.71 kg | 3.03" |
+| HPS01-2_24in_1p5x | 0.0323 in² (1.5x) | 1.012" | 6.4 | 465 psi | 2325 N | 9030 N·s | 3.9 s | 1.19 kg | 2.76" |
+| HPS01-2_24in_2x | 0.0430 in² (2x) | 1.164" | 7.9 | 455 psi | 3007 N | 8630 N·s | 2.9 s | 0.92 kg | 2.61" |
+| HPS01-2_24in_2p5x | 0.0537 in² (2.5x) | 1.298" | 9.3 | 447 psi | 3669 N | 8342 N·s | 2.2 s | 0.76 kg | 2.51" |
+| HPS01-2_24in_3x | 0.0645 in² (3x) | 1.418" | 10.6 | 441 psi | 4312 N | 8123 N·s | 1.8 s | 0.66 kg | 2.45" |
 
 ## Peak chamber pressure at 80 °F
 
@@ -35,7 +35,7 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 
 ## Inputs
 
-- Base: `../HPS01/HPS01-01_Massed.json` (HPS01-1's tank, 45" of 3.625" bore at 75% fill; C* efficiency 85%; nozzle efficiency 100%; expansion ratio 3.2; SPI injector model; 1 ms step).
+- Base: `../HPS01/HPS01-01_Massed.json` (HPS01-1's tank, 45" of 3.625" bore at 75% fill; C* efficiency 85%; nozzle efficiency 95% (team standard, 10/2); expansion ratio 3.2; SPI injector model; 1 ms step).
 - Grain: ABS, 2.0" port, 3.39" OD (liner ID), 24" long, straight bore.
 - Injector: 4 holes of 0.19" with Cd scaled to the CdA (only the total CdA matters to the SPI model).
 - Pressures are absolute.

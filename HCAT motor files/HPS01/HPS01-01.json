@@ -15,7 +15,7 @@
   "noz_def": "Nozzle Expansion Ratio",
   "noz_ex": 3.2,
   "noz_ex_unit": "in",
-  "noz_eff": 100.0,
+  "noz_eff": 95.0,
   "noz_Cd": 1.0,
   "mp_state": 0,
   "tnk_X": 0.0,

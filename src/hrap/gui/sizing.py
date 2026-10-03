@@ -42,10 +42,10 @@ from hrap.units import (
 
 # m, a very rough estimate. A stock 1/4 in PTC has a 0.188 in hex inside, but its tube stop and collet restrict more:
 # HPS01-1's liquid ran out at 5.8 s in the fire video when its four swirlers (6 × 0.100 in holes, offset guessed at
-# 0.10 in) exit through a clean hole this size, with the Dyer model (κ 1), the burn-rate law, tank cooling and the tube's
-# measured 3.655 in bore over 45 in. With SPI and a fixed O/F 6 it's 0.100 in. One video timing, so a cold flow of a bare
+# 0.10 in) exit through a clean hole this size, with the team-standard SPI model, the burn-rate law, tank cooling and
+# the tube's measured 3.655 in bore over 45 in (0.118 in with Dyer κ 1). One video timing, so a cold flow of a bare
 # stock PTC should replace it.
-STOCK_PTC_D = 0.118 * 0.0254
+STOCK_PTC_D = 0.097 * 0.0254
 LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
 UNIT_W = 72    # UnitRow's unit dropdown
 
