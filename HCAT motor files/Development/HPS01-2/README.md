@@ -35,7 +35,7 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 
 ## Inputs
 
-- Base: `../HPS01/HPS01-01_Massed.json` (HPS01-1's tank, 45" of 3.625" bore at 75% fill; C* efficiency 85%; nozzle efficiency 95% (team standard, 10/2); expansion ratio 3.2; SPI injector model; 1 ms step).
+- Base: `../../Production/HPS01-1/HPS01-01_Massed.json` (HPS01-1's tank, 45" of 3.625" bore at 75% fill; C* efficiency 85%; nozzle efficiency 95% (team standard, 10/2); expansion ratio 3.2; SPI injector model; 1 ms step).
 - Grain: ABS, 2.0" port, 3.39" OD (liner ID), 24" long, straight bore.
 - Injector: 4 holes of 0.19" with Cd scaled to the CdA (only the total CdA matters to the SPI model).
 - Pressures are absolute.
