@@ -67,7 +67,7 @@
   "inj_D": 0.1875,
   "inj_D_unit": "in",
   "inj_N": 1,
-  "inj_Cd": 0.1557,
+  "inj_Cd": 0.1086,
   "inj_type": "Swirler",
   "sw_ports": 6,
   "sw_D_port": 0.1,
