@@ -15,8 +15,8 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 | HPS01-2_24in_1x | 0.0215 in² (1x) | 0.845" | 4.8 | 467 psi | 1711 N | 9894 N·s | 5.8 s | 1.71 kg | 3.03" |
 | HPS01-2_24in_1p5x | 0.0323 in² (1.5x) | 1.012" | 6.4 | 465 psi | 2447 N | 9505 N·s | 3.9 s | 1.19 kg | 2.76" |
 | HPS01-2_24in_2x | 0.0430 in² (2x) | 1.164" | 7.9 | 455 psi | 3165 N | 9085 N·s | 2.9 s | 0.92 kg | 2.61" |
-| HPS01-2_24in_2p5x | 0.0537 in² (2.5x) | 1.298" | 9.3 | 447 psi | 3864 N | 8786 N·s | 2.3 s | 0.76 kg | 2.51" |
-| HPS01-2_24in_3x | 0.0645 in² (3x) | 1.418" | 10.6 | 445 psi | 4585 N | 8613 N·s | 1.9 s | 0.66 kg | 2.45" |
+| HPS01-2_24in_2p5x | 0.0537 in² (2.5x) | 1.298" | 9.3 | 447 psi | 3862 N | 8781 N·s | 2.2 s | 0.76 kg | 2.51" |
+| HPS01-2_24in_3x | 0.0645 in² (3x) | 1.418" | 10.6 | 441 psi | 4539 N | 8550 N·s | 1.8 s | 0.66 kg | 2.45" |
 
 ## Peak chamber pressure at 80 °F
 
@@ -24,7 +24,7 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 |---|---|---|---|
 | 1x | 499 psi | 487 psi | 496 psi |
 | 1.5x | 495 psi | 498 psi | 507 psi |
-| 2x to 3x | 475 to 484 psi | 499 psi | 507 psi |
+| 2x to 3x | 468 to 484 psi | 499 psi | 507 psi |
 
 - Fixed O/F 6 at 80 °F is 1.5% over 500 psi (507 psi) for the 1.5x to 3x throats, which follow Sid's O/F 7 to 8 guidance.
 
@@ -43,5 +43,4 @@ Candidate HPS01-2 motors with a 24" straight-bore grain, one file per injector s
 ## Not included
 
 - a and n are HRAP's unsourced straight-bore ABS values; helical grains or swirl would lower the O/F by an unmeasured amount.
-- HRAP's ABS combustion table stops at O/F 10, so the 3x row overstates thrust slightly.
 - Pre- and post-combustion chamber lengths are HPS01-1's (4.39" each); motor masses and positions are HPS01-1's and not updated for the longer chamber.

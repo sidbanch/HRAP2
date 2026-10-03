@@ -107,6 +107,7 @@ INPUTS: dict[str, Input] = {
 }
 
 MODELS = {"Shifting OF": "Burn-rate law", "Constant OF": "Fixed O/F"}
+OUTSIDE_TABLE_LIMIT = 0.01  # share of impulse outside the combustion table that's worth a warning
 
 
 @dataclass(frozen=True)
@@ -125,10 +126,17 @@ class Case:
     port_end: float       # m, largest port diameter reached
     burnout: bool         # the port reached the grain's outside diameter
     end_cond: str
-    outside_table: bool
     traces: dict[str, np.ndarray] = field(repr=False, compare=False)
     inj_CdA: float = math.nan  # m², total; set by the inputs or sized for a starting O/F
     throat: float = math.nan   # m; set by the inputs or sized for the chamber pressure target
+    outside_impulse: float = 0.0  # share of the total impulse made while the O/F was outside the combustion table
+    outside_time: float = 0.0     # s spent there
+    table_OF: tuple[float, float] = (1.0, 30.0)  # the combustion table's O/F range
+
+    @property
+    def outside_table(self) -> bool:
+        """Outside the table long enough to matter: HRAP reuses the table's edge values there."""
+        return self.outside_impulse > OUTSIDE_TABLE_LIMIT
 
     def value(self, key: str) -> float:
         return dict(self.values)[key]
@@ -197,6 +205,9 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
     indices = np.unique(np.linspace(0, len(t) - 1, min(1000, len(t))).astype(int))
     OD = float(c["grn_OD"]) * _length_si(c.get("grn_OD_unit") or "in")
     port_end = float(np.max(o.grn_ID))
+    step = np.gradient(t)
+    outside = burning & ((o.OF < np.min(s.prop_OF)) | (o.OF > np.max(s.prop_OF)))
+    impulse = float(np.sum(o.F_thr * step))
     return Case(
         values=tuple((key, float(v)) for key, v in values),
         model=c.get("reg_model") or "Shifting OF",
@@ -212,10 +223,12 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
         port_end=port_end,
         burnout=o.sim_end_cond == "Fuel Depleted" or port_end >= OD * (1 - 1e-6),
         end_cond=info["end_cond"],
-        outside_table=bool(np.any((o.OF[burning] < np.min(s.prop_OF)) | (o.OF[burning] > np.max(s.prop_OF)))),
         traces={name: getattr(o, name)[indices] for name in ("t", "F_thr", "P_cmbr", "OF", "grn_ID")},
         inj_CdA=total_cda(c),
         throat=s.noz_thrt,
+        outside_impulse=float(np.sum((o.F_thr * step)[outside])) / impulse if impulse > 0 else 0.0,
+        outside_time=float(np.sum(step[outside])),
+        table_OF=(float(np.min(s.prop_OF)), float(np.max(s.prop_OF))),
     )
 
 

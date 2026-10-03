@@ -815,7 +815,9 @@ class StudyPage(QWidget):
         if case.burnout:
             why.append("The grain burned through to its outside diameter before the tank emptied.")
         if case.outside_table:
-            why.append("The O/F left HRAP's combustion table (O/F 1 to 10), so thrust and pressure read high there.")
+            lo, hi = case.table_OF
+            why.append(f"The O/F was outside HRAP's combustion table (O/F {lo:g} to {hi:g}) for {case.outside_time:.2f} s, "
+                       f"{100 * case.outside_impulse:.1f}% of the impulse. HRAP reuses the table's edge values there.")
         if case.end_cond == "Max Simulation Time Reached":
             why.append("The run hit the maximum run time before the burn finished.")
         if uses_spi(r.cfg) and case.avg_inj_dP > self.max_dp.si("pressure"):

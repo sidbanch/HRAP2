@@ -16,6 +16,13 @@ GOLDEN = Path(__file__).parent / "golden"
 # Relative error is meaningless near burnout zeros; compare against peak-scaled abs too.
 REL_TOL = 1e-8
 ABS_FRAC = 1e-8
+MATLAB_MAX_OF = 10.0  # MATLAB's tables stop here; HRAP2's ABS table continues to O/F 30
+
+
+def _matlab_table(OF, *tables):
+    """The combustion table MATLAB had: the O/F columns up to 10. Above that MATLAB reuses the O/F 10 values."""
+    keep = np.asarray(OF) <= MATLAB_MAX_OF
+    return (np.asarray(OF)[keep], *(np.asarray(t)[:, keep] for t in tables))
 
 
 def _max_rel(a: np.ndarray, g: np.ndarray) -> float:
@@ -36,6 +43,7 @@ def _compare_motor(name: str, csv_name: str, mutate=None, t_prefix: float = 5.0)
     if mutate:
         mutate(cfg)
     s, x = resolve(cfg)
+    s.prop_OF, s.prop_k, s.prop_M, s.prop_T = _matlab_table(s.prop_OF, s.prop_k, s.prop_M, s.prop_T)
     _x, o = run(s, x)
     gold = np.genfromtxt(path, delimiter=",", names=True)
     n = min(o.t.size, gold.size)
@@ -72,9 +80,10 @@ def test_interp2x_vs_matlab_csv():
     if not path.exists():
         pytest.skip("interp2x_matlab.csv not generated")
     prop = load_propellant("ABS")
+    OF, k = _matlab_table(prop.OF, prop.k)
     gold = np.genfromtxt(path, delimiter=",", names=True)
     for row in gold:
-        zi = interp2x(prop.OF, prop.Pc, prop.k, float(row["OF"]), float(row["Pc"]))
+        zi = interp2x(OF, prop.Pc, k, float(row["OF"]), float(row["Pc"]))
         denom = max(abs(float(row["k"])), 1e-12)
         assert abs(zi - float(row["k"])) / denom <= REL_TOL
 
