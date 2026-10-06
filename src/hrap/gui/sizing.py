@@ -332,9 +332,7 @@ class SizingPage(QWidget):
         fuel_layout.addLayout(fuel_form)
 
         self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
-        self.inj_Cd = PlainDoubleSpinBox()
-        self.inj_Cd.setRange(0, 1)
-        self.inj_Cd.setDecimals(4)
+        self.inj_CdA = UnitRow(AREA_ITEMS, "in^2", 6)
         self.inj_model = PlainComboBox()
         self.inj_model.addItems(["SPI", "HEM", "Dyer"])
         self.inj_model.setToolTip("SPI: treats the nitrous as liquid all the way through the hole (original HRAP).\n"
@@ -388,7 +386,7 @@ class SizingPage(QWidget):
         self.sw_CdA_meas.spin.valueChanged.connect(lambda cda: fit.setEnabled(cda > 0))
         self.sw_cd_geom = QCheckBox("From geometry")
         self.sw_cd_geom.setToolTip("Work the swirler's Cd out from its geometry (Abramovich's theory for an ideal liquid).\n"
-                                   "Untick it to type a Cd measured in a cold flow.")
+                                   "Untick it to type a CdA measured in a cold flow.")
         inj_form = FieldGrid()
         inj_form.add("Sizing", self.size_from)
         inj_form.add("Type", self.inj_type)
@@ -398,7 +396,7 @@ class SizingPage(QWidget):
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
         self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi),
                               *inj_form.add("Measured CdA", _beside(self.sw_CdA_meas, fit), span=True)]
-        self._cd_row = inj_form.add("Cd", _beside(self.inj_Cd, self.sw_cd_geom), span=True)
+        self._cd_row = inj_form.add("CdA per hole", _beside(self.inj_CdA, self.sw_cd_geom), span=True)
         inj_form.add("Flow model", self.inj_model)
         self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
         self._dyer_row = inj_form.add("Dyer κ", self.dyer_kappa)
@@ -528,11 +526,12 @@ class SizingPage(QWidget):
         for spin in (self.P_cmbr.spin, self.burn_time, self.OF):
             spin.valueChanged.connect(self.refresh)
         self.P_cmbr.unit.currentTextChanged.connect(self.refresh)
-        for w in (self.P_limit, self.tank_V, self.tank_D, self.tank_T, self.vent_D, self.rho, self.hole_D, self.sw_D_port, self.sw_R_in,
+        for w in (self.P_limit, self.tank_V, self.tank_D, self.tank_T, self.vent_D, self.rho, self.hole_D, self.inj_CdA,
+                  self.sw_D_port, self.sw_R_in,
                   self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa, self.throat_D):
             w.spin.valueChanged.connect(self._on_motor_edited)
             w.unit.currentTextChanged.connect(self._on_motor_edited)
-        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.inj_Cd, self.sw_xi,
+        for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.sw_xi,
                      self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
         for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model):
@@ -667,15 +666,18 @@ class SizingPage(QWidget):
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if swirler else "Holes")
         self.sw_cd_geom.setVisible(swirler)
+        self._cd_row[0].setText("CdA per swirler" if swirler else "CdA per hole")
         geometry = swirler and self.sw_cd_geom.isChecked()
-        self.inj_Cd.setEnabled(not geometry)
-        self.inj_Cd.setToolTip("Worked out from the swirler geometry." if geometry else "")
-        D_port = self.sw_D_port.si("length")
-        if geometry and D_port > 0:
-            self.inj_Cd.blockSignals(True)
-            self.inj_Cd.setValue(swirl_cd(self.hole_D.si("length"), self.sw_ports.value(), D_port, self.sw_R_in.si("length"),
-                                          self.sw_xi.value()))
-            self.inj_Cd.blockSignals(False)
+        self.inj_CdA.setEnabled(not geometry)
+        bore = self.hole_D.si("length")
+        self.inj_CdA.setToolTip(
+            "Worked out from the swirler geometry." if geometry else
+            f"The flow area after losses: a cold flow's water flow ÷ √(2 × 998 kg/m³ × ΔP). Divided by the\n"
+            f"{'PTC bore' if swirler else 'hole'} area it's a Cd of {self.cd():.4f}, which is what the motor file stores.")
+        if geometry and self.sw_D_port.si("length") > 0:
+            self.inj_CdA.spin.blockSignals(True)
+            self.inj_CdA.set_si(self.cd() * 0.25 * math.pi * bore ** 2, "area")
+            self.inj_CdA.spin.blockSignals(False)
         model = self.inj_model.currentText()
         for w in self._hem_row:
             w.setVisible(model != "SPI")
@@ -684,7 +686,7 @@ class SizingPage(QWidget):
         self.inj_Cd_HEM.setEnabled(not self.hem_same.isChecked())
         if self.hem_same.isChecked():
             self.inj_Cd_HEM.blockSignals(True)
-            self.inj_Cd_HEM.setValue(self.inj_Cd.value())
+            self.inj_Cd_HEM.setValue(self.cd())
             self.inj_Cd_HEM.blockSignals(False)
         for w in self._vent_rows:
             w.setVisible(self.vent.currentText() != "None")
@@ -765,7 +767,7 @@ class SizingPage(QWidget):
         show(self.sw_D_port, "sw_D_port")
         show(self.sw_R_in, "sw_R_in")
         self.sw_cd_geom.setChecked(bool(cfg["sw_cd_from_geometry"]))
-        self.inj_Cd.setValue(float(cfg.get("inj_Cd") or 1.0))
+        self.inj_CdA.set_si(float(cfg.get("inj_Cd") or 1.0) * 0.25 * math.pi * self.hole_D.si("length") ** 2, "area")
         self.inj_model.setCurrentText(str(cfg.get("inj_model") or "SPI"))
         hem_cd = float(cfg.get("inj_Cd_HEM") or 0.0)
         self.hem_same.setChecked(not hem_cd)
@@ -811,7 +813,7 @@ class SizingPage(QWidget):
             "prop_m": self.prop_m.value(), "reg_model": self.reg_model.currentData(), "const_OF": self.const_OF.value(),
             "cstar_eff": self.cstar.value(),
             "inj_type": self.inj_type.currentText(), **field("inj_D", self.hole_D), "inj_N": self.holes.value(),
-            "inj_Cd": self.inj_Cd.value(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
+            "inj_Cd": self.cd(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
             **field("sw_R_in", self.sw_R_in), "sw_xi": self.sw_xi.value(), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
             "ptc_stock": self.inj_type.currentText() == "Swirler" and self.ptc_stock.isChecked(),
             "inj_model": self.inj_model.currentText(),
@@ -1125,6 +1127,14 @@ class SizingPage(QWidget):
     def _on_layout_picked(self, ports: int):
         """Use a layout's hole count; the injector then shows its drill."""
         self.sw_ports.setValue(ports)
+
+    def cd(self) -> float:
+        """The Cd on the hole or PTC bore: from the swirler geometry, or the typed CdA ÷ that area."""
+        bore, D_port = self.hole_D.si("length"), self.sw_D_port.si("length")
+        if self._swirler and self.sw_cd_geom.isChecked() and D_port > 0:
+            return swirl_cd(bore, self.sw_ports.value(), D_port, self.sw_R_in.si("length"), self.sw_xi.value())
+        area = 0.25 * math.pi * bore ** 2
+        return self.inj_CdA.si("area") / area if area > 0 else 0.0
 
     def _on_ptc_stock(self, stock: bool):
         if stock:

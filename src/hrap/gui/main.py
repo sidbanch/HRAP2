@@ -746,7 +746,7 @@ class MainWindow(QMainWindow):
         grn_ID = sp.port_D.si("length")
         inj_D = sp.hole_D.si("length")
         inj_N = sp.holes.value()
-        inj_Cd = sp.inj_Cd.value()
+        inj_Cd = sp.cd()
         inj_A = 0.25 * math.pi * inj_D ** 2 * inj_N
         vnt = sp.vent.currentText()
         vnt_D = sp.vent_D.si("length")
