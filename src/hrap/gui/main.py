@@ -154,6 +154,7 @@ class SimRun:
     cfg: dict
     output: object
     changes: tuple = ()  # what changed from the motor's previous run
+    state: object = None  # the simulation's final state, for the summary when the run is loaded again
 
 
 # Readable names for the settings a run's "what changed" mentions most; others show their file key.
@@ -164,6 +165,8 @@ _SETTING_NAMES = {
     "reg_model": "fuel flow", "inj_model": "flow model", "grain_shape": "grain shape", "star_tips": "star tips",
     "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
     "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
+    "sw_cd_from_geometry": "Cd from geometry", "ptc_stock": "stock PTC", "ox_fluid": "oxidizer fluid",
+    "enabled": "advanced options", "live_chem": "live chemistry", "dt": "timestep", "t_max": "max run time",
 }
 _SETTING_UNITS = {"tnk_cond": "T_tnk_unit"}  # where a setting's unit lives, when not at "<key>_unit"
 
@@ -514,9 +517,12 @@ class MainWindow(QMainWindow):
         runs = CollapsibleBox("Runs")
         self.run_list = QListWidget()
         self.run_list.setToolTip("Every simulation you run lands here, with what changed from the motor's previous run.\n"
-                                 "Tick runs to draw them dashed under the current one. Right-click to rename or delete.")
+                                 "Click a run to load its settings and results; tick runs to draw them dashed under it.\n"
+                                 "Right-click to rename, export or delete.")
         self.run_list.setMinimumHeight(120)
         self.run_list.itemChanged.connect(self._on_run_item_changed)
+        self.run_list.itemPressed.connect(lambda item: setattr(self, "_pressed_check", item.checkState()))
+        self.run_list.itemClicked.connect(self._on_run_clicked)
         self.run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.run_list.customContextMenuRequested.connect(self._run_menu)
         clear_runs = QPushButton("Clear runs")
@@ -1080,24 +1086,65 @@ class MainWindow(QMainWindow):
         self._settings, self._state, self._output = s, x, o
         self._result_cfg = self._running_cfg
         self._stop_progress()
-        self._add_run(self._result_cfg, o)
+        self._add_run(self._result_cfg, o, x)
         self._show_results()
 
-    def _add_run(self, cfg: dict, o):
+    def _add_run(self, cfg: dict, o, x):
         """Keep a finished run in the Runs list, labeled with what changed since the motor's last run."""
+        same = next((r for r in self._sim_runs if _same_cfg(r.cfg, cfg)), None)
+        if same is not None:  # rerunning an earlier run's settings updates that run instead of adding a copy
+            same.output, same.state = o, x
+            self._select_run(same)
+            self._save_sim_runs()
+            return
         name = str(cfg.get("mtr_nm") or "motor")
         number = self._sim_runs[-1].number + 1 if self._sim_runs else 1
         previous = next((r for r in reversed(self._sim_runs) if r.cfg.get("mtr_nm") == cfg.get("mtr_nm")), None)
         changes = _changed_settings(previous.cfg, cfg) if previous else []
         what = (", ".join(changes[:3]) + (f" +{len(changes) - 3} more" if len(changes) > 3 else "")) if changes else (
             "no changes" if previous else "first run")
-        run = SimRun(number, f"{number}. {name}: {what}", cfg, o, tuple(changes))
+        run = SimRun(number, f"{number}. {name}: {what}", cfg, o, tuple(changes), x)
         self._sim_runs.append(run)
         if len(self._sim_runs) > 20:
             self._sim_runs.pop(0)
             self.run_list.takeItem(self.run_list.count() - 1)
         self._add_run_item(run)
+        self._select_run(run)
         self._save_sim_runs()
+
+    def _select_run(self, run: SimRun):
+        """Highlight the run whose settings and results are shown."""
+        for i in range(self.run_list.count()):
+            if self.run_list.item(i).data(Qt.ItemDataRole.UserRole) == run.number:
+                self.run_list.blockSignals(True)
+                self.run_list.setCurrentRow(i)
+                self.run_list.blockSignals(False)
+
+    def _on_run_clicked(self, item: QListWidgetItem):
+        if item.checkState() != getattr(self, "_pressed_check", item.checkState()):
+            return  # the click ticked or unticked it
+        run = self._run_of(item)
+        if run is not None:
+            self._load_run(run)
+
+    def _load_run(self, run: SimRun):
+        """Put a run's settings back into its motor and show its results, to compare or carry on from it."""
+        if self._thread is not None:
+            return
+        tab = next((i for i, m in enumerate(self._motors()) if m.title == run.cfg.get("mtr_nm")), None)
+        if tab is not None and tab != self.motor_tabs.currentIndex():
+            self.motor_tabs.setCurrentIndex(tab)
+        self._output = self._settings = self._state = self._result_cfg = None
+        self._cfg_to_form(run.cfg)
+        self._update_tab_marker()
+        if run.state is None:  # saved before runs kept their final state: run it again to rebuild the summary
+            self._run()
+            return
+        self._settings, self._state = resolve(run.cfg)[0], run.state
+        self._output, self._result_cfg = run.output, run.cfg
+        self._show_results()
+        self._select_run(run)
+        self.statusBar().showMessage(f"Loaded {run.label}. Save to keep these settings in the motor file.")
 
     def _add_run_item(self, run: SimRun):
         item = QListWidgetItem(run.label)
