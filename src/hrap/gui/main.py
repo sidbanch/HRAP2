@@ -510,6 +510,7 @@ class MainWindow(QMainWindow):
         af.addRow("Grain shape", self.grain_shape)
         af.addRow("Star tips", self.star_tips)
         self.grain_shape.currentTextChanged.connect(lambda shape: af.setRowVisible(self.star_tips, shape == "star"))
+        self.adv_on.toggled.connect(self._sync_advanced)
         af.setRowVisible(self.star_tips, False)
         root.addWidget(adv)
 
@@ -729,6 +730,7 @@ class MainWindow(QMainWindow):
         self.dry_L.set_display(from_si(cfg.get("export_L") or lay.overall_L, "in", "length"), "in")
         adv = cfg.get("advanced") or {}
         self.adv_on.setChecked(bool(adv.get("enabled")))
+        self._sync_advanced()
         if adv.get("ox_fluid"):
             self.ox_fluid.setCurrentText(str(adv["ox_fluid"]))
         if adv.get("grain_shape"):
@@ -742,7 +744,7 @@ class MainWindow(QMainWindow):
         self._on_motor_edited()
 
     def _on_motor_edited(self):
-        self.ox_fluid.setEnabled(self.sizing_page.inj_model.currentText() == "SPI")
+        self._sync_advanced()
         self._invalidate_results()
         self._update_derived_labels()
 
@@ -998,6 +1000,26 @@ class MainWindow(QMainWindow):
         self._hover_index = index
         self._refresh_viz()
 
+    def _sync_advanced(self, *_):
+        """The advanced options only apply with Enable advanced options ticked, so grey them out otherwise."""
+        on = self.adv_on.isChecked()
+        controls = (self.live_chem, self.ox_fluid, self.grain_shape, self.star_tips)
+        tips = self.__dict__.setdefault("_advanced_tips", {w: w.toolTip() for w in controls})
+        for w in controls:
+            w.setEnabled(on)
+            w.setToolTip(tips[w] if on else "Tick Enable advanced options to use this.")
+        if on and self.sizing_page.inj_model.currentText() != "SPI":  # HEM and Dyer always use CoolProp
+            self.ox_fluid.setEnabled(False)
+            self.ox_fluid.setToolTip("HEM and Dyer always use CoolProp nitrous properties.")
+
+    def _sync_run_button(self):
+        """Grey the Run button while the results already match the inputs; it still runs if clicked."""
+        fresh = self._output is not None
+        self.run_btn.setProperty("upToDate", fresh)
+        self.run_btn.setToolTip("These results match the current inputs." if fresh else "")
+        self.run_btn.style().unpolish(self.run_btn)
+        self.run_btn.style().polish(self.run_btn)
+
     def _invalidate_results(self):
         if self._output is None:
             return
@@ -1007,6 +1029,7 @@ class MainWindow(QMainWindow):
         self.summary.clear()
         self._clear_plot()
         self._refresh_viz()
+        self._sync_run_button()
         self.statusBar().showMessage("Inputs changed, run again to update.")
 
     def _run(self):
@@ -1193,11 +1216,17 @@ class MainWindow(QMainWindow):
                 export_csv(path, run.output)
                 self.statusBar().showMessage(f"Saved {path}")
         elif chosen is delete:
+            shown = run is not None and run.output is self._output
             if run is not None:
                 self._sim_runs.remove(run)
             self.run_list.takeItem(self.run_list.row(item))
             self._save_sim_runs()
-            self._refresh_plot()
+            if shown and self._sim_runs:
+                self._load_run(self._sim_runs[-1])  # the deleted run was on screen: show the newest one left
+            elif shown:
+                self._invalidate_results()
+            else:
+                self._refresh_plot()
 
     def _clear_runs(self):
         self._sim_runs.clear()
@@ -1226,6 +1255,7 @@ class MainWindow(QMainWindow):
         self.limit_warning.setVisible(over)
         self.statusBar().showMessage(f"Done: {o.sim_end_cond}. Total impulse {u.text(info['total_impulse'], 'impulse')}"
                                      + ("  ⚠ Over the chamber pressure limit" if over else ""))
+        self._sync_run_button()
 
     def _on_failed(self, msg: str):
         self._stop_progress()
@@ -1437,6 +1467,7 @@ class MainWindow(QMainWindow):
             self.summary.clear()
             self._clear_plot()
             self._refresh_viz()
+        self._sync_run_button()
         self._update_tab_marker()
 
     def _open_study_case(self, cfg):

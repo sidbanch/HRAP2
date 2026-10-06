@@ -101,6 +101,8 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
         }}
         QPushButton#runButton:hover {{ background: {colors['accent2']}; }}
         QPushButton#runButton:disabled {{ background: {colors['disabled']}; color: {colors['base']}; }}
+        QPushButton#runButton[upToDate="true"] {{ background: {colors['alt']}; color: {colors['disabled']}; border: 1px solid {colors['border']}; }}
+        QPushButton#runButton[upToDate="true"]:hover {{ color: {colors['text']}; }}
         QWidget#configHeader {{
             background: {colors['base']};
             border: 1px solid {colors['border']};
