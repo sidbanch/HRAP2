@@ -12,8 +12,11 @@ def exit_mach(k: float, ER: float, guess: float = 0.0) -> float:
     """Supersonic exit Mach number for area ratio ``ER`` (MATLAB fzero from guess 3).
 
     Newton from ``guess`` (the previous step's value) converges in a few iterations; the
-    bracketed solve covers the first step and any guess Newton can't use.
+    bracketed solve covers the first step and any guess Newton can't use. A converging-only
+    nozzle (``ER`` 1) chokes at the throat, so its exit is sonic.
     """
+    if ER <= 1.0:
+        return 1.0
     g = (k - 1.0) / 2.0
     e = (k + 1.0) / (2.0 * (k - 1.0))
     c = ((k + 1.0) / 2.0) ** -e

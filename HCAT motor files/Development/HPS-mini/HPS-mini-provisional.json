@@ -13,7 +13,7 @@
   "noz_thrt": 0.41,
   "noz_thrt_unit": "in",
   "noz_def": "Nozzle Expansion Ratio",
-  "noz_ex": 4.73,
+  "noz_ex": 1.0,
   "noz_ex_unit": "in",
   "noz_eff": 95.0,
   "noz_Cd": 0.95,
