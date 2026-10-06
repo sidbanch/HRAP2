@@ -82,7 +82,7 @@ def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
     again = MainWindow(QSettings(window._prefs.fileName(), QSettings.Format.IniFormat))
     try:
         motors = again._motors()
-        assert [m.title for m in motors] == [first.title, "Second motor"]
+        assert [m.title for m in motors] == ["Edited first motor", "Edited second motor"]  # tabs show the Name
         assert [m.cfg["mtr_nm"] for m in motors] == ["Edited first motor", "Edited second motor"]
         assert all(again._edited(m) for m in motors)
         assert motors[0].path == first.path and motors[1].path == ""

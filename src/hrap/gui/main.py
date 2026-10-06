@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 from hrap import APP_NAME, __version__, update
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sim import run
+from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
 from hrap.gui.sizing import SizingPage
@@ -285,7 +286,7 @@ class MainWindow(QMainWindow):
         self._open_btn.clicked.connect(self._open_json)
         self.name = QLineEdit()
         self.name.setPlaceholderText("Motor name")
-        self.name.setToolTip("The motor's name, used in the drawing and in exported RSE and ENG files.")
+        self.name.setToolTip("The motor's name, shown on its tab and used in the drawing and in exported RSE and ENG files.")
         self.name.setMaximumWidth(320)
         save_btn = QPushButton("Save")
         save_btn.setToolTip("Save this motor to its file.")
@@ -546,7 +547,16 @@ class MainWindow(QMainWindow):
             item.setCheckState(Qt.CheckState.Checked if label in DEFAULT_TRACES else Qt.CheckState.Unchecked)
             self.trace_list.addItem(item)
         self.trace_list.itemChanged.connect(lambda *_: self._refresh_plot())
-        mid.addWidget(self.trace_list)
+        self.spi_dp_line = QCheckBox("300 psi ΔP line (SPI)")
+        self.spi_dp_line.setToolTip("Mark 300 psi on the pressure plot. Above about 300 psi of injector ΔP, real nitrous\n"
+                                    "boils in the hole and flows less than SPI predicts. Only shown for SPI motors.")
+        self.spi_dp_line.toggled.connect(lambda *_: self._refresh_plot())
+        traces = QWidget()
+        traces_l = QVBoxLayout(traces)
+        traces_l.setContentsMargins(0, 0, 0, 0)
+        traces_l.addWidget(self.trace_list, 1)
+        traces_l.addWidget(self.spi_dp_line)
+        mid.addWidget(traces)
         mid.addWidget(self.plot)
         mid.setSizes([160, 600])
         plots = QWidget()
@@ -1094,6 +1104,11 @@ class MainWindow(QMainWindow):
             self._plots["pressure"].addItem(pg.InfiniteLine(
                 pos=limit, angle=0, movable=False, pen=pg.mkPen("#e06c75", width=1, style=Qt.PenStyle.DashLine),
                 label="Chamber limit", labelOpts={"position": 0.05, "color": "#e06c75", "anchors": [(0, 1), (0, 1)]}))
+            if self.spi_dp_line.isChecked() and uses_spi(self._result_cfg):
+                dp = self.display_units.value(to_si(300.0, "psi", "pressure"), "pressure")
+                self._plots["pressure"].addItem(pg.InfiniteLine(
+                    pos=dp, angle=0, movable=False, pen=pg.mkPen("#e5c07b", width=1, style=Qt.PenStyle.DashLine),
+                    label="300 psi ΔP (SPI)", labelOpts={"position": 0.05, "color": "#e5c07b", "anchors": [(0, 1), (0, 1)]}))
         for plot in self._plots.values():
             vb = cast(pg.ViewBox, plot.vb)
             vb.setXRange(*self._time_range, padding=0)
@@ -1161,6 +1176,14 @@ class MainWindow(QMainWindow):
             self._last_dir = str(folder)
             self._prefs.setValue("lastFileDir", self._last_dir)
 
+    @staticmethod
+    def _title(cfg: dict, path: str, fallback: str = "Untitled") -> str:
+        """A tab shows the motor's Name; a motor without one shows its file name."""
+        name = str(cfg.get("mtr_nm") or "").strip()
+        if name and name != "mtr_cfg":
+            return name
+        return Path(path).stem if path else fallback
+
     def _motors(self) -> list[OpenMotor]:
         return [self.motor_tabs.tabData(i) for i in range(self.motor_tabs.count())]
 
@@ -1173,7 +1196,7 @@ class MainWindow(QMainWindow):
             if path and motor.path == path:
                 self.motor_tabs.setCurrentIndex(i)
                 return
-        motor = OpenMotor(path, title or Path(path).stem, cfg)
+        motor = OpenMotor(path, self._title(cfg, path, title or "Untitled"), cfg)
         i = self.motor_tabs.addTab(motor.title)
         self.motor_tabs.setTabData(i, motor)
         self.motor_tabs.setTabToolTip(i, path or "Not saved to a file yet")
@@ -1222,6 +1245,7 @@ class MainWindow(QMainWindow):
         if motor is None:
             return
         motor.cfg = self._form_to_cfg()
+        motor.title = self._title(motor.cfg, motor.path)
         i = self._motors().index(motor)
         self.motor_tabs.setTabText(i, motor.title + (" •" if self._edited(motor) else ""))
         self.motor_tabs.setTabToolTip(i, motor.path or "Not saved to a file yet")
@@ -1271,7 +1295,7 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save {motor.title} to {path}.\n\n{exc}")
             return False
-        motor.path, motor.title = path, Path(path).stem
+        motor.path, motor.title = path, self._title(motor.cfg, path)
         motor.saved = motor.cfg
         if motor is self._shown:
             self._update_tab_marker()
