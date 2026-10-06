@@ -520,6 +520,7 @@ class MainWindow(QMainWindow):
                                  "Click a run to load its settings and results; tick runs to draw them dashed under it.\n"
                                  "Right-click to rename, export or delete.")
         self.run_list.setMinimumHeight(120)
+        self.run_list.setStyleSheet("QListView::item { padding: 3px 4px; }")  # room around each checkbox
         self.run_list.itemChanged.connect(self._on_run_item_changed)
         self.run_list.itemPressed.connect(lambda item: setattr(self, "_pressed_check", item.checkState()))
         self.run_list.itemClicked.connect(self._on_run_clicked)
