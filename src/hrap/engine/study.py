@@ -107,7 +107,8 @@ INPUTS: dict[str, Input] = {
 }
 
 MODELS = {"Shifting OF": "Burn-rate law", "Constant OF": "Fixed O/F"}
-OUTSIDE_TABLE_LIMIT = 0.01  # share of impulse outside the combustion table that's worth a warning
+OUTSIDE_TABLE_LIMIT = 0.05  # share of impulse outside the combustion table that's worth a warning (a converging-only
+                            # nozzle's long vapor tail puts ~3% there, below O/F 1)
 
 
 @dataclass(frozen=True)
