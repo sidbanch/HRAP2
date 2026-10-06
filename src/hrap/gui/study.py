@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QProgressBar,
     QPushButton,
     QSplitter,
@@ -304,7 +305,7 @@ class StudyPage(QWidget):
         self.source.setStyleSheet(f"color: {WARN.lighter(150).name()};")
         self.source.hide()
 
-        self.setup, setup = card_frame("Study")
+        self.setup, setup = card_frame("Sweep")
         fields = QGridLayout()
         fields.setHorizontalSpacing(10)
         fields.setVerticalSpacing(8)
@@ -316,7 +317,7 @@ class StudyPage(QWidget):
             fields.addWidget(axis, 1 + i, 1)
         fields.addWidget(self.size_throat, 3, 0, 1, 2)
         setup.addLayout(fields)
-        self.run_btn = QPushButton("Run study")
+        self.run_btn = QPushButton("Run sweep")
         self.run_btn.setObjectName("runButton")
         self.run_btn.clicked.connect(self._run)
         self.stop_btn = QPushButton("Stop")
@@ -364,9 +365,11 @@ class StudyPage(QWidget):
         self.history.setMinimumHeight(90)
         self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.history.setToolTip("Double-click a run to rename it.")
+        self.history.setToolTip("Double-click a run to rename it, or right-click to rename or delete it.")
         self.history.currentRowChanged.connect(self._show_run)
         self.history.itemChanged.connect(self._renamed)
+        self.history.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history.customContextMenuRequested.connect(self._run_menu)
         runs_l.addWidget(self.history, 1)
         files = QHBoxLayout()
         self.load_btn = QPushButton("Load…")
@@ -519,7 +522,7 @@ class StudyPage(QWidget):
             changes = self._get_unapplied()
             if self.size_throat.isChecked() and self.size_throat.isVisibleTo(self):  # each case sizes its own nozzle
                 changes = [c for c in changes if not c.startswith(("throat ", "expansion ratio "))]
-            text = (f"Not applied from the Motor tab: {', '.join(changes)}. The study runs the motor without these."
+            text = (f"Not applied from the Motor tab: {', '.join(changes)}. The sweep runs the motor without these."
                     if changes else "")
         self.source.setText(text)
         self.source.setVisible(bool(text))
@@ -636,6 +639,39 @@ class StudyPage(QWidget):
             else:
                 item.setText(self.runs[row].name)
 
+    def _run_menu(self, pos):
+        item = self.history.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        rename, delete = menu.addAction("Rename"), menu.addAction("Delete")
+        chosen = menu.exec(self.history.viewport().mapToGlobal(pos))
+        if chosen is rename:
+            self.history.editItem(item)
+        elif chosen is delete:
+            self._delete_run(self.history.row(item))
+
+    def _delete_run(self, row: int):
+        if not 0 <= row < len(self.runs):
+            return
+        removed = self.runs.pop(row)
+        self.history.blockSignals(True)
+        self.history.takeItem(row)
+        self.history.blockSignals(False)
+        if self.runs:
+            if removed is self.result:
+                self.history.setCurrentRow(min(row, len(self.runs) - 1))
+                self._show_run(self.history.currentRow())
+        else:
+            self.result = None
+            self.table.clearSelection()
+            self.table.setRowCount(0)
+            self.table.setColumnCount(0)
+            for label in (self.answer, self.status, self.col_caption):
+                label.setText("")
+            self.legend.hide()
+        self.runs_changed.emit()
+
     def dump_runs(self) -> bytes:
         """The finished runs, for the session."""
         return pickle.dumps([r for r in self.runs if r is not self.result or not self.busy()])
@@ -658,7 +694,7 @@ class StudyPage(QWidget):
     def _history_item(self, run: StudyRun) -> QListWidgetItem:
         item = QListWidgetItem(run.name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        item.setToolTip(f"{run.name}\n{run.total} runs. Double-click to rename.")
+        item.setToolTip(f"{run.name}\n{run.total} runs. Double-click or right-click to rename.")
         return item
 
     def _show_run(self, index):
@@ -840,8 +876,8 @@ class StudyPage(QWidget):
         if self.result is None:
             return
         r = self.result
-        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "study"
-        path = self._ask_save("Save study", f"{default}.json", "Study JSON (*.json)")
+        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "sweep"
+        path = self._ask_save("Save sweep", f"{default}.json", "Sweep JSON (*.json)")
         if path:
             try:
                 Path(path).write_text(json.dumps({"name": r.name, "motor": r.cfg, "axes": r.axes, "models": r.models,
@@ -852,18 +888,18 @@ class StudyPage(QWidget):
                 self.status.setText(str(exc))
 
     def _load(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load study", "", "Study JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load sweep", "", "Sweep JSON (*.json)")
         if not path:
             return
         try:
             data = json.loads(Path(path).read_text())
             cfg, axes, models = data["motor"], data["axes"], data["models"]
             if not isinstance(cfg, dict) or not 1 <= len(axes) <= 2 or any(m not in MODELS for m in models):
-                raise ValueError("Invalid study file.")
+                raise ValueError("Invalid sweep file.")
             if not models or len(set(k for k, _ in axes)) != len(axes):
                 raise ValueError("Invalid axes or fuel models.")
             if math.prod(len(v) for _, v in axes) * len(models) > 500:
-                raise ValueError("A study can contain at most 500 cases.")
+                raise ValueError("A sweep can contain at most 500 cases.")
             check_axes(cfg, [k for k, _ in axes], models)
             throat_P = data.get("throat_P")
             for values in grid(axes):
@@ -883,14 +919,14 @@ class StudyPage(QWidget):
             self._loaded_from = Path(path).name
             self._update_source()
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as exc:
-            self.status.setText(f"Could not load study: {exc}")
+            self.status.setText(f"Could not load sweep: {exc}")
 
     def _export(self):
         r = self.result
         if r is None:
             return
-        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "study"
-        path = self._ask_save("Export study results", f"{default}.csv", "CSV (*.csv)")
+        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "sweep"
+        path = self._ask_save("Export sweep results", f"{default}.csv", "CSV (*.csv)")
         if not path:
             return
         u = self._get_units()
@@ -899,7 +935,7 @@ class StudyPage(QWidget):
                 writer = csv.writer(f)
                 writer.writerow([f"{INPUTS[k].label} ({u.unit(INPUTS[k].quantity)})" if INPUTS[k].quantity else INPUTS[k].label
                                  for k, _ in r.axes] + ["Fuel model"] +
-                                [f"{label} ({u.unit(q) if q else 's'})" for label, _, q in OUTPUTS] + ["Fuel depleted", "End", "Warnings", "Study status"])
+                                [f"{label} ({u.unit(q) if q else 's'})" for label, _, q in OUTPUTS] + ["Fuel depleted", "End", "Warnings", "Sweep status"])
                 for c in sorted(r.cases, key=lambda c: (c.values, c.model)):
                     writer.writerow([u.value(v, INPUTS[k].quantity) if INPUTS[k].quantity else v for k, v in c.values] +
                                     [MODELS[c.model]] + [u.value(getattr(c, name), q) if q else getattr(c, name) for _, name, q in OUTPUTS] +

@@ -232,7 +232,7 @@ class SizingPage(QWidget):
         self.grain_L.setToolTip("Grain length. The fuel flow and starting O/F follow from it.")
 
         self.P_limit = UnitRow(PRESSURE_ITEMS, "psi", 1)
-        self.P_limit.setToolTip("The chamber's design pressure (absolute). The Motor, Simulation and Study tabs warn above it.")
+        self.P_limit.setToolTip("The chamber's design pressure (absolute). The Motor, Simulation and Sweep tabs warn above it.")
 
         # Beside each target, what the current motor gives; clicking one makes it the target.
         self._badges: dict[str, QToolButton] = {}

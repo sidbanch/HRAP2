@@ -5,6 +5,7 @@ import json
 import math
 import multiprocessing
 import os
+import pickle
 import sys
 import threading
 import traceback
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -151,6 +153,7 @@ class SimRun:
     label: str
     cfg: dict
     output: object
+    changes: tuple = ()  # what changed from the motor's previous run
 
 
 # Readable names for the settings a run's "what changed" mentions most; others show their file key.
@@ -374,7 +377,7 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.addTab(self.sizing_page, "Motor")
         self.tabs.addTab(splitter, "Simulation")
-        self.tabs.addTab(self.study_page, "Study")
+        self.tabs.addTab(self.study_page, "Sweep")
         self.tabs.addTab(self.mass_page, "Mass && export")
         self.tabs.setCurrentWidget(splitter)
         central = QWidget()
@@ -511,9 +514,11 @@ class MainWindow(QMainWindow):
         runs = CollapsibleBox("Runs")
         self.run_list = QListWidget()
         self.run_list.setToolTip("Every simulation you run lands here, with what changed from the motor's previous run.\n"
-                                 "Tick runs to draw them dashed under the current one.")
+                                 "Tick runs to draw them dashed under the current one. Right-click to rename or delete.")
         self.run_list.setMinimumHeight(120)
-        self.run_list.itemChanged.connect(lambda *_: self._refresh_plot())
+        self.run_list.itemChanged.connect(self._on_run_item_changed)
+        self.run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.run_list.customContextMenuRequested.connect(self._run_menu)
         clear_runs = QPushButton("Clear runs")
         clear_runs.clicked.connect(self._clear_runs)
         runs.form().addRow(self.run_list)
@@ -1050,7 +1055,7 @@ class MainWindow(QMainWindow):
         if study.busy():
             study.stop()
             study.finished.connect(self.close)
-            self.statusBar().showMessage("Closing when the running study simulations finish…")
+            self.statusBar().showMessage("Closing when the running sweep simulations finish…")
             event.ignore()
             return
         if self._thread is not None:
@@ -1086,23 +1091,70 @@ class MainWindow(QMainWindow):
         changes = _changed_settings(previous.cfg, cfg) if previous else []
         what = (", ".join(changes[:3]) + (f" +{len(changes) - 3} more" if len(changes) > 3 else "")) if changes else (
             "no changes" if previous else "first run")
-        run = SimRun(number, f"{number}. {name}: {what}", cfg, o)
+        run = SimRun(number, f"{number}. {name}: {what}", cfg, o, tuple(changes))
         self._sim_runs.append(run)
         if len(self._sim_runs) > 20:
             self._sim_runs.pop(0)
             self.run_list.takeItem(self.run_list.count() - 1)
+        self._add_run_item(run)
+        self._save_sim_runs()
+
+    def _add_run_item(self, run: SimRun):
         item = QListWidgetItem(run.label)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
         item.setCheckState(Qt.CheckState.Unchecked)
         item.setData(Qt.ItemDataRole.UserRole, run.number)
-        item.setToolTip("\n".join(changes) if changes else run.label)
+        item.setToolTip("\n".join(run.changes) or run.label)
         self.run_list.blockSignals(True)
         self.run_list.insertItem(0, item)  # newest first
         self.run_list.blockSignals(False)
 
+    def _save_sim_runs(self):
+        self._write_session_file("sim_runs.pickle", pickle.dumps(self._sim_runs))
+
+    def _run_of(self, item: QListWidgetItem) -> SimRun | None:
+        return next((r for r in self._sim_runs if r.number == item.data(Qt.ItemDataRole.UserRole)), None)
+
+    def _on_run_item_changed(self, item: QListWidgetItem):
+        run = self._run_of(item)
+        if run is not None and item.text().strip() != run.label:
+            if item.text().strip():
+                run.label = item.text().strip()
+                self._save_sim_runs()
+            else:
+                self.run_list.blockSignals(True)
+                item.setText(run.label)  # an empty name keeps the old one
+                self.run_list.blockSignals(False)
+        self._refresh_plot()
+
+    def _run_menu(self, pos):
+        item = self.run_list.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        rename, csv, delete = menu.addAction("Rename"), menu.addAction("Export CSV…"), menu.addAction("Delete")
+        chosen = menu.exec(self.run_list.viewport().mapToGlobal(pos))
+        run = self._run_of(item)
+        if chosen is rename:
+            self.run_list.editItem(item)
+        elif chosen is csv and run is not None:
+            name = "".join(c if c.isalnum() or c in " -_." else "_" for c in run.label).strip() or "run"
+            path, _ = QFileDialog.getSaveFileName(self, "Export run", self._dialog_path(f"{name}.csv"), "CSV (*.csv)")
+            if path:
+                self._remember_file_dir(path)
+                export_csv(path, run.output)
+                self.statusBar().showMessage(f"Saved {path}")
+        elif chosen is delete:
+            if run is not None:
+                self._sim_runs.remove(run)
+            self.run_list.takeItem(self.run_list.row(item))
+            self._save_sim_runs()
+            self._refresh_plot()
+
     def _clear_runs(self):
         self._sim_runs.clear()
         self.run_list.clear()
+        self._save_sim_runs()
         self._refresh_plot()
 
     def _overlay_runs(self) -> list[SimRun]:
@@ -1160,13 +1212,14 @@ class MainWindow(QMainWindow):
 
     def _refresh_plot(self):
         o = self._output
-        if o is None:
+        overlays = self._overlay_runs()
+        if o is None and not overlays:
             return
         current = self.plot.currentWidget()
         active_quantity = next((q for q, widget in self._plot_widgets.items() if widget is current), None)
-        overlays = self._overlay_runs()
-        if self._plotted_output is not o:
-            self._time_range = (float(o.t[0]), max([float(o.t[-1])] + [float(r.output.t[-1]) for r in overlays]))
+        if self._plotted_output is not o or o is None:
+            shown = ([o] if o is not None else []) + [r.output for r in overlays]
+            self._time_range = (0.0, max(float(x.t[-1]) for x in shown))
         self._clear_plot()
         palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
         checked = [i for i in range(len(TRACES)) if self.trace_list.item(i).checkState() == Qt.CheckState.Checked]
@@ -1198,22 +1251,24 @@ class MainWindow(QMainWindow):
                 line.setVisible(False)
                 plot.addItem(line, ignoreBounds=True)
                 self._hover_lines.append(line)
-            pen = pg.mkPen(palette[i % len(palette)], width=2)
-            self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
-                                      pen=pen, name=label)
+            if o is not None:
+                pen = pg.mkPen(palette[i % len(palette)], width=2)
+                self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
+                                          pen=pen, name=label)
             dashes = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DashDotDotLine)
             for j, run in enumerate(overlays):
                 ro = run.output
                 self._plots[quantity].plot(
                     ro.t, self.display_units.value(np.asarray(getattr(ro, key), dtype=float), quantity),
                     pen=pg.mkPen(palette[i % len(palette)], width=1.5, style=dashes[j % len(dashes)]),
-                    name=f"{label} (run {run.number})")
-        if "pressure" in self._plots and self._result_cfg is not None:
-            limit = self.display_units.value(chamber_limit(self._result_cfg), "pressure")
+                    name=f"{label} ({run.label})")
+        cfg = self._result_cfg if self._result_cfg is not None else overlays[0].cfg
+        if "pressure" in self._plots:
+            limit = self.display_units.value(chamber_limit(cfg), "pressure")
             self._plots["pressure"].addItem(pg.InfiniteLine(
                 pos=limit, angle=0, movable=False, pen=pg.mkPen("#e06c75", width=1, style=Qt.PenStyle.DashLine),
                 label="Chamber limit", labelOpts={"position": 0.05, "color": "#e06c75", "anchors": [(0, 1), (0, 1)]}))
-            if self.spi_dp_line.isChecked() and uses_spi(self._result_cfg):
+            if self.spi_dp_line.isChecked() and uses_spi(cfg):
                 dp = self.display_units.value(to_si(300.0, "psi", "pressure"), "pressure")
                 self._plots["pressure"].addItem(pg.InfiniteLine(
                     pos=dp, angle=0, movable=False, pen=pg.mkPen("#e5c07b", width=1, style=Qt.PenStyle.DashLine),
@@ -1560,6 +1615,13 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(int(data["page"]))
         if data.get("geometry"):
             self.restoreGeometry(QByteArray.fromBase64(data["geometry"].encode()))
+        try:
+            runs = pickle.loads((self._session_dir / "sim_runs.pickle").read_bytes())
+            self._sim_runs = [r for r in runs if isinstance(r, SimRun)]
+            for run in self._sim_runs:
+                self._add_run_item(run)
+        except Exception:  # missing, or saved by a version whose classes changed
+            pass
         try:
             self.study_page.load_runs((self._session_dir / "study_runs.pickle").read_bytes())
         except Exception:  # missing, or saved by a version whose classes changed
