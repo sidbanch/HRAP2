@@ -144,6 +144,59 @@ class OpenMotor:
     run: tuple | None = None  # (settings, state, output, cfg) of its last run
 
 
+@dataclass
+class SimRun:
+    """A finished simulation kept on the Simulation tab, to draw under later runs."""
+    number: int
+    label: str
+    cfg: dict
+    output: object
+
+
+# Readable names for the settings a run's "what changed" mentions most; others show their file key.
+_SETTING_NAMES = {
+    "tnk_cond": "tank temp", "fill": "fill", "tnk_V": "tank volume", "noz_thrt": "throat", "noz_ex": "expansion ratio",
+    "inj_D": "injector bore", "inj_N": "injectors", "grn_L": "grain length", "grn_ID": "starting port",
+    "grn_OD": "grain OD", "prop_a": "burn rate a", "prop_n": "burn rate n", "cstar_eff": "C* eff", "const_OF": "O/F",
+    "reg_model": "fuel flow", "inj_model": "flow model", "grain_shape": "grain shape", "star_tips": "star tips",
+    "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
+    "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
+}
+_SETTING_UNITS = {"tnk_cond": "T_tnk_unit"}  # where a setting's unit lives, when not at "<key>_unit"
+
+# Settings that follow from other settings, so a run's "what changed" leaves them out.
+_DERIVED_KEYS = {"tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
+
+
+def _changed_settings(old: dict, new: dict) -> list[str]:
+    """What a run changed from an earlier one, as short "setting value" pieces."""
+    def flat(d: dict, prefix: str = "") -> dict:
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out.update(flat(v, f"{prefix}{k}."))
+            else:
+                out[prefix + k] = v
+        return out
+
+    a, b = flat(old), flat(new)
+    changes = []
+    for k, v in b.items():
+        key = k.split(".")[-1]
+        if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
+            continue
+        name = _SETTING_NAMES.get(key, key.replace("_", " "))
+        if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
+            D = to_si(float(b["inj_D"]), b.get("inj_D_unit") or "in", "length")
+            changes.append(f"CdA {from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²")
+        elif isinstance(v, float):
+            unit = "%" if key == "fill" else str(b.get(_SETTING_UNITS.get(key, f"{key}_unit")) or "")
+            changes.append(f"{name} {v:.4g}{' ' + unit if unit else ''}")
+        else:
+            changes.append(f"{name} {v}")
+    return changes
+
+
 def _same_cfg(a, b) -> bool:
     """Equal settings, apart from float rounding from unit conversions."""
     if isinstance(a, dict) and isinstance(b, dict):
@@ -193,6 +246,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._close_when_finished = False
         self._result_cfg = None
+        self._sim_runs: list[SimRun] = []
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
         # The session (open motors, unsaved edits, study runs) is kept beside the settings a test passes in,
@@ -452,6 +506,19 @@ class MainWindow(QMainWindow):
         self.grain_shape.currentTextChanged.connect(lambda shape: af.setRowVisible(self.star_tips, shape == "star"))
         af.setRowVisible(self.star_tips, False)
         root.addWidget(adv)
+
+        # Runs: every finished simulation, to draw under the current one
+        runs = CollapsibleBox("Runs")
+        self.run_list = QListWidget()
+        self.run_list.setToolTip("Every simulation you run lands here, with what changed from the motor's previous run.\n"
+                                 "Tick runs to draw them dashed under the current one.")
+        self.run_list.setMinimumHeight(120)
+        self.run_list.itemChanged.connect(lambda *_: self._refresh_plot())
+        clear_runs = QPushButton("Clear runs")
+        clear_runs.clicked.connect(self._clear_runs)
+        runs.form().addRow(self.run_list)
+        runs.form().addRow(clear_runs)
+        root.insertWidget(root.indexOf(adv), runs)  # above Advanced, where it's in view
 
         # One label column width for every section, so the fields line up down the panel.
         labels = [item.widget() for box in inner.findChildren(CollapsibleBox) for r in range(box.form().rowCount())
@@ -1008,7 +1075,41 @@ class MainWindow(QMainWindow):
         self._settings, self._state, self._output = s, x, o
         self._result_cfg = self._running_cfg
         self._stop_progress()
+        self._add_run(self._result_cfg, o)
         self._show_results()
+
+    def _add_run(self, cfg: dict, o):
+        """Keep a finished run in the Runs list, labeled with what changed since the motor's last run."""
+        name = str(cfg.get("mtr_nm") or "motor")
+        number = self._sim_runs[-1].number + 1 if self._sim_runs else 1
+        previous = next((r for r in reversed(self._sim_runs) if r.cfg.get("mtr_nm") == cfg.get("mtr_nm")), None)
+        changes = _changed_settings(previous.cfg, cfg) if previous else []
+        what = (", ".join(changes[:3]) + (f" +{len(changes) - 3} more" if len(changes) > 3 else "")) if changes else (
+            "no changes" if previous else "first run")
+        run = SimRun(number, f"{number}. {name}: {what}", cfg, o)
+        self._sim_runs.append(run)
+        if len(self._sim_runs) > 20:
+            self._sim_runs.pop(0)
+            self.run_list.takeItem(self.run_list.count() - 1)
+        item = QListWidgetItem(run.label)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        item.setData(Qt.ItemDataRole.UserRole, run.number)
+        item.setToolTip("\n".join(changes) if changes else run.label)
+        self.run_list.blockSignals(True)
+        self.run_list.insertItem(0, item)  # newest first
+        self.run_list.blockSignals(False)
+
+    def _clear_runs(self):
+        self._sim_runs.clear()
+        self.run_list.clear()
+        self._refresh_plot()
+
+    def _overlay_runs(self) -> list[SimRun]:
+        """Ticked runs other than the one shown."""
+        ticked = {self.run_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.run_list.count())
+                  if self.run_list.item(i).checkState() == Qt.CheckState.Checked}
+        return [r for r in self._sim_runs if r.number in ticked and r.output is not self._output]
 
     def _show_results(self):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
@@ -1063,8 +1164,9 @@ class MainWindow(QMainWindow):
             return
         current = self.plot.currentWidget()
         active_quantity = next((q for q, widget in self._plot_widgets.items() if widget is current), None)
+        overlays = self._overlay_runs()
         if self._plotted_output is not o:
-            self._time_range = (float(o.t[0]), float(o.t[-1]))
+            self._time_range = (float(o.t[0]), max([float(o.t[-1])] + [float(r.output.t[-1]) for r in overlays]))
         self._clear_plot()
         palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
         checked = [i for i in range(len(TRACES)) if self.trace_list.item(i).checkState() == Qt.CheckState.Checked]
@@ -1078,7 +1180,7 @@ class MainWindow(QMainWindow):
                 widget = pg.PlotWidget()
                 plot = cast(pg.PlotItem, widget.getPlotItem())
                 plot.showGrid(x=True, y=True, alpha=0.25)
-                if per_plot[quantity] > 1:
+                if per_plot[quantity] > 1 or overlays:
                     plot.addLegend(offset=(-10, 5))
                 plot.setLabel("left", PLOT_LABELS[quantity], units=unit)
                 plot.getAxis("left").enableAutoSIPrefix(False)
@@ -1099,6 +1201,13 @@ class MainWindow(QMainWindow):
             pen = pg.mkPen(palette[i % len(palette)], width=2)
             self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
                                       pen=pen, name=label)
+            dashes = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DashDotDotLine)
+            for j, run in enumerate(overlays):
+                ro = run.output
+                self._plots[quantity].plot(
+                    ro.t, self.display_units.value(np.asarray(getattr(ro, key), dtype=float), quantity),
+                    pen=pg.mkPen(palette[i % len(palette)], width=1.5, style=dashes[j % len(dashes)]),
+                    name=f"{label} (run {run.number})")
         if "pressure" in self._plots and self._result_cfg is not None:
             limit = self.display_units.value(chamber_limit(self._result_cfg), "pressure")
             self._plots["pressure"].addItem(pg.InfiniteLine(
