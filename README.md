@@ -17,7 +17,7 @@ HRAP installs as an app and updates itself from this repo's `main` branch. It ne
 
 A few seconds after it opens, the app checks for a newer version; **Update available** in the status bar installs it, then restarts. **Settings → Check for updates…** checks now, and **Settings → Update branch…** follows another branch (for testing unmerged work). Running the installer again repairs an install.
 
-Quitting keeps everything: open motors, their unsaved edits, the page you were on, the window size and the Study tab's runs come back next time, including after a crash or an update restart.
+Quitting keeps everything: open motors, their unsaved edits, the page you were on and the window size come back next time, including after a crash or an update restart.
 
 **From a source checkout** (for working on HRAP): `run_hrap.command` (macOS) or `run_hrap.bat` (Windows) sets up `.venv` and runs the checkout. These copies don't update themselves; use git.
 
@@ -43,9 +43,9 @@ Motor files that give the tank by length, starting pressure or oxidizer mass, or
 
 Every mode shows **Total CdA**: the Cd × area the injector needs for that flow at this ΔP. Compare it with a cold-flow result. If the cold flow gives Cd on the exit area, Cd × exit area is the CdA.
 
-**Grain: Sizing** For O/F gives a grain length; Manual gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; Manual uses the nozzle's own and gives the chamber pressure.
+A manual injector takes its **CdA per hole** (or per swirler): a cold flow's water flow ÷ √(2 × 998 kg/m³ × ΔP). The motor file stores it as a Cd on the hole or PTC bore.
 
-The throat × injector Cd sweep is now on the **Study** tab.
+**Grain: Sizing** For O/F gives a grain length; Manual gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; Manual uses the nozzle's own and gives the chamber pressure.
 
 ### Swirl injectors
 
@@ -67,7 +67,11 @@ Until a cold flow fits them, drill the listed size and open the holes up a drill
 
 ## Simulation tab
 
-Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time.
+Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time. **300 psi ΔP line** marks where SPI starts to overpredict the flow.
+
+Every run goes in the **Runs** list, labeled with what changed since that motor's previous run. Click a run to load its settings and results back into its motor; tick runs to draw them dashed under the shown one. Right-click to rename, export a CSV or delete.
+
+Runs are kept as files, so they come back next time: `sim 1.json`, `sim 2.json`, … in a `runs` folder inside the motor's export folder (`HPS-mini.json` → `HPS-mini/runs/`). The list shows the runs of every open motor. A motor without a file keeps its runs in HRAP's own data folder. A run's file holds its settings and headline numbers, not its curves: HRAP simulates it again when it's shown, and says so if the result no longer matches. Runs under `HCAT motor files` aren't committed to git.
 
 The left side only holds how to run it: run time, when the valve closes, timestep, and chamber pressure before ignition.
 
@@ -82,19 +86,19 @@ Options that change the default MATLAB model:
 - **Solve tank cooling each step** (Simulation tab, Run): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
 - **Enable advanced options:** live chemistry and experimental fluid and grain models.
 
-## Study tab
+## Sweep tab
 
-- Pick **Throat × injector Cd**, **Grain length × total injector CdA**, **Grain length × burn rate a**, or choose your own one or two inputs.
+- Pick one or two inputs to vary (**Columns** and **Rows**): throat, injector CdA, grain length, starting port, tank temperature, fill, O/F, starting O/F, burn rate a or C* efficiency.
 - Enter comma-separated values (`12, 15, 18, 24`) or `start:end:count` (`12:24:5`). Each input has its own units. CdA is the total over all injectors, not a multiplier of an unnamed reference.
 - Choose the current fuel model, either model individually, or both. **Fixed O/F** and **burn rate a** can only be varied with the model that actually uses them.
-- Press **Run study**. It snapshots the applied Motor settings and Simulation settings, then runs each combination in parallel. Apply pending Motor sizing first. The throat stays fixed unless it is one of the varied inputs; it is not automatically resized to a pressure target.
+- Press **Run sweep**. It snapshots the applied Motor settings and Simulation settings, then runs each combination in parallel. Apply pending Motor sizing first. The throat stays fixed unless it's one of the varied inputs, or the Motor tab sizes the nozzle for a chamber pressure and **Size the throat for each case** is ticked.
 - Change **Show** to compare pressure, O/F, thrust, impulse, fuel consumed, port diameter, or burn times. Red cells exceed the pressure limit or deplete the fuel; amber cells have other warnings (hover to read them). O/F outside the combustion table is flagged, but the underlying HRAP calculation is unchanged.
-- The minimum peak pressure and SPI ΔP warning retain the old sweep's screening controls. After a complete study, the page lists column values meeting those limits without fuel depletion across every row. This is a comparison of simulated cases, not a hardware qualification.
+- The minimum peak pressure and SPI ΔP warning screen the cases. After a complete sweep, the page lists column values meeting those limits without fuel depletion across every row. This is a comparison of simulated cases, not a hardware qualification.
 - Select cells to overlay up to eight thrust, pressure, O/F, or port-diameter curves. Double-click one to open its exact inputs as a new, unsaved motor.
-- The **Results** list keeps studies for this app session, including their original motor inputs, even when you edit or switch motors. **Save study** writes those inputs and ranges to JSON; **Load study** restores them for another run. Curves are not saved in that file. **Export CSV** writes all case summaries in the current display units and labels incomplete batches as partial.
+- Every sweep is kept in the **Runs** list and saved as `sweep 1.json`, … in the motor's `runs` folder, like Simulation runs, with each case's numbers but not its curves. **Load…** sets up the sweep from a sweep file to run it again. **CSV…** writes all case summaries in the current display units and labels incomplete batches as partial.
 - **Stop** finishes only cases already running; it queues no more. Closing the app waits for those workers too.
 
-Study O/F is total oxidizer mass divided by fuel mass during the simulated liquid phase. If a run ends before liquid runout, the runout cell says **Not reached** and O/F covers only the part simulated. Fuel depletion checks the existing straight cylindrical port model. Selecting injector Cd or CdA overrides geometry-derived Cd and uses the same Cd for SPI and HEM. Changing grain length keeps dry masses unchanged.
+Sweep O/F is total oxidizer mass divided by fuel mass during the simulated liquid phase. If a run ends before liquid runout, the runout cell says **Not reached** and O/F covers only the part simulated. Fuel depletion checks the existing straight cylindrical port model. Varying injector CdA overrides the geometry-derived Cd and uses the same Cd for SPI and HEM. Changing grain length keeps dry masses unchanged.
 
 ## Mass & export tab
 
@@ -128,7 +132,7 @@ Ports farther off the axis, a bigger exit, or less total port area mean more swi
 
 | Folder | What's in it |
 | --- | --- |
-| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `study.py`, `swirler_options.py` |
+| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `study.py` (Sweep tab), `runs.py` (run files), `swirler_options.py` |
 | [`src/hrap/engine/`](src/hrap/engine/) | Tank, injector, grain, combustion, nozzle and the burn loop (`sim.py`); sizing (`sizing.py`) and the swirl model (`swirl.py`) |
 | [`src/hrap/io/`](src/hrap/io/) | Motor files, units, propellant data and exports |
 | [`src/hrap/advanced/`](src/hrap/advanced/) | Opt-in chemistry, fluid, injector and grain models |
