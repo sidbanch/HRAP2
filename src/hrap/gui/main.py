@@ -55,8 +55,8 @@ from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
-from hrap.gui.sizing import SizingPage
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
+from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
