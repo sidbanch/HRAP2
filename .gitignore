@@ -17,5 +17,6 @@ hrap_stdout.txt
 src/hrap/resources/propellants/50P.json
 src/hrap/resources/propellants/Metalized Plastisol.json
 
-# Simulation output (CSV exports go in a folder named after each motor)
+# Simulation output: CSV exports and kept runs go in a folder named after each motor
 HCAT motor files/**/*.csv
+HCAT motor files/**/runs/

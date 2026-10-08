@@ -4,8 +4,8 @@ from __future__ import annotations
 import csv
 import json
 import math
-import pickle
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 from typing import Callable
@@ -48,9 +48,11 @@ from hrap.engine.study import (
     check_axes,
     grid,
     passing_values,
+    run_case,
     study,
     uses_spi,
 )
+from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.sizing import card_frame
 from hrap.gui.widgets import UnitRow
 from hrap.io.config import chamber_limit, clone_cfg
@@ -225,6 +227,30 @@ class StudyRun:
     stopped: bool = False
     name: str = ""
     throat_P: float | None = None  # Pa; each case's throat was sized for this chamber pressure
+    file: Path | None = None  # its file (see hrap.gui.runs), once it has finished
+    time: str = ""  # when it was run
+
+    def save(self):
+        """Write it to its file, with each case's numbers but not its curves."""
+        if self.file is not None:
+            write_run(self.file, {"name": self.name, "time": self.time, "motor": self.cfg, "axes": self.axes,
+                                  "models": self.models, "throat_P": self.throat_P, "stopped": self.stopped,
+                                  "error": self.error, "cases": [{f.name: getattr(c, f.name) for f in fields(Case)
+                                                                  if f.name != "traces"} for c in self.cases]})
+
+    @classmethod
+    def read(cls, path: Path) -> StudyRun | None:
+        """A sweep from its file; its cases' curves are simulated again when they're plotted."""
+        try:
+            data = read_run(path)
+            cases = [Case(**{**c, "values": tuple((k, float(v)) for k, v in c["values"]),
+                             "table_OF": tuple(c.get("table_OF", (1.0, 30.0)))}, traces={}) for c in data.get("cases", [])]
+            run = cls(data["motor"], [(k, list(v)) for k, v in data["axes"]], list(data["models"]), cases,
+                      str(data.get("error") or ""), bool(data.get("stopped")), str(data.get("name") or path.stem),
+                      data.get("throat_P"), path, str(data.get("time") or ""))
+        except (AttributeError, KeyError, TypeError, ValueError):  # not a sweep, or saved by a version whose cases differ
+            return None
+        return run if all(key in INPUTS for key, _ in run.axes) else None  # inputs since removed can't be shown
 
     def key(self) -> str:
         """Identifies what was run: the motor, the input values, the fuel models and the throat sizing."""
@@ -263,13 +289,13 @@ class StudyWorker(QObject):
 class StudyPage(QWidget):
     started = Signal()
     finished = Signal()
-    runs_changed = Signal()
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits], on_open,
-                 get_unapplied: Callable[[], list[str]] = lambda: [],
+                 runs_dir: Callable[[], Path], get_unapplied: Callable[[], list[str]] = lambda: [],
                  ask_save: Callable[[str, str, str], str] | None = None):
         super().__init__()
         self._get_cfg, self._get_units, self._on_open = get_cfg, get_units, on_open
+        self._runs_dir = runs_dir
         self._get_unapplied = get_unapplied
         self._ask_save = ask_save or (lambda caption, name, filters: QFileDialog.getSaveFileName(self, caption, name, filters)[0])
         self._loaded_from = ""
@@ -365,7 +391,8 @@ class StudyPage(QWidget):
         self.history.setMinimumHeight(90)
         self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.history.setToolTip("Double-click a run to rename it, or right-click to rename or delete it.")
+        self.history.setToolTip("Every sweep is kept in a runs folder beside the motor's file.\n"
+                                "Double-click a run to rename it, or right-click to rename or delete it.")
         self.history.currentRowChanged.connect(self._show_run)
         self.history.itemChanged.connect(self._renamed)
         self.history.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -373,13 +400,12 @@ class StudyPage(QWidget):
         runs_l.addWidget(self.history, 1)
         files = QHBoxLayout()
         self.load_btn = QPushButton("Load…")
+        self.load_btn.setToolTip("Set up the sweep from a sweep file, to run it again.")
         self.load_btn.clicked.connect(self._load)
-        self.save_btn = QPushButton("Save…")
-        self.save_btn.clicked.connect(self._save)
         self.export_btn = QPushButton("CSV…")
         self.export_btn.setToolTip("Export the shown run's results as CSV.")
         self.export_btn.clicked.connect(self._export)
-        for w in (self.load_btn, self.save_btn, self.export_btn):
+        for w in (self.load_btn, self.export_btn):
             files.addWidget(w)
         runs_l.addLayout(files)
 
@@ -488,7 +514,6 @@ class StudyPage(QWidget):
         root.setSpacing(16)
         root.addWidget(left)
         root.addWidget(split, 1)
-        self.save_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.open_btn.setEnabled(False)
 
@@ -586,6 +611,7 @@ class StudyPage(QWidget):
             self.status.setText(str(exc))
             return
         result.name = f"{cfg.get('mtr_nm') or 'Motor'} · " + " × ".join(INPUTS[k].label for k, _ in axes)
+        result.time = datetime.now().isoformat(timespec="seconds")
         self.runs.append(result)
         self.history.addItem(self._history_item(result))
         self.history.setCurrentRow(len(self.runs) - 1)
@@ -625,9 +651,10 @@ class StudyPage(QWidget):
             w.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress.hide()
+        self.result.file, _ = new_run_file(self._runs_dir(), "sweep")
+        self.result.save()
         self.refresh()
         self.finished.emit()
-        self.runs_changed.emit()
 
     def _renamed(self, item):
         row = self.history.row(item)
@@ -635,7 +662,7 @@ class StudyPage(QWidget):
         if 0 <= row < len(self.runs):
             if name:
                 self.runs[row].name = name
-                self.runs_changed.emit()
+                self.runs[row].save()
             else:
                 item.setText(self.runs[row].name)
 
@@ -655,33 +682,24 @@ class StudyPage(QWidget):
         if not 0 <= row < len(self.runs):
             return
         removed = self.runs.pop(row)
+        if removed.file is not None:
+            delete_run(removed.file)
         self.history.blockSignals(True)
         self.history.takeItem(row)
         self.history.blockSignals(False)
-        if self.runs:
-            if removed is self.result:
-                self.history.setCurrentRow(min(row, len(self.runs) - 1))
-                self._show_run(self.history.currentRow())
-        else:
-            self.result = None
-            self.table.clearSelection()
-            self.table.setRowCount(0)
-            self.table.setColumnCount(0)
-            for label in (self.answer, self.status, self.col_caption):
-                label.setText("")
-            self.legend.hide()
-        self.runs_changed.emit()
+        if not self.runs:
+            self._show_nothing()
+        elif removed is self.result:
+            self.history.setCurrentRow(min(row, len(self.runs) - 1))
+            self._show_run(self.history.currentRow())
 
-    def dump_runs(self) -> bytes:
-        """The finished runs, for the session."""
-        return pickle.dumps([r for r in self.runs if r is not self.result or not self.busy()])
-
-    def load_runs(self, data: bytes):
-        """Bring back a session's runs, showing the last one."""
-        runs = pickle.loads(data)
-        if not all(isinstance(r, StudyRun) for r in runs):
-            return
-        runs = [r for r in runs if all(key in INPUTS for key, _ in r.axes)]  # inputs since removed can't be shown
+    def sync_runs(self, folders: list[Path]):
+        """List the sweeps saved in these folders, keeping the ones already listed and the shown one where it can."""
+        listed = {r.file: r for r in self.runs if r.file is not None}
+        runs = (listed.get(p) or StudyRun.read(p) for p in run_files(folders, "sweep"))
+        runs = sorted((r for r in runs if r is not None), key=lambda r: r.time)
+        if self.busy():
+            runs.append(self.result)  # saved when it finishes
         self.runs = runs
         self.history.blockSignals(True)
         self.history.clear()
@@ -689,12 +707,23 @@ class StudyPage(QWidget):
             self.history.addItem(self._history_item(run))
         self.history.blockSignals(False)
         if runs:
-            self.history.setCurrentRow(len(runs) - 1)
+            self.history.setCurrentRow(next((i for i, r in enumerate(runs) if r is self.result), len(runs) - 1))
+        else:
+            self._show_nothing()
+
+    def _show_nothing(self):
+        self.result = None
+        self.table.clearSelection()
+        self.table.setRowCount(0)
+        self.table.setColumnCount(0)
+        for label in (self.answer, self.status, self.col_caption):
+            label.setText("")
+        self.legend.hide()
 
     def _history_item(self, run: StudyRun) -> QListWidgetItem:
         item = QListWidgetItem(run.name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        item.setToolTip(f"{run.name}\n{run.total} runs. Double-click or right-click to rename.")
+        item.setToolTip(f"{run.name}\n{run.total} runs. Double-click or right-click to rename.\n{run.file or ''}".strip())
         return item
 
     def _show_run(self, index):
@@ -805,7 +834,6 @@ class StudyPage(QWidget):
                 self.answer.setText(f"No {INPUTS[xkey].label.lower()} stays within limits for {every}.")
         else:
             self.answer.setText("")
-        self.save_btn.setEnabled(True)
         self.export_btn.setEnabled(bool(r.cases))
         self._selection()
 
@@ -820,6 +848,12 @@ class StudyPage(QWidget):
         u = self._get_units()
         self.plot.setLabel("left", self.trace.currentText(), units=u.unit(quantity))
         for i, c in enumerate(cases[:8]):
+            if not c.traces:  # read from its file, which doesn't keep curves
+                try:
+                    c.traces.update(run_case(self.result.cfg, c.values, c.model, self.result.throat_P).traces)
+                except Exception as exc:
+                    self.status.setText(f"Couldn't simulate {self._label(c)} again: {exc}")
+                    continue
             values = np.array([u.value(v, quantity) for v in c.traces[key]])
             self.plot.plot(c.traces["t"], values, name=" / ".join(self._value_text(k, v) for k, v in c.values) + " · " + MODELS[c.model], pen=pg.mkPen(pg.intColor(i, hues=8), width=2))
         if len(cases) == 1:
@@ -872,23 +906,8 @@ class StudyPage(QWidget):
         cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} ({self._label(c).replace(' · ', ', ')})"
         self._on_open(cfg)
 
-    def _save(self):
-        if self.result is None:
-            return
-        r = self.result
-        default = "".join(c if c.isalnum() or c in " -_" else "_" for c in r.name).strip() or "sweep"
-        path = self._ask_save("Save sweep", f"{default}.json", "Sweep JSON (*.json)")
-        if path:
-            try:
-                Path(path).write_text(json.dumps({"name": r.name, "motor": r.cfg, "axes": r.axes, "models": r.models,
-                                                 "throat_P": r.throat_P,
-                                                 "min_pressure": self.min_pressure.si("pressure"),
-                                                 "max_dp": self.max_dp.si("pressure")}, indent=2) + "\n")
-            except OSError as exc:
-                self.status.setText(str(exc))
-
     def _load(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load sweep", "", "Sweep JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load sweep", str(self._runs_dir()), "Sweep JSON (*.json)")
         if not path:
             return
         try:
@@ -914,8 +933,6 @@ class StudyPage(QWidget):
                 axis.set_axis(key, values)
             self._axes_edited = True
             self._show_throat_option()
-            self.min_pressure.set_si(float(data.get("min_pressure", 0)), "pressure")
-            self.max_dp.set_si(float(data.get("max_dp", to_si(300, "psi", "pressure"))), "pressure")
             self._loaded_from = Path(path).name
             self._update_source()
         except (OSError, ValueError, KeyError, TypeError, IndexError, StopIteration) as exc:

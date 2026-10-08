@@ -5,11 +5,11 @@ import json
 import math
 import multiprocessing
 import os
-import pickle
 import sys
 import threading
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -56,6 +56,7 @@ from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
 from hrap.gui.sizing import SizingPage
+from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
@@ -63,6 +64,7 @@ from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, 
 from hrap.io.config import (
     bundled_motor,
     chamber_limit,
+    clone_cfg,
     default_cfg,
     load_json,
     load_matlab_mat,
@@ -148,13 +150,27 @@ class OpenMotor:
 
 @dataclass
 class SimRun:
-    """A finished simulation kept on the Simulation tab, to draw under later runs."""
-    number: int
+    """A finished simulation in the Simulation tab's Runs list, kept in its file (see hrap.gui.runs)."""
+    file: Path
     label: str
     cfg: dict
-    output: object
     changes: tuple = ()  # what changed from the motor's previous run
-    state: object = None  # the simulation's final state, for the summary when the run is loaded again
+    results: dict = field(default_factory=dict)  # headline numbers (SI) from when it was first run
+    time: str = ""  # when it was first run
+    output: object = None  # its curves, simulated again after it's read from its file
+    state: object = None  # the simulation's final state, for the summary
+
+    def save(self):
+        write_run(self.file, {"label": self.label, "time": self.time, "changes": list(self.changes),
+                              "results": self.results, "motor": self.cfg})
+
+    @classmethod
+    def read(cls, path: Path) -> SimRun | None:
+        data = read_run(path)
+        if data is None:
+            return None
+        return cls(path, str(data.get("label") or path.stem), data["motor"], tuple(data.get("changes") or ()),
+                   dict(data.get("results") or {}), str(data.get("time") or ""))
 
 
 # Readable names for the settings a run's "what changed" mentions most; others show their file key.
@@ -255,8 +271,8 @@ class MainWindow(QMainWindow):
         self._sim_runs: list[SimRun] = []
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
-        # The session (open motors, unsaved edits, study runs) is kept beside the settings a test passes in,
-        # or in the app's data folder, so it survives quitting, crashes and update restarts.
+        # The session (open motors, unsaved edits, runs of motors without a file) is kept beside the settings a test
+        # passes in, or in the app's data folder, so it survives quitting, crashes and update restarts.
         self._session_dir = (Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
                              if prefs is None else Path(prefs.fileName()).with_suffix(".session"))
         self._session_text = ""
@@ -285,7 +301,6 @@ class MainWindow(QMainWindow):
         self._session_timer = QTimer(self)
         self._session_timer.timeout.connect(self._save_session)
         self._session_timer.start(2000)
-        self.study_page.runs_changed.connect(self._save_study_runs)
         if update.install_root() is not None:
             QTimer.singleShot(3000, lambda: self._check_updates(quiet=True))
 
@@ -369,8 +384,8 @@ class MainWindow(QMainWindow):
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
-        self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_study_case,
-                                    self.sizing_page.unapplied, self._save_output)
+        self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_unsaved,
+                                    lambda: self._runs_dir(self._shown), self.sizing_page.unapplied, self._save_output)
         self.study_page.started.connect(self._sync_busy)
         self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
@@ -1110,36 +1125,70 @@ class MainWindow(QMainWindow):
         self._settings, self._state, self._output = s, x, o
         self._result_cfg = self._running_cfg
         self._stop_progress()
-        self._add_run(self._result_cfg, o, x)
+        self._add_run(self._result_cfg, s, x, o)
         self._show_results()
 
-    def _add_run(self, cfg: dict, o, x):
-        """Keep a finished run in the Runs list, labeled with what changed since the motor's last run."""
-        same = next((r for r in self._sim_runs if _same_cfg(r.cfg, cfg)), None)
-        if same is not None:  # rerunning an earlier run's settings updates that run instead of adding a copy
+    def _runs_dir(self, motor: OpenMotor | None) -> Path:
+        """Where a motor's runs are kept: a runs folder in its export folder, or the app's own folder until it has a file."""
+        return Path(motor.path).with_suffix("") / "runs" if motor is not None and motor.path else self._session_dir / "runs"
+
+    def _add_run(self, cfg: dict, s, x, o):
+        """Keep a finished run in the Runs list and in its file, labeled with what changed since the motor's last run."""
+        motor = self._shown
+        folder = self._runs_dir(motor)
+        mine = [r for r in self._sim_runs if r.file.parent == folder]
+        same = next((r for r in mine if _same_cfg(r.cfg, cfg)), None)
+        if same is not None:  # rerunning an earlier run's settings shows that run instead of adding a copy
             same.output, same.state = o, x
             self._select_run(same)
-            self._save_sim_runs()
             return
         name = str(cfg.get("mtr_nm") or "motor")
-        number = self._sim_runs[-1].number + 1 if self._sim_runs else 1
-        previous = next((r for r in reversed(self._sim_runs) if r.cfg.get("mtr_nm") == cfg.get("mtr_nm")), None)
+        # Motors without a file share the app's folder, so their runs are told apart by name.
+        previous = next((r for r in reversed(mine) if motor and motor.path or r.cfg.get("mtr_nm") == cfg.get("mtr_nm")), None)
         changes = _changed_settings(previous.cfg, cfg) if previous else []
         what = (", ".join(changes[:3]) + (f" +{len(changes) - 3} more" if len(changes) > 3 else "")) if changes else (
             "no changes" if previous else "first run")
-        run = SimRun(number, f"{number}. {name}: {what}", cfg, o, tuple(changes), x)
+        file, number = new_run_file(folder, "sim")
+        info = summarize(s, x, o)
+        results = {"total_impulse": info["total_impulse"], "peak_P_cmbr": info["peak_pressure_bar"] * 1e5,
+                   "burn_time": info["burn_time"]}
+        run = SimRun(file, f"{number}. {name}: {what}", cfg, tuple(changes), results,
+                     datetime.now().isoformat(timespec="seconds"), o, x)
+        run.save()
         self._sim_runs.append(run)
-        if len(self._sim_runs) > 20:
-            self._sim_runs.pop(0)
-            self.run_list.takeItem(self.run_list.count() - 1)
         self._add_run_item(run)
         self._select_run(run)
-        self._save_sim_runs()
+
+    def _simulate(self, sim_run: SimRun) -> bool:
+        """Give a run read from its file its curves back by simulating it again. False if it no longer runs."""
+        if sim_run.output is None:
+            try:
+                s, x = resolve(sim_run.cfg)
+                sim_run.state, sim_run.output = run(s, x)
+            except Exception as exc:
+                self.statusBar().showMessage(f"Couldn't simulate {sim_run.label} again: {exc}")
+                return False
+        return True
+
+    def _sync_runs(self):
+        """List the saved runs of every open motor and of motors without a file, keeping the ones already listed."""
+        folders = [self._runs_dir(m) for m in self._motors()] + [self._session_dir / "runs"]
+        listed, ticked = {r.file: r for r in self._sim_runs}, self._ticked()
+        runs = (listed.get(p) or SimRun.read(p) for p in run_files(folders, "sim"))
+        self._sim_runs = sorted((r for r in runs if r is not None), key=lambda r: r.time)
+        self.run_list.clear()
+        for r in self._sim_runs:
+            self._add_run_item(r, str(r.file) in ticked)
+        shown = next((r for r in self._sim_runs if r.output is not None and r.output is self._output), None)
+        if shown is not None:
+            self._select_run(shown)
+        self.study_page.sync_runs(folders)
+        self._refresh_plot()
 
     def _select_run(self, run: SimRun):
         """Highlight the run whose settings and results are shown."""
         for i in range(self.run_list.count()):
-            if self.run_list.item(i).data(Qt.ItemDataRole.UserRole) == run.number:
+            if self.run_list.item(i).data(Qt.ItemDataRole.UserRole) == str(run.file):
                 self.run_list.blockSignals(True)
                 self.run_list.setCurrentRow(i)
                 self.run_list.blockSignals(False)
@@ -1153,45 +1202,49 @@ class MainWindow(QMainWindow):
 
     def _load_run(self, run: SimRun):
         """Put a run's settings back into its motor and show its results, to compare or carry on from it."""
-        if self._thread is not None:
+        if self._thread is not None or not self._simulate(run):
             return
-        tab = next((i for i, m in enumerate(self._motors()) if m.title == run.cfg.get("mtr_nm")), None)
-        if tab is not None and tab != self.motor_tabs.currentIndex():
+        # Its motor: the one whose runs folder it's in. Motors without a file share one, so their runs go by name.
+        tab = next((i for i, m in enumerate(self._motors()) if self._runs_dir(m) == run.file.parent
+                    and (m.path or m.title == run.cfg.get("mtr_nm"))), None)
+        if tab is None:  # its motor was closed: open it as a new, unsaved motor, never into another motor's file
+            self._open_unsaved(clone_cfg(run.cfg))
+        elif tab != self.motor_tabs.currentIndex():
             self.motor_tabs.setCurrentIndex(tab)
         self._output = self._settings = self._state = self._result_cfg = None
         self._cfg_to_form(run.cfg)
         self._update_tab_marker()
-        if run.state is None:  # saved before runs kept their final state: run it again to rebuild the summary
-            self._run()
-            return
         self._settings, self._state = resolve(run.cfg)[0], run.state
         self._output, self._result_cfg = run.output, run.cfg
         self._show_results()
         self._select_run(run)
-        self.statusBar().showMessage(f"Loaded {run.label}. Save to keep these settings in the motor file.")
+        message = f"Loaded {run.label}. Save to keep these settings in the motor file."
+        then, now = run.results.get("total_impulse"), summarize(self._settings, run.state, run.output)["total_impulse"]
+        if then and abs(now - then) > 1e-3 * then:
+            u = self.display_units
+            message += (f" Its total impulse was {u.text(then, 'impulse')} when first run and is {u.text(now, 'impulse')} "
+                        "now, so the simulation has changed since.")
+        self.statusBar().showMessage(message)
 
-    def _add_run_item(self, run: SimRun):
+    def _add_run_item(self, run: SimRun, ticked: bool = False):
         item = QListWidgetItem(run.label)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
-        item.setCheckState(Qt.CheckState.Unchecked)
-        item.setData(Qt.ItemDataRole.UserRole, run.number)
-        item.setToolTip("\n".join(run.changes) or run.label)
+        item.setCheckState(Qt.CheckState.Checked if ticked else Qt.CheckState.Unchecked)
+        item.setData(Qt.ItemDataRole.UserRole, str(run.file))
+        item.setToolTip("\n".join([*run.changes, str(run.file)]))
         self.run_list.blockSignals(True)
         self.run_list.insertItem(0, item)  # newest first
         self.run_list.blockSignals(False)
 
-    def _save_sim_runs(self):
-        self._write_session_file("sim_runs.pickle", pickle.dumps(self._sim_runs))
-
     def _run_of(self, item: QListWidgetItem) -> SimRun | None:
-        return next((r for r in self._sim_runs if r.number == item.data(Qt.ItemDataRole.UserRole)), None)
+        return next((r for r in self._sim_runs if str(r.file) == item.data(Qt.ItemDataRole.UserRole)), None)
 
     def _on_run_item_changed(self, item: QListWidgetItem):
         run = self._run_of(item)
         if run is not None and item.text().strip() != run.label:
             if item.text().strip():
                 run.label = item.text().strip()
-                self._save_sim_runs()
+                run.save()
             else:
                 self.run_list.blockSignals(True)
                 item.setText(run.label)  # an empty name keeps the old one
@@ -1200,15 +1253,15 @@ class MainWindow(QMainWindow):
 
     def _run_menu(self, pos):
         item = self.run_list.itemAt(pos)
-        if item is None:
+        run = self._run_of(item) if item is not None else None
+        if run is None:
             return
         menu = QMenu(self)
         rename, csv, delete = menu.addAction("Rename"), menu.addAction("Export CSV…"), menu.addAction("Delete")
         chosen = menu.exec(self.run_list.viewport().mapToGlobal(pos))
-        run = self._run_of(item)
         if chosen is rename:
             self.run_list.editItem(item)
-        elif chosen is csv and run is not None:
+        elif chosen is csv and self._simulate(run):
             name = "".join(c if c.isalnum() or c in " -_." else "_" for c in run.label).strip() or "run"
             path, _ = QFileDialog.getSaveFileName(self, "Export run", self._dialog_path(f"{name}.csv"), "CSV (*.csv)")
             if path:
@@ -1216,11 +1269,10 @@ class MainWindow(QMainWindow):
                 export_csv(path, run.output)
                 self.statusBar().showMessage(f"Saved {path}")
         elif chosen is delete:
-            shown = run is not None and run.output is self._output
-            if run is not None:
-                self._sim_runs.remove(run)
+            shown = run.output is not None and run.output is self._output
+            self._sim_runs.remove(run)
+            delete_run(run.file)
             self.run_list.takeItem(self.run_list.row(item))
-            self._save_sim_runs()
             if shown and self._sim_runs:
                 self._load_run(self._sim_runs[-1])  # the deleted run was on screen: show the newest one left
             elif shown:
@@ -1229,16 +1281,23 @@ class MainWindow(QMainWindow):
                 self._refresh_plot()
 
     def _clear_runs(self):
+        if not self._sim_runs or QMessageBox.question(
+                self, APP_NAME, f"Delete all {len(self._sim_runs)} runs in the list, and their files?") != QMessageBox.StandardButton.Yes:
+            return
+        for r in self._sim_runs:
+            delete_run(r.file)
         self._sim_runs.clear()
         self.run_list.clear()
-        self._save_sim_runs()
         self._refresh_plot()
+
+    def _ticked(self) -> set[str]:
+        return {self.run_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.run_list.count())
+                if self.run_list.item(i).checkState() == Qt.CheckState.Checked}
 
     def _overlay_runs(self) -> list[SimRun]:
         """Ticked runs other than the one shown."""
-        ticked = {self.run_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.run_list.count())
-                  if self.run_list.item(i).checkState() == Qt.CheckState.Checked}
-        return [r for r in self._sim_runs if r.number in ticked and r.output is not self._output]
+        ticked = self._ticked()
+        return [r for r in self._sim_runs if str(r.file) in ticked and self._simulate(r) and r.output is not self._output]
 
     def _show_results(self):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
@@ -1292,6 +1351,7 @@ class MainWindow(QMainWindow):
         o = self._output
         overlays = self._overlay_runs()
         if o is None and not overlays:
+            self._clear_plot()
             return
         current = self.plot.currentWidget()
         active_quantity = next((q for q, widget in self._plot_widgets.items() if widget is current), None)
@@ -1334,12 +1394,12 @@ class MainWindow(QMainWindow):
                 self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
                                           pen=pen, name=label)
             dashes = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DashDotDotLine)
-            for j, run in enumerate(overlays):
-                ro = run.output
+            for j, overlay in enumerate(overlays):
+                ro = overlay.output
                 self._plots[quantity].plot(
                     ro.t, self.display_units.value(np.asarray(getattr(ro, key), dtype=float), quantity),
                     pen=pg.mkPen(palette[i % len(palette)], width=1.5, style=dashes[j % len(dashes)]),
-                    name=f"{label} ({run.label})")
+                    name=f"{label} ({overlay.label})")
         cfg = self._result_cfg if self._result_cfg is not None else overlays[0].cfg
         if "pressure" in self._plots:
             limit = self.display_units.value(chamber_limit(cfg), "pressure")
@@ -1470,7 +1530,8 @@ class MainWindow(QMainWindow):
         self._sync_run_button()
         self._update_tab_marker()
 
-    def _open_study_case(self, cfg):
+    def _open_unsaved(self, cfg):
+        """Open settings (a sweep case, or a run whose motor was closed) as a new, unsaved motor."""
         self._add_motor(cfg, title=cfg["mtr_nm"])
         self._shown.saved = None
         self._update_tab_marker()
@@ -1518,6 +1579,7 @@ class MainWindow(QMainWindow):
         if self.motor_tabs.count() == 0:
             self._shown = None
             self._new()
+        self._sync_runs()
 
     def _save_motor(self, motor: OpenMotor | None, choose_path: bool = False) -> bool:
         """Save a motor to its file, asking for one if it has none. Returns whether it was saved."""
@@ -1538,12 +1600,15 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.critical(self, "Save failed", f"Could not save {motor.title} to {path}.\n\n{exc}")
             return False
+        moved = path != motor.path
         motor.path, motor.title = path, self._title(motor.cfg, path)
         motor.saved = motor.cfg
         if motor is self._shown:
             self._update_tab_marker()
         else:
             self.motor_tabs.setTabText(self._motors().index(motor), motor.title)
+        if moved:
+            self._sync_runs()
         self.statusBar().showMessage(f"Saved {motor.path}")
         return True
 
@@ -1556,6 +1621,7 @@ class MainWindow(QMainWindow):
     def _open_path(self, path: str, show: bool = True):
         path = str(Path(path).resolve())
         self._add_motor(load_json(path), path, show=show)
+        self._sync_runs()
 
     def _import_mat(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import MATLAB motor", self._dialog_path(), "MATLAB (*.mat)")
@@ -1652,9 +1718,6 @@ class MainWindow(QMainWindow):
             self._write_session_file("session.json", text.encode())
             self._session_text = text
 
-    def _save_study_runs(self):
-        self._write_session_file("study_runs.pickle", self.study_page.dump_runs())
-
     def _write_session_file(self, name: str, data: bytes):
         try:
             self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -1665,7 +1728,7 @@ class MainWindow(QMainWindow):
             pass  # a read-only or full disk only costs the restore
 
     def _restore_session(self):
-        """Reopen last session's motors, unsaved edits, page, window size and study runs.
+        """Reopen last session's motors, unsaved edits, page and window size, and list the open motors' runs.
 
         A motor whose file was moved or deleted comes back only if it had unsaved edits (as unsaved).
         """
@@ -1694,17 +1757,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(int(data["page"]))
         if data.get("geometry"):
             self.restoreGeometry(QByteArray.fromBase64(data["geometry"].encode()))
-        try:
-            runs = pickle.loads((self._session_dir / "sim_runs.pickle").read_bytes())
-            self._sim_runs = [r for r in runs if isinstance(r, SimRun)]
-            for run in self._sim_runs:
-                self._add_run_item(run)
-        except Exception:  # missing, or saved by a version whose classes changed
-            pass
-        try:
-            self.study_page.load_runs((self._session_dir / "study_runs.pickle").read_bytes())
-        except Exception:  # missing, or saved by a version whose classes changed
-            pass
+        self._sync_runs()
 
     def _export(self, kind: str):
         if self._output is None or self._settings is None:

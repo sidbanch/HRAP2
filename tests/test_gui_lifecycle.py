@@ -58,8 +58,6 @@ def test_close_waits_for_worker(window):
 
 
 def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
-    import pickle
-
     from PySide6.QtCore import QSettings
 
     from hrap.gui.main import MainWindow
@@ -73,9 +71,8 @@ def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
     window._add_motor(default_cfg(), title="Second motor")
     window.name.setText("Edited second motor")
     window.tabs.setCurrentIndex(2)
-    window.study_page.load_runs(pickle.dumps([StudyRun(default_cfg(), [("grain_L", [0.3])], ["Shifting OF"],
-                                                                      name="Named run")]))
-    window.study_page.runs_changed.emit()
+    StudyRun(default_cfg(), [("grain_L", [0.3])], ["Shifting OF"], name="Named run",
+             file=window._runs_dir(first) / "sweep 1.json").save()
     assert window.close()  # no prompt: the session keeps the edits
     assert load_json(first.path)["mtr_nm"] != "Edited first motor"  # the file itself isn't touched
 
@@ -225,10 +222,8 @@ def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatc
     window._set_display_units(DisplayUnits(length="mm", pressure="bar"))
     assert "250 mm" in page.table.horizontalHeaderItem(0).text()
     assert len(page.plot.listDataItems()) == 2
-    path = str(tmp_path / "study.json")
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (path, ""))
-    page._save()
-    saved = json.loads((tmp_path / "study.json").read_text())
+    path = str(result.file)
+    saved = json.loads(result.file.read_text())
     assert saved["motor"] == result.cfg
     page.table.clearSelection()
     page.table.item(0, 0).setSelected(True)
