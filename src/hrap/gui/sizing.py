@@ -205,8 +205,8 @@ _LOAD_ADVICE = (
     ("triangular", "It isn't a mesh HRAP can read. Export the fuel from CAD again as an STL."),
     ("Align the grain axis", "The grain's axis has to run along the STL's X, Y or Z axis, with a round outside. "
                              "Line it up in CAD and export it again."),
-    ("Voxel size is too small", "That cube size needs over 35 million cubes. Make it larger, or set it to Auto. "
-                                "If the grain came out about 25 times too big, set STL units to mm."),
+    ("Voxel size is too small", "That cube size needs over 35 million cubes. Make it larger, or set it to Auto."),
+    ("check the STL units", "Its size looks wrong for a fuel grain. Check the STL units (in or mm)."),
     ("no open port", "No port was found inside it. Check the file is the fuel grain and its port runs all the way "
                      "through."),
     ("open at both ends", "The port has to run all the way through the grain, open at both ends."),
@@ -1100,9 +1100,7 @@ class SizingPage(QWidget):
         elif g is None:
             text = self.grain_message()
         else:
-            units = "" if 0.03 < g.length < 2.5 else (f"This grain is {self._get_units().text(g.length, 'length')} long. "
-                                                       "If that's wrong, the STL units are wrong.")
-            text = " ".join(note for note in (units, g.resolution_warning) if note)
+            text = g.warning
         warn = (self._grain_error and not self.grain_stopped()) or (g is not None and bool(text))
         self.stl_status.setText(text or "The numbers on this tab use the STL's starting port and burning area.")
         self.stl_status.setObjectName("notApplied" if warn else "cardLabel")

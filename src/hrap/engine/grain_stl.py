@@ -43,7 +43,7 @@ class GrainTables:
     outer_diameter: float
     case_area: np.ndarray
     case_web: float
-    resolution_warning: str
+    warning: str
 
 
 @dataclass
@@ -92,14 +92,14 @@ def _load(path, mtime, units, voxel, ends_burn):
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
-    digest.update(json.dumps([9, units, voxel, ends_burn]).encode())
+    digest.update(json.dumps([10, units, voxel, ends_burn]).encode())
     cache = _cache_dir() / (digest.hexdigest() + ".npz")
     try:
         with np.load(cache, allow_pickle=False) as saved:
             values = {f.name: saved[f.name] for f in fields(GrainGeometry)}
             for key in ("length", "outer_diameter", "case_web", "spacing"):
                 values[key] = float(values[key])
-            values["resolution_warning"] = str(values["resolution_warning"])
+            values["warning"] = str(values["warning"])
             result = GrainGeometry(**values)
         cache.touch()
         return result
@@ -129,9 +129,9 @@ def _cache_dir():
 
     from hrap import APP_NAME
     if QCoreApplication.instance() is not None:
-        root = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        root = Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation))
     else:
-        root = Path(QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)) / "HCAT" / APP_NAME
+        root = Path(QStandardPaths.writableLocation(QStandardPaths.GenericCacheLocation)) / "HCAT" / APP_NAME
     return root / "grain-cache"
 
 
@@ -151,13 +151,16 @@ def read_grain_mesh(path, *, units: str = "in") -> tuple[np.ndarray, np.ndarray]
     extents = mesh.extents
     mismatch = [abs(extents[(i + 1) % 3] - extents[(i + 2) % 3]) / max(extents[(i + 1) % 3], extents[(i + 2) % 3])
                 for i in range(3)]
-    axis = int(np.argmin(mismatch))
+    # A grain about as long as it is wide matches on two axes; prefer Z then.
+    axis = 2 if mismatch[2] < 0.05 else int(np.argmin(mismatch))
     order = [(axis + 1) % 3, (axis + 2) % 3, axis]
     mesh.vertices = mesh.vertices[:, order]
     mesh.vertices -= mesh.bounds.mean(axis=0)
     width, depth, length = mesh.extents
     if abs(width - depth) > 0.05 * max(width, depth):
         raise ValueError("Align the grain axis with X, Y or Z and use a cylindrical outer case")
+    if not 0.01 <= max(width, depth) <= 0.5:
+        raise ValueError(f"The grain is {max(width, depth) * 100:.3g} cm across; check the STL units")
     return np.asarray(mesh.vertices), np.asarray(mesh.faces)
 
 
@@ -169,7 +172,7 @@ def _build(path, units, voxel, ends_burn):
     scale = 0.0254 if units == "in" else 0.001
     _report("Filling cubes", 0.04)
     radius = max(width, depth) / 2
-    spacing = max(0.00076, (width * depth * length / 24_000_000) ** (1/3)) if voxel is None else voxel * scale
+    spacing = (width * depth * length / 9_000_000) ** (1/3) if voxel is None else voxel * scale
     if not np.isfinite(spacing) or spacing <= 0:
         raise ValueError("Voxel size must be positive")
     # Use an integer number of axial cells, preserving the exact grain length.
@@ -188,7 +191,7 @@ def _build(path, units, voxel, ends_burn):
         fuel[:, :, k] = _scanlines(lines, mesh.face_normals[face_ids, 1], coords)
         if k % 16 == 0:
             _report("Filling cubes", 0.04 + 0.18 * (k + 1) / nz)
-    # Treat sub-cell assembly gaps as bonded joints, not additional burning faces.
+    # Treat axial gaps up to two cubes wide as bonded joints, not burning faces.
     fuel = ndimage.binary_closing(fuel, structure=np.ones((1, 1, 3)), border_value=1)
     _report("Finding the port", 0.24)
     void = case[:, :, None] & ~fuel
@@ -201,6 +204,7 @@ def _build(path, units, voxel, ends_burn):
     if not port[:, :, 0].any() or not port[:, :, -1].any():
         raise ValueError("The largest port must open at both ends of the grain")
     del labels, void
+    empty = np.count_nonzero(case[:, :, None] & ~fuel & ~port)
     fuel = case[:, :, None] & ~port
     if not fuel.any():
         raise ValueError("No fuel is resolved at this cube size; choose smaller cubes")
@@ -297,6 +301,7 @@ def _build(path, units, voxel, ends_burn):
     area *= scale_area
     volume = port_volume + burned * scale_area
     volume[-1] = total
+    side_web, side_volume = web, volume
     if ends_burn:
         web, remaining = _burning_ends(distance, case, edges, sigma, web, total - volume, spacing, length)
         volume = total - remaining
@@ -309,8 +314,14 @@ def _build(path, units, voxel, ends_burn):
     _report("Building tables", 0.96)
     distance[port] = 0
     cells = web[-1] / spacing
-    warning = f"Walls are only {cells:.1f} cubes thick; set a smaller cube size." if cells < 8 else ""
-    return GrainGeometry(web, volume, area, volume / length, total - volume,
+    empty_percent = 100 * empty / np.count_nonzero(fuel)
+    warning = " ".join(note for note in (
+        f"Walls are only {cells:.1f} cubes thick; set a smaller cube size." if cells < 8 else "",
+        f"{empty_percent:.1f}% of the space inside the case is neither fuel nor the port, and is counted as fuel. "
+        "Check the grain isn't tilted and has no flats or second port." if empty_percent > 1 else "") if note)
+    # Burned-off ends lengthen the chamber but don't widen the port the oxidizer flows through.
+    port_area = np.interp(web, side_web, side_volume) / length
+    return GrainGeometry(web, volume, area, port_area, total - volume,
                          float(length), float(2 * radius), case_area, case_web, warning, distance, spacing, origin,
                          np.asarray(mesh.vertices), np.asarray(mesh.faces))
 

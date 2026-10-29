@@ -145,7 +145,10 @@ def load_json(path: str | Path) -> dict[str, Any]:
 def save_json(path: str | Path, cfg: dict[str, Any]) -> None:
     saved = dict(cfg)
     if saved.get("grn_stl") and Path(saved["grn_stl"]).is_absolute():
-        saved["grn_stl"] = os.path.relpath(saved["grn_stl"], Path(path).resolve().parent)
+        try:  # forward slashes, so a file saved on Windows opens on a Mac
+            saved["grn_stl"] = Path(os.path.relpath(saved["grn_stl"], Path(path).resolve().parent)).as_posix()
+        except ValueError:  # the STL is on another Windows drive
+            pass
     Path(path).write_text(json.dumps(saved, indent=2), encoding="utf-8")
 
 

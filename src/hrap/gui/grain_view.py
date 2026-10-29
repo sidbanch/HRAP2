@@ -451,8 +451,8 @@ class GrainView(QWidget):
         self.grain.set("Grid", f"{g.distance.size / 1e6:.1f} million cubes of {u.text(g.spacing, 'length', 3)}",
                        "The grain is split into cubes to work out how it burns back.\n"
                        "Set their size with Cube size on the Motor tab.")
-        self.grain_warning.setText(g.resolution_warning)
-        self.grain_warning.setVisible(bool(g.resolution_warning))
+        self.grain_warning.setText(g.warning)
+        self.grain_warning.setVisible(bool(g.warning))
         x = u.value(g.web, "length")
         top, bottom = self._area_plots
         for plot in self._area_plots:

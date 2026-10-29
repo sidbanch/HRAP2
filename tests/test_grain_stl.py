@@ -68,7 +68,7 @@ def test_stl_geometry_and_simulation(tmp_path, monkeypatch):
         load_grain_stl(path, voxel=0.1, progress=cancel)
     assert set((tmp_path / "cache").iterdir()) == before
     assert load_grain_stl(path) is g
-    assert not g.resolution_warning
+    assert not g.warning
     radius = 1.25 * 0.0254 + g.web
     burning = g.web < 0.445 * 0.0254 - g.spacing / 2
     np.testing.assert_allclose(g.port_area[burning], np.pi * radius[burning]**2, rtol=0.02)
@@ -174,8 +174,8 @@ def _check_small_grains(tmp_path):
     trimesh.util.concatenate([first, second]).export(joint_path)
     single = load_grain_stl(single_path, units="mm", voxel=0.76)
     joint = load_grain_stl(joint_path, units="mm", voxel=0.76)
-    assert "1.3 cubes" in single.resolution_warning
-    assert "set a smaller cube size" in joint.resolution_warning
+    assert "1.3 cubes" in single.warning
+    assert "set a smaller cube size" in joint.warning
     assert joint.case_web == pytest.approx(single.case_web, abs=1e-9)
     assert joint.case_web == pytest.approx(0.001, abs=1e-9)
     assert np.interp(0.0005, joint.web, joint.case_area) == 0
