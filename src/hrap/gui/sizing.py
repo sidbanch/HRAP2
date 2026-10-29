@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from pathlib import Path
 from typing import Callable, cast
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -118,38 +120,94 @@ class FieldGrid(QGridLayout):
         self._rows += 1
 
 
+class _Stopped(Exception):
+    pass
+
+
 class GrainLoader(QObject):
-    """Reads grain STLs off the UI thread, one at a time, as each takes up to a minute and a lot of memory.
-    A request made meanwhile waits, replacing any earlier one still waiting."""
-    done = Signal(object, object)  # the request it answers, and its GrainGeometry or an error message
+    """Reads grain STLs off the UI thread, one at a time, as each can take a minute and a lot of memory.
+    A newer request stops the one loading, as does stop()."""
+    mesh = Signal(object, object)  # request, (vertices, faces): the STL's shape, read in a moment, to show while it loads
+    progress = Signal(object, str, float)  # request, stage, share of the whole load done
+    done = Signal(object, object)  # request, and its GrainGeometry, an error message, or None if it was stopped
     _read = Signal(object, object)
 
     def __init__(self):
         super().__init__()
-        self._reading: tuple | None = None
+        self._reading: tuple | None = None  # (request, its stop flag)
         self._waiting: tuple | None = None
         self._read.connect(self._on_read)
 
     def load(self, request: tuple):
         if self._reading is not None:
-            self._waiting = request
+            if self._reading[0] != request:
+                self._reading[1].set()
+                self._waiting = request
+            else:
+                self._waiting = None
             return
-        self._reading = request
+        stop = threading.Event()
+        self._reading = (request, stop)
+        path, units, voxel, ends_burn = request
+
+        def report(stage: str, fraction: float):
+            if stop.is_set():
+                raise _Stopped
+            self.progress.emit(request, stage, fraction)
+
+        def read_mesh():
+            try:
+                from hrap.engine.grain_stl import read_grain_mesh
+                self.mesh.emit(request, read_grain_mesh(path, units=units))
+            except Exception:
+                pass  # the full load says what's wrong
 
         def work():
             try:
                 from hrap.engine.grain_stl import load_grain_stl
-                path, units, voxel, ends_burn = request
-                self._read.emit(request, load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn))
+                result = load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn, progress=report)
+            except _Stopped:
+                result = None
             except Exception as exc:
-                self._read.emit(request, str(exc) or type(exc).__name__)
+                result = str(exc) or type(exc).__name__
+            self._read.emit(request, result)
+
+        threading.Thread(target=read_mesh, daemon=True).start()
         threading.Thread(target=work, daemon=True).start()
+
+    def stop(self):
+        if self._reading is not None:
+            self._reading[1].set()
+        self._waiting = None
 
     def _on_read(self, request: tuple, result):
         waiting, self._reading, self._waiting = self._waiting, None, None
         self.done.emit(request, result)
-        if waiting is not None and waiting != request:
+        if waiting is not None:
             self.load(waiting)
+
+
+STOPPED = "Loading stopped."
+
+# What the engine's load errors mean for someone holding an STL, and what to do about them.
+_LOAD_ADVICE = (
+    ("open edges", "Its surface has holes (open edges). Export the fuel from CAD again as a closed solid."),
+    ("triangular", "It isn't a mesh HRAP can read. Export the fuel from CAD again as an STL."),
+    ("Align the grain axis", "The grain's axis has to run along the STL's X, Y or Z axis, with a round outside. "
+                             "Line it up in CAD and export it again."),
+    ("Voxel size is too small", "That voxel size needs over 35 million cubes. Make it larger, or set it to Auto. "
+                                "If the grain came out about 25 times too big, set STL units to mm."),
+    ("no open port", "No port was found inside it. Check the file is the fuel grain and its port runs all the way "
+                     "through."),
+    ("open at both ends", "The port has to run all the way through the grain, open at both ends."),
+    ("No fuel is resolved", "The cubes are too big to see the fuel between port and case. Make the voxel size smaller."),
+    ("port surface", "Its port surface couldn't be found. Check the file is the fuel grain."),
+)
+
+
+def plain_load_error(name: str, message: str) -> str:
+    advice = next((text for key, text in _LOAD_ADVICE if key in message), f"The STL reader says: {message}")
+    return f"Couldn't load {name}. {advice}"
 
 
 def mid_section(geom) -> np.ndarray:
@@ -237,7 +295,8 @@ class SizingPage(QWidget):
     motor_edited = Signal()  # a motor setting on this page changed
     sized = Signal()  # the sizing was worked out again, so what Apply to motor would change may differ
     applied = Signal()
-    grain_changed = Signal()  # the STL grain started loading, loaded, failed or was dropped
+    grain_changed = Signal()  # the STL grain is loading (and on screen), loaded, failed, stopped or dropped
+    grain_progress = Signal()  # loading went on
     show_grain = Signal()  # View in 3D was clicked
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits]):
@@ -253,10 +312,20 @@ class SizingPage(QWidget):
         self.grain_geom = None  # the loaded STL grain (GrainGeometry)
         self._grain_request: tuple | None = None  # what grain_geom is, or is loading, for
         self._grain_error = ""
+        self.grain_mesh: tuple | None = None  # the STL's shape (vertices, faces), shown while its burn-back loads
+        self._grain_stage = ("", 0.0)  # loading: the step it's on, and the share of the whole load done
+        self._grain_started = self._grain_took = 0.0
+        self._grain_shown = False  # loading is on screen; a grain in the cache loads too fast to show it
+        self._show_loading = QTimer(self, singleShot=True, interval=250)
+        self._show_loading.timeout.connect(self._on_slow_load)
+        self._tick = QTimer(self, interval=1000)  # the elapsed time and time left move on between progress reports
+        self._tick.timeout.connect(self._on_tick)
         self._section: np.ndarray | None = None
         self._round_grain: dict | None = None  # the round grain's sizes, kept while the grain comes from an STL
         self._grain_loader = GrainLoader()
         self._grain_loader.done.connect(self._on_grain_loaded)
+        self._grain_loader.progress.connect(self._on_grain_progress)
+        self._grain_loader.mesh.connect(self._on_grain_mesh)
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.burn_time = PlainDoubleSpinBox()
@@ -531,15 +600,19 @@ class SizingPage(QWidget):
         self.stl_status = QLabel("")
         self.stl_status.setObjectName("cardLabel")
         self.stl_status.setWordWrap(True)
-        self._show_3d = QPushButton("View in 3D")
-        self._show_3d.clicked.connect(self.show_grain)
+        self.stl_progress = QProgressBar()
+        self.stl_progress.setRange(0, 1000)
+        self.stl_progress.setTextVisible(False)
+        self.stl_progress.setFixedSize(90, 8)
+        self._grain_action = QPushButton()  # View in 3D, Cancel or Load again
+        self._grain_action.clicked.connect(self._on_grain_action)
         grain_form = FieldGrid()
         grain_form.add("Shape", self.grain_shape)
         self._stl_rows = [*grain_form.add("STL file", _beside(self.stl_file, load_stl), span=True),
                           *grain_form.add("STL units", self.stl_unit)]
         voxel_row = grain_form.add("Voxel size", self.stl_voxel, "in")
         self._voxel_unit = voxel_row[2]
-        status = _beside(self.stl_status, self._show_3d)
+        status = _beside(self.stl_status, _beside(self.stl_progress, self._grain_action))
         self._stl_rows += [*voxel_row, *grain_form.add("", self.ends_burn), status]
         grain_form.add_line(status)
         self._grain_from_row = grain_form.add("Sizing", self.grain_from)
@@ -855,22 +928,61 @@ class SizingPage(QWidget):
                    self.ends_burn.isChecked()) if self._stl() and self._stl_path else None
         if request == self._grain_request:
             return
-        self._grain_request, self.grain_geom, self._section, self._grain_error = request, None, None, ""
-        if request is not None:
-            if Path(request[0]).is_file():
-                self._grain_loader.load(request)
-            else:
-                self._grain_error = f"Can't find {request[0]}."
+        self._grain_request, self.grain_geom, self.grain_mesh, self._section = request, None, None, None
+        self._grain_error, self._grain_stage, self._grain_shown = "", ("Reading STL", 0.0), False
+        if request is None:
+            self._grain_loader.stop()
+        elif not Path(request[0]).is_file():
+            self._grain_loader.stop()
+            self._grain_error = f"Can't find {request[0]}. If it moved, load it again with Load STL…"
+        else:
+            self._grain_started = time.monotonic()
+            self._grain_loader.load(request)
+            self._show_loading.start()
         self._show_grain_status()
         self.grain_changed.emit()
+
+    def _on_slow_load(self):
+        """Still loading after a moment, so it isn't coming from the cache: show its progress."""
+        if self.grain_loading():
+            self._grain_shown = True
+            self._tick.start()
+            self._show_grain_status()
+            self.refresh()
+            self.grain_changed.emit()
+
+    def _on_tick(self):
+        if self.grain_loading_shown():
+            self._show_grain_status()
+            self.grain_progress.emit()
+        else:
+            self._tick.stop()
+
+    def _on_grain_progress(self, request: tuple, stage: str, fraction: float):
+        if request == self._grain_request and self.grain_geom is None:
+            self._grain_stage = (stage, fraction)
+            if self._grain_shown:
+                self._show_grain_status()
+                self.grain_progress.emit()
+
+    def _on_grain_mesh(self, request: tuple, mesh: tuple):
+        if request == self._grain_request and self.grain_geom is None:
+            self.grain_mesh = mesh
+            if self._grain_shown:
+                self.grain_changed.emit()
 
     def _on_grain_loaded(self, request: tuple, result):
         if request != self._grain_request:
             return  # the STL or its settings changed while it loaded
-        if isinstance(result, str):
-            self._grain_error = f"Couldn't load {Path(request[0]).name}: {result}"
+        self._show_loading.stop()
+        self._tick.stop()
+        self._grain_took = time.monotonic() - self._grain_started
+        if result is None:
+            self._grain_error = STOPPED
+        elif isinstance(result, str):
+            self._grain_error = plain_load_error(Path(request[0]).name, result)
         else:
-            self.grain_geom, self._section = result, mid_section(result)
+            self.grain_geom, self._section, self.grain_mesh = result, mid_section(result), None
         changed = False
         if self.grain_geom is not None:  # the round sizes become the STL's, for the drawings, layout and sizing
             for row, value in ((self.grain_L, result.length), (self.grain_OD, result.outer_diameter),
@@ -885,13 +997,54 @@ class SizingPage(QWidget):
         else:
             self.refresh()
 
+    def _on_grain_action(self):
+        if self.grain_loading():
+            self.stop_grain_load()
+        elif self.grain_geom is not None:
+            self.show_grain.emit()
+        else:
+            self.load_grain_again()
+
+    def stop_grain_load(self):
+        self._grain_loader.stop()
+
+    def load_grain_again(self):
+        self._grain_request = None
+        self._sync_grain()
+
+    def grain_failed(self) -> bool:
+        """The last load failed or was stopped."""
+        return bool(self._grain_error)
+
+    def grain_stopped(self) -> bool:
+        return self._grain_error == STOPPED
+
+    def grain_load_seconds(self) -> float:
+        """How long the last load took."""
+        return self._grain_took
+
+    def grain_name(self) -> str:
+        return Path(self._stl_path).name
+
     def grain_message(self) -> str:
         """What's in the way of showing the STL grain, if anything."""
         if not self._stl_path:
-            return "Load the fuel's STL file on the Grain card."
+            return "Load the fuel's STL file on the Motor tab's Grain card."
         if self._grain_error:
             return self._grain_error
-        return f"Loading {Path(self._stl_path).name}… A fine grid can take a minute." if self.grain_geom is None else ""
+        return f"Loading {self.grain_name()}…" if self.grain_geom is None else ""
+
+    def grain_progress_text(self) -> str:
+        """The loading step, how far along the whole load is, and roughly how long is left."""
+        stage, fraction = self._grain_stage
+        elapsed = time.monotonic() - self._grain_started
+        text = f"{stage} · {100 * fraction:.0f}% · {elapsed:.0f} s in"
+        if elapsed > 2 and 0.05 < fraction < 0.97:
+            text += f", about {max(1.0, elapsed * (1 - fraction) / fraction):.0f} s left"
+        return text
+
+    def grain_fraction(self) -> float:
+        return self._grain_stage[1]
 
     def grain_tables(self):
         """The loaded STL grain's burn-back tables, so the engine needn't load it again; None for a round grain."""
@@ -900,11 +1053,33 @@ class SizingPage(QWidget):
     def grain_loading(self) -> bool:
         return self._grain_request is not None and self.grain_geom is None and not self._grain_error
 
+    def grain_loading_shown(self) -> bool:
+        """Loading, and long enough that its progress is on screen."""
+        return self.grain_loading() and self._grain_shown
+
     def _show_grain_status(self):
-        self.stl_file.setText(Path(self._stl_path).name or "none")
+        self.stl_file.setText(self.grain_name() or "none")
         self.stl_file.setToolTip(self._stl_path)
-        self.stl_status.setText(self.grain_message() or "The numbers on this tab use the STL's starting port and burning area.")
-        self._show_3d.setVisible(self.grain_geom is not None)
+        g, loading = self.grain_geom, self.grain_loading()
+        if loading and not self._grain_shown:
+            return  # a moment in: a grain in the cache is about to arrive
+        if loading:
+            text = f"Loading: {self.grain_progress_text()}"
+        elif g is None:
+            text = self.grain_message()
+        elif not 0.03 < g.length < 2.5:
+            text = (f"This grain is {self._get_units().text(g.length, 'length')} long. If that's wrong, "
+                    "the STL units are wrong.")
+        else:
+            text = "The numbers on this tab use the STL's starting port and burning area."
+        self.stl_status.setText(text)
+        self.stl_status.setObjectName("notApplied" if self._grain_error and not self.grain_stopped() else "cardLabel")
+        self.stl_status.style().unpolish(self.stl_status)
+        self.stl_status.style().polish(self.stl_status)
+        self.stl_progress.setVisible(loading)
+        self.stl_progress.setValue(round(1000 * self.grain_fraction()))
+        self._grain_action.setText("Cancel" if loading else "View in 3D" if g is not None else "Load again")
+        self._grain_action.setVisible(bool(self._stl_path) and (loading or g is not None or bool(self._grain_error)))
 
     def _on_propellant(self):
         """Fill in the propellant's own density and burn rate."""
@@ -1069,6 +1244,8 @@ class SizingPage(QWidget):
         self.limit_warning.hide()
         try:
             if self._stl() and self.grain_geom is None:  # sizing would load it here, holding up the UI
+                if self.grain_loading() and not self._grain_shown:
+                    return  # a moment in: a grain in the cache is about to arrive
                 raise ValueError(self.grain_message())
             z = size_motor(cfg, self.targets(), grain_tables=self.grain_tables())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run

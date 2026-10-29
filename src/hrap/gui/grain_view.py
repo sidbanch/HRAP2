@@ -30,8 +30,10 @@ PLAY_S = 6.0  # a burned-distance sweep plays over this long; a run plays in its
 PREVIEW_CELLS = 5e5  # grid cells in the quick surface shown while the slider moves
 THEMES = {
     "dark": {"bg": "#1a1d23", "fg": "#e6e8ee", "muted": "#9aa3b0", "fuel": (0.82, 0.86, 0.93, 0.16),
+             "preview": (0.82, 0.86, 0.93, 0.5),
              "burned": "#f08a3c", "case": "#e06c75", "port_area": "#5b8def"},
     "light": {"bg": "#ffffff", "fg": "#1b1d21", "muted": "#5c6370", "fuel": (0.25, 0.30, 0.38, 0.16),
+              "preview": (0.25, 0.30, 0.38, 0.5),
               "burned": "#e07020", "case": "#c8414c", "port_area": "#2f5fbf"},
 }
 
@@ -132,7 +134,10 @@ class _Surfaces(QObject):
 
 
 class GrainView(QWidget):
-    """The grain in 3D with its burned-back region, its burning and port areas, and a slider to burn it back."""
+    """The grain in 3D with its burned-back region, its burning and port areas, and a slider to burn it back.
+    While a grain loads it shows its shape and the load's progress; without one, why not."""
+    cancel_load = Signal()
+    message_action = Signal()  # the button under a message was clicked
 
     def __init__(self, get_units: Callable[[], DisplayUnits], get_density: Callable[[], float]):
         super().__init__()
@@ -144,22 +149,22 @@ class GrainView(QWidget):
         self._job = 0  # the newest full-detail surface asked for
         self._play_start = (0.0, 0)  # when Play was pressed, and the slider then
         self._stale = False  # the 3D view is behind the slider, as it doesn't draw while hidden
+        self._length = 0.0  # of the grain on screen, to frame it
         self._surfaces = _Surfaces()
         self._surfaces.done.connect(self._on_surface)
 
         self._message = QLabel("")
-        self._message.setObjectName("cardLabel")
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._message.setWordWrap(True)
-        self._busy = QProgressBar()
-        self._busy.setRange(0, 0)
-        self._busy.setFixedWidth(240)
-        self._busy.setTextVisible(False)
+        self._message.setFixedWidth(520)
+        self._message_button = QPushButton()
+        self._message_button.clicked.connect(self.message_action)
         waiting = QWidget()
         wl = QVBoxLayout(waiting)
+        wl.setSpacing(14)
         wl.addStretch(1)
-        wl.addWidget(self._message)
-        wl.addWidget(self._busy, 0, Qt.AlignmentFlag.AlignHCenter)
+        wl.addWidget(self._message, 0, Qt.AlignmentFlag.AlignHCenter)
+        wl.addWidget(self._message_button, 0, Qt.AlignmentFlag.AlignHCenter)
         wl.addStretch(1)
         self._stack = QStackedWidget()
         self._stack.addWidget(waiting)
@@ -193,7 +198,7 @@ class GrainView(QWidget):
         self.by_time.toggled.connect(self._on_mode)
         self.legend = QLabel("")
         reset = QPushButton("Reset view")
-        reset.clicked.connect(self._reset_camera)
+        reset.clicked.connect(lambda: self._reset_camera())
         move = "⌘-drag" if sys.platform == "darwin" else "Ctrl-drag"
         hint = QLabel(f"Drag to turn, scroll to zoom, {move} to move.")
         hint.setObjectName("cardLabel")
@@ -214,11 +219,33 @@ class GrainView(QWidget):
         options.addWidget(hint)
         options.addSpacing(8)
         options.addWidget(reset)
+        controls = QWidget()
+        cl = QVBoxLayout(controls)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(10)
+        cl.addLayout(bar)
+        cl.addLayout(options)
+        self._progress_text = QLabel("")
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 1000)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedWidth(280)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.cancel_load)
+        loading = QWidget()
+        ll = QHBoxLayout(loading)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(12)
+        ll.addWidget(self._progress_text, 1)
+        ll.addWidget(self._progress_bar)
+        ll.addWidget(cancel)
+        self._bottom = QStackedWidget()  # the slider and its options, or the load's progress
+        self._bottom.addWidget(controls)
+        self._bottom.addWidget(loading)
         left = QVBoxLayout()
         left.setSpacing(10)
         left.addWidget(frame, 1)
-        left.addLayout(bar)
-        left.addLayout(options)
+        left.addWidget(self._bottom)
 
         self.grain = Card("Grain", ["Length", "Outer diameter", "Starting port volume", "Same-area round port", "Fuel",
                                     "Case wall reached", "Fuel left then", "Last fuel gone at", "Grid"])
@@ -249,7 +276,7 @@ class GrainView(QWidget):
         self._area_plots[1].setXLink(self._area_plots[0])
         self._case_label = self._case_lines[0].label
         self._area_plots[0].getAxis("bottom").setStyle(showValues=False)
-        right_column = QWidget()
+        right_column = self._right = QWidget()
         right_column.setFixedWidth(370)
         right = QVBoxLayout(right_column)
         right.setContentsMargins(0, 0, 0, 0)
@@ -270,40 +297,84 @@ class GrainView(QWidget):
         self._settle_timer.timeout.connect(self._show_full)
         self._play_timer = QTimer(self, interval=33)
         self._play_timer.timeout.connect(self._play_step)
-        self.set_grain(None, "")
         self.set_theme("dark")
+        self.set_message("")
 
-    def set_grain(self, geom, message: str, busy: bool = False):
-        """Show a loaded grain, or a message (with a busy bar while one loads)."""
-        self._message.setText(message)
-        self._busy.setVisible(busy)
+    def set_grain(self, geom):
+        """Show a loaded grain, burned back from its start."""
+        self._bottom.setCurrentIndex(0)
+        self._bottom.show()
+        for w in (self._right, self.now, self.plots):
+            w.show()
         if geom is self._geom:
             return
         self._geom = geom
         self.play.setChecked(False)
-        for w in (self.play, self.slider, self.by_web):
-            w.setEnabled(geom is not None)
-        self.plots.setVisible(geom is not None)
         self._sync_mode()
-        if geom is None:
-            self._stack.setCurrentIndex(0)
-            self.grain.clear()
-            self.now.clear()
-            for plot in self._area_plots:
-                plot.clear()
-            return
         if self._view is None:
             self._make_view()
         self._stack.setCurrentIndex(1)
-        v, f, n = _mesh_arrays(geom.mesh_vertices, geom.mesh_faces)
-        self._set_mesh(self._fuel, v, f, n)
-        self._reset_camera()
+        self._fuel.setColor(self._colors["fuel"])
+        self._burned.show()
+        self._set_mesh(self._fuel, *_mesh_arrays(geom.mesh_vertices, geom.mesh_faces))
+        self._reset_camera(geom.length)
+        for name in self.grain.values:
+            self.grain.show_row(name, True)
         self.slider.blockSignals(True)
         self.slider.setValue(0)
         self.slider.blockSignals(False)
         self.refresh()
         self._show_preview()
         self._show_full()
+
+    def set_loading(self, name: str, mesh: tuple | None):
+        """While a grain loads: its shape as soon as the STL is read, and the load's progress below."""
+        self._drop_grain()
+        self._bottom.setCurrentIndex(1)
+        self._bottom.show()
+        if mesh is None:
+            self._show_message(f"Loading {name}…")
+            return
+        vertices, faces = mesh
+        if self._view is None:
+            self._make_view()
+        self._stack.setCurrentIndex(1)
+        self._burned.hide()
+        self._fuel.setColor(self._colors["preview"])
+        self._set_mesh(self._fuel, *_mesh_arrays(vertices, faces))
+        size = np.ptp(vertices, axis=0)
+        self._reset_camera(float(size[2]))
+        u = self._get_units()
+        self._right.show()
+        self.now.hide()
+        self.plots.hide()
+        for row in self.grain.values:
+            self.grain.show_row(row, row in ("Length", "Outer diameter"))
+        self.grain.set("Length", u.text(float(size[2]), "length"))
+        self.grain.set("Outer diameter", u.text(float(max(size[:2])), "length"))
+
+    def set_progress(self, text: str, fraction: float):
+        self._progress_text.setText(text)
+        self._progress_bar.setValue(round(1000 * fraction))
+
+    def set_message(self, text: str, action: str = ""):
+        """No grain to show: why, and a button for the one thing to do about it."""
+        self._drop_grain()
+        self._bottom.hide()
+        self._show_message(text, action)
+
+    def _drop_grain(self):
+        self._geom = None
+        self.play.setChecked(False)
+        self._sync_mode()
+        self._right.hide()
+
+    def _show_message(self, text: str, action: str = ""):
+        self._stack.setCurrentIndex(0)
+        self._message.setText(text)
+        self._message.setFixedHeight(max(0, self._message.heightForWidth(self._message.width())))  # wrapped lines need room
+        self._message_button.setText(action)
+        self._message_button.setVisible(bool(action))
 
     def set_run(self, output):
         """The motor's current run, whose burn time the slider can follow; None when there isn't one."""
@@ -322,7 +393,7 @@ class GrainView(QWidget):
         self._colors = THEMES["light" if name == "light" else "dark"]
         if self._view is not None:
             self._view.setBackgroundColor(self._colors["bg"])
-            self._fuel.setColor(self._colors["fuel"])
+            self._fuel.setColor(self._colors["fuel" if self._geom is not None else "preview"])
         self.plots.setBackground(self._colors["bg"])
         self.legend.setText(f'<span style="color:{self._colors["burned"]}">■</span> Burning surface&nbsp;&nbsp;&nbsp;'
                             f'<span style="color:{self._colors["case"]}">■</span> Exposed case wall')
@@ -447,9 +518,10 @@ class GrainView(QWidget):
         md._vertexNormals = n  # pyqtgraph works these out one vertex at a time in Python, far too slowly for these meshes
         item.setMeshData(meshdata=md)
 
-    def _reset_camera(self):
-        if self._view is not None and self._geom is not None:
-            self._view.setCameraParams(center=pg.Vector(0, 0, 0), distance=2.1 * self._geom.length, elevation=20,
+    def _reset_camera(self, length: float | None = None):
+        self._length = length or self._length
+        if self._view is not None:
+            self._view.setCameraParams(center=pg.Vector(0, 0, 0), distance=2.1 * self._length, elevation=20,
                                        azimuth=-68, fov=30)
 
     def _time_mode(self) -> bool:

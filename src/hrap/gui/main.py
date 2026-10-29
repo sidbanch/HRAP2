@@ -321,6 +321,7 @@ class MainWindow(QMainWindow):
         self._sim_runs: list[SimRun] = []
         self._waiting_runs: dict[Path, list[Callable[[], None]]] = {}  # runs being simulated again, and what then
         self._wanted_run: SimRun | None = None  # the run last clicked, which shows once it's simulated again
+        self._grain_was_loading = False  # the grain's loading was on screen, so its end gets a status message
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
         # The session (open motors, unsaved edits, runs of motors without a file) is kept beside the settings a test
@@ -438,7 +439,10 @@ class MainWindow(QMainWindow):
         self.sizing_page.applied.connect(self._on_applied)
         self.sizing_page.grain_changed.connect(self._sync_grain_view)
         self.sizing_page.show_grain.connect(lambda: self.tabs.setCurrentWidget(self.grain_view))
+        self.sizing_page.grain_progress.connect(self._show_grain_progress)
         self.grain_view = GrainView(lambda: self.display_units, lambda: self.sizing_page.rho.si("density"))
+        self.grain_view.cancel_load.connect(self.sizing_page.stop_grain_load)
+        self.grain_view.message_action.connect(self._on_grain_message_action)
         self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_unsaved,
                                     lambda: self._runs_dir(self._shown), self.sizing_page.unapplied, self._save_output)
         self.study_page.started.connect(self._sync_busy)
@@ -825,10 +829,34 @@ class MainWindow(QMainWindow):
         self.unapplied.setVisible(bool(changes))
 
     def _sync_grain_view(self):
-        """The Grain tab shows while the grain comes from an STL."""
+        """The Grain tab shows while the grain comes from an STL: the grain, its loading, or what's in the way."""
+        sp, gv = self.sizing_page, self.grain_view
+        self.tabs.setTabVisible(self.tabs.indexOf(gv), sp.grain_shape.currentData() == "stl")
+        if sp.grain_geom is not None:
+            gv.set_grain(sp.grain_geom)
+            if self._grain_was_loading:
+                self.statusBar().showMessage(f"Loaded {sp.grain_name()} in {sp.grain_load_seconds():.0f} s.")
+        elif sp.grain_loading_shown():
+            gv.set_loading(sp.grain_name(), sp.grain_mesh)
+            self._show_grain_progress()
+        elif not sp.grain_loading():  # while it loads, a grain from the cache is a moment away: leave things be
+            gv.set_message(sp.grain_message(), "Load again" if sp.grain_stopped() else "Open the Motor tab")
+            if self._grain_was_loading or sp.grain_failed():
+                self.statusBar().showMessage(sp.grain_message())
+        self._grain_was_loading = sp.grain_loading_shown()
+
+    def _on_grain_message_action(self):
+        if self.sizing_page.grain_stopped():
+            self.sizing_page.load_grain_again()
+        else:
+            self.tabs.setCurrentWidget(self.sizing_page)
+
+    def _show_grain_progress(self):
         sp = self.sizing_page
-        self.tabs.setTabVisible(self.tabs.indexOf(self.grain_view), sp.grain_shape.currentData() == "stl")
-        self.grain_view.set_grain(sp.grain_geom, sp.grain_message(), busy=sp.grain_loading())
+        if sp.grain_loading_shown():
+            text = sp.grain_progress_text()
+            self.grain_view.set_progress(text, sp.grain_fraction())
+            self.statusBar().showMessage(f"Loading {sp.grain_name()}: {text}")
 
     def _on_applied(self):
         self.statusBar().showMessage("Applied to motor.")
@@ -1109,6 +1137,9 @@ class MainWindow(QMainWindow):
 
     def _run(self):
         if self._thread is not None:
+            return
+        if self.sizing_page.grain_loading():
+            self.statusBar().showMessage("The grain STL is still loading. Run once it's in.")
             return
         self._running_cfg = self._form_to_cfg()
         self._progress.setRange(0, 100)
