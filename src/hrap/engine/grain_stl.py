@@ -43,6 +43,7 @@ class GrainTables:
     outer_diameter: float
     case_area: np.ndarray
     case_web: float
+    resolution_warning: str
 
 
 @dataclass
@@ -91,13 +92,14 @@ def _load(path, mtime, units, voxel, ends_burn):
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
-    digest.update(json.dumps([5, units, voxel, ends_burn]).encode())
+    digest.update(json.dumps([9, units, voxel, ends_burn]).encode())
     cache = _cache_dir() / (digest.hexdigest() + ".npz")
     try:
         with np.load(cache, allow_pickle=False) as saved:
             values = {f.name: saved[f.name] for f in fields(GrainGeometry)}
             for key in ("length", "outer_diameter", "case_web", "spacing"):
                 values[key] = float(values[key])
+            values["resolution_warning"] = str(values["resolution_warning"])
             result = GrainGeometry(**values)
         cache.touch()
         return result
@@ -219,16 +221,24 @@ def _build(path, units, voxel, ends_burn):
     tree, triangle_ids = _surface_tree(surface, spacing)
     # Distance is smooth away from the initial interface. Sample that region on
     # a two-cell grid, then evaluate the interface band directly on STL triangles.
-    # Retain actual negative distances inside the bore: fabricated distances
-    # can leak across zero when the volume histogram is smoothed.
+    # Retain actual negative distances near the surface; unmeasured deep-port
+    # cells stay NaN here and are counted separately, never put in the histogram.
     stride = 2
     cx = np.unique(np.r_[np.arange(0, nxy, stride), nxy - 1])
     cz = np.unique(np.r_[np.arange(0, nz, stride), nz - 1])
-    coarse = np.empty((len(cx), len(cx), len(cz)), dtype=np.float32)
+    filter_width = min(spacing, 0.00054)
+    # Beyond the filter's four-sigma support, port cells contribute only volume.
+    # Five extra cells cover interpolation corners and the rasterized interface.
+    margin = int(np.ceil(4 * filter_width / spacing)) + 5
+    deep_port = ndimage.binary_erosion(port, structure=np.ones((3, 3, 3)),
+                                      iterations=margin, border_value=1)
+    coarse = np.full((len(cx), len(cx), len(cz)), np.nan, dtype=np.float32)
     coarse_xy = np.array(np.meshgrid(cx, cx, indexing="ij")).reshape(2, -1).T
     for j, k in enumerate(cz):
         points = np.c_[origin[:2] + coarse_xy * spacing, np.full(len(coarse_xy), origin[2] + k * spacing)]
-        dist = _surface_distance(points, tree, triangle_ids, surface)
+        evaluate = ~deep_port[coarse_xy[:, 0], coarse_xy[:, 1], k]
+        dist = np.full(len(points), np.nan)
+        dist[evaluate] = _surface_distance(points[evaluate], tree, triangle_ids, surface)
         dist[port[coarse_xy[:, 0], coarse_xy[:, 1], k]] *= -1
         coarse[:, :, j] = dist.reshape(len(cx), len(cx))
         if j % 16 == 0:
@@ -239,7 +249,7 @@ def _build(path, units, voxel, ends_burn):
     for k in range(nz):
         w = np.interp(k, cz, np.arange(len(cz)))
         dist = ndimage.map_coordinates(coarse, np.c_[uv, np.full(len(xy), w)].T, order=1)
-        near = np.abs(dist) < 2 * spacing
+        near = (np.abs(dist) < 2 * spacing) | (~np.isfinite(dist) & ~port[xy[:, 0], xy[:, 1], k])
         points = np.c_[origin[:2] + xy[near] * spacing, np.full(near.sum(), origin[2] + k * spacing)]
         dist[near] = _surface_distance(points, tree, triangle_ids, surface)
         dist = np.abs(dist)
@@ -273,10 +283,11 @@ def _build(path, units, voxel, ends_burn):
     edges = np.linspace(low, high, int(np.ceil((high - low) / step)) + 1)
     step = edges[1] - edges[0]
     counts = np.histogram(values, edges)[0].astype(float)
-    sigma = min(spacing, 0.00054) / step
+    sigma = filter_width / step
     smoothed = ndimage.gaussian_filter1d(counts, sigma=sigma, mode="reflect")
     cumulative = np.r_[0, np.cumsum(smoothed)] * spacing ** 3
-    port_volume = float(np.interp(0, edges, cumulative))
+    omitted = np.count_nonzero(np.isnan(distance))
+    port_volume = float(np.interp(0, edges, cumulative)) + omitted * spacing ** 3
     total = np.pi * radius ** 2 * length
     end = max(high, side_end)
     web = np.r_[np.arange(0, end, step), end]
@@ -296,9 +307,11 @@ def _build(path, units, voxel, ends_burn):
     case_area = np.searchsorted(wall_distances, web, side="right") / len(wall_distances) * 2 * np.pi * radius * length
     area[-1] = 0.0
     _report("Building tables", 0.96)
-    distance[distance < 0] = 0
+    distance[port] = 0
+    cells = web[-1] / spacing
+    warning = f"Walls are only {cells:.1f} cubes thick; set a smaller cube size." if cells < 8 else ""
     return GrainGeometry(web, volume, area, volume / length, total - volume,
-                         float(length), float(2 * radius), case_area, case_web, distance, spacing, origin,
+                         float(length), float(2 * radius), case_area, case_web, warning, distance, spacing, origin,
                          np.asarray(mesh.vertices), np.asarray(mesh.faces))
 
 
@@ -315,10 +328,12 @@ def _burning_ends(distance, case, edges, sigma, web, fuel_volume, spacing, lengt
     surviving = np.zeros(len(shortened_web))
     nz = distance.shape[2]
     for k in range(nz):
-        counts = np.histogram(distance[:, :, k][case], edges)[0].astype(float)
+        values = distance[:, :, k][case]
+        measured = values[np.isfinite(values)]
+        counts = np.histogram(measured, edges)[0].astype(float)
         smoothed = ndimage.gaussian_filter1d(counts, sigma=sigma, mode="reflect")
         cumulative = np.r_[0, np.cumsum(smoothed)]
-        local_fuel = np.maximum(0, case.sum() - np.interp(shortened_web, edges, cumulative))
+        local_fuel = np.maximum(0, len(measured) - np.interp(shortened_web, edges, cumulative))
         overlap = np.clip(np.minimum((k + 1) * spacing, length - shortened_web)
                           - np.maximum(k * spacing, shortened_web), 0, spacing) / spacing
         weights += local_fuel

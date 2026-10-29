@@ -52,6 +52,7 @@ def summarize(s: Settings, x: State, o: Output) -> dict:
         "impulse_class": motor_class,
         "impulse_percent": percent,
         "end_cond": o.sim_end_cond,
+        "resolution_warning": s.grain_geometry.resolution_warning if s.grain_geometry is not None else "",
         "case_contact_time": o.extra.get("case_contact_time"),
         "case_contact_fuel_percent": o.extra.get("case_contact_fuel_percent"),
         "case_area_end": (float(np.interp(x.grn_web, s.grain_geometry.web, s.grain_geometry.case_area))
@@ -61,6 +62,8 @@ def summarize(s: Settings, x: State, o: Output) -> dict:
 
 def format_summary(info: dict, units: DisplayUnits | None = None) -> str:
     u = units or DisplayUnits(pressure="bar", length="cm", volume="cc")
+    warning = info.get("resolution_warning", "")
+    warning_text = f"\n    {warning}" if warning else ""
     contact = info.get("case_contact_time")
     contact_text = (f"\n    Case Wall First Exposed: {contact:.3f} s, "
                     f"{info['case_contact_fuel_percent']:.1f}% fuel left" if contact is not None else "")
@@ -84,5 +87,5 @@ def format_summary(info: dict, units: DisplayUnits | None = None) -> str:
         f"    Characteristic Velocity: {u.text(info['cstar'], 'speed', 6)}\n"
         f"    Specific Impulse: {info['isp']:.1f} s\n"
         f"    Motor Classification: {info['impulse_percent']:3.0f}% {info['impulse_class']}{info['avg_thrust']:.0f}\n"
-        f"    Simulation Termination Condition: {info['end_cond']}{contact_text}"
+        f"    Simulation Termination Condition: {info['end_cond']}{contact_text}{warning_text}"
     )
