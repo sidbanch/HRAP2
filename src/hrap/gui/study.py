@@ -8,12 +8,12 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from threading import Event
-from typing import Callable
+from typing import Callable, cast
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -537,6 +537,8 @@ class StudyPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self.busy():
+            self._sync_choices()  # the grain may have changed between round and STL
         self._update_source()
 
     def _update_source(self):
@@ -556,10 +558,21 @@ class StudyPage(QWidget):
         self._axes_edited = True
 
     def _sync_choices(self):
-        """Columns list the inputs that work with the fuel model; Rows also leave out the Columns' input and its clashes."""
+        """Columns list the inputs that work with the fuel model; Rows also leave out the Columns' input and its clashes.
+        An STL grain has its own length and port, and burns by the burn-rate law."""
+        stl = (self._base_override or self._get_cfg()).get("grn_shape") == "stl"
+        for i in range(self.models.count()):
+            cast(QStandardItemModel, self.models.model()).item(i).setEnabled(not stl or self.models.itemData(i) == ["Shifting OF"])
+        if stl and self.models.currentData() != ["Shifting OF"]:
+            self.models.setCurrentIndex(self.models.findData(["Shifting OF"]))  # which syncs the choices again
+            return
         models = self.models.currentData()
-        self.axes[0].set_choices(allowed_inputs(models), models)
-        self.axes[1].set_choices(allowed_inputs(models, self.axes[0].key.currentData()), models)
+
+        def inputs(other=None):
+            return [key for key in allowed_inputs(models, other) if not (stl and key in ("grain_L", "port_D"))]
+
+        self.axes[0].set_choices(inputs(), models)
+        self.axes[1].set_choices(inputs(self.axes[0].key.currentData()), models)
         self._show_throat_option()
 
     def _show_throat_option(self):
