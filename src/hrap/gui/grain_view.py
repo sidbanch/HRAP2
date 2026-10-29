@@ -27,7 +27,7 @@ from hrap.units import DisplayUnits
 
 STEPS = 1000  # slider positions
 PLAY_S = 6.0  # a burned-distance sweep plays over this long; a run plays in its own time
-PREVIEW_CELLS = 1.5e6  # grid cells in the quick surface shown while dragging
+PREVIEW_CELLS = 5e5  # grid cells in the quick surface shown while the slider moves
 THEMES = {
     "dark": {"bg": "#1a1d23", "fg": "#e6e8ee", "muted": "#9aa3b0", "fuel": (0.82, 0.86, 0.93, 0.16),
              "burned": "#f08a3c", "case": "#e06c75", "port_area": "#5b8def"},
@@ -102,7 +102,7 @@ def _burned_arrays(geom, web: float, step: int, colors: dict) -> tuple:
     from hrap.engine.grain_stl import port_surface
 
     vertices, faces = port_surface(geom, web, step=step)
-    v, f, n = _mesh_arrays(vertices, faces, smoothing=2)
+    v, f, n = _mesh_arrays(vertices, faces, smoothing=2 if step == 1 else 1)
     # Each vertex sits on a grid edge; it's on the case when a cell at either end of that edge is outside the grain.
     grid = geom.distance[::step, ::step, ::step]
     g = (vertices - geom.origin) / (geom.spacing * step)
@@ -142,7 +142,7 @@ class GrainView(QWidget):
         self._colors = THEMES["dark"]
         self._view = None  # the 3D view, made when the first grain loads
         self._job = 0  # the newest full-detail surface asked for
-        self._play_clock = 0.0
+        self._play_start = (0.0, 0)  # when Play was pressed, and the slider then
         self._surfaces = _Surfaces()
         self._surfaces.done.connect(self._on_surface)
 
@@ -239,6 +239,7 @@ class GrainView(QWidget):
             plot.addItem(marker, ignoreBounds=True)
             self._markers.append(marker)
         self._area_plots[1].setXLink(self._area_plots[0])
+        self._area_plots[0].getAxis("bottom").setStyle(showValues=False)
         right_column = QWidget()
         right_column.setFixedWidth(370)
         right = QVBoxLayout(right_column)
@@ -336,7 +337,6 @@ class GrainView(QWidget):
         u = self._get_units()
         rho = self._get_density()
         fuel = u.text(g.fuel_volume[0], "volume") + (f", {u.text(rho * g.fuel_volume[0], 'mass')}" if rho > 0 else "")
-        cells = g.distance.size
         self.grain.set("Length", u.text(g.length, "length"))
         self.grain.set("Outer diameter", u.text(g.outer_diameter, "length"))
         self.grain.set("Starting port", u.text(g.port_volume[0], "volume"), "The open volume inside the grain before it burns.")
@@ -346,7 +346,7 @@ class GrainView(QWidget):
         self.grain.set("Fuel", fuel)
         self.grain.set("All burned at", u.text(g.web[-1], "length"),
                        "How far the fuel burns back before none is left: the thickest part of the grain.")
-        self.grain.set("Grid", f"{cells / 1e6:.1f} million cubes of {u.text(g.spacing, 'length', 3)}",
+        self.grain.set("Grid", f"{g.distance.size / 1e6:.1f} million cubes of {u.text(g.spacing, 'length', 3)}",
                        "The grain is split into cubes to work out how it burns back.\n"
                        "Set their size with Voxel size on the Motor tab.")
         x = u.value(g.web, "length")
@@ -359,7 +359,6 @@ class GrainView(QWidget):
             plot.setLabel("left", name, units=u.unit("area"), color=self._colors["fg"])
             plot.setXRange(0, float(x[-1]), padding=0)
         self._area_plots[1].setLabel("bottom", "Burned distance", units=u.unit("length"), color=self._colors["fg"])
-        self._area_plots[0].getAxis("bottom").setStyle(showValues=False)
         self._update_numbers()
 
     def _make_view(self):
@@ -412,10 +411,8 @@ class GrainView(QWidget):
 
     def _on_mode(self, *_):
         """Keep the burn-back where it is when the slider changes between distance and time."""
-        if self._geom is None:
-            return
         o = self._run
-        if o is None:
+        if self._geom is None or o is None:
             return
         d = float(np.interp(self.slider.value() / STEPS * o.t[-1], o.t, o.grn_web)) if not self.by_time.isChecked() \
             else self.slider.value() / STEPS * float(self._geom.web[-1])
@@ -497,17 +494,15 @@ class GrainView(QWidget):
         if playing:
             if self.slider.value() >= STEPS:
                 self.slider.setValue(0)
-            self._play_clock = time.monotonic()
+            self._play_start = (time.monotonic(), self.slider.value())
             self._play_timer.start()
         else:
             self._play_timer.stop()
             self._show_full()
 
     def _play_step(self):
-        now = time.monotonic()
+        started, value = self._play_start
         span = float(self._run.t[-1]) if self._time_mode() else PLAY_S
-        value = self.slider.value() + STEPS * (now - self._play_clock) / span
-        self._play_clock = now
-        self.slider.setValue(min(round(value), STEPS))
+        self.slider.setValue(min(round(value + STEPS * (time.monotonic() - started) / span), STEPS))
         if self.slider.value() >= STEPS:
             self.play.setChecked(False)
