@@ -691,17 +691,15 @@ class SizingPage(QWidget):
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
         for w in self._grain_L_row:
             w.setVisible(self._by_length())
-        # The fuel flow here is worked out for a round port, so an STL grain's comes from a simulation run.
-        stl = self._stl()
+        stl = self._stl()  # an STL grain has its own length
         for w in self._stl_rows:
             w.setVisible(stl)
         for w in self._grain_from_row:
             w.setVisible(not stl)
-        for name in ("Fuel flow", "Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"):
-            self.grain.show_row(name, not stl)
         self.grain.show_row("Burning area", stl)
-        self.grain.show_row("Grain length", not self._by_length() and not stl)
-        self.grain.show_row("O/F", self._by_length() and not stl)
+        self.grain.labels["Port at liquid burnout"].setText("Same-area port at liquid burnout" if stl else "Port at liquid burnout")
+        self.grain.show_row("Grain length", not self._by_length())
+        self.grain.show_row("O/F", self._by_length())
         fixed = self._fixed_nozzle()
         for w in self._P_cmbr_row:
             w.setVisible(not fixed)
@@ -811,10 +809,10 @@ class SizingPage(QWidget):
         for w in self._const_OF_row:
             w.setVisible(fixed)
         # With a fixed O/F, neither the flow nor the grain length changes the O/F, so neither can be sized for one.
-        # An STL grain has its own length, and its fuel flow comes from a simulation run.
-        for combo, index in ((self.size_from, 2), (self.grain_from, 1)):
-            cast(QStandardItemModel, combo.model()).item(index).setEnabled(not fixed and not stl)
-            if (fixed or stl) and combo.currentIndex() == index:
+        # An STL grain has its own length.
+        for combo, index, off in ((self.size_from, 2, fixed), (self.grain_from, 1, fixed or stl)):
+            cast(QStandardItemModel, combo.model()).item(index).setEnabled(not off)
+            if off and combo.currentIndex() == index:
                 combo.setCurrentIndex(0)
         for row in (self.grain_L, self.port_D, self.grain_OD):
             row.setEnabled(not stl)
@@ -895,13 +893,17 @@ class SizingPage(QWidget):
             return self._grain_error
         return f"Loading {Path(self._stl_path).name}… A fine grid can take a minute." if self.grain_geom is None else ""
 
+    def grain_tables(self):
+        """The loaded STL grain's burn-back tables, so the engine needn't load it again; None for a round grain."""
+        return self.grain_geom.tables() if self.grain_geom is not None else None
+
     def grain_loading(self) -> bool:
         return self._grain_request is not None and self.grain_geom is None and not self._grain_error
 
     def _show_grain_status(self):
         self.stl_file.setText(Path(self._stl_path).name or "none")
         self.stl_file.setToolTip(self._stl_path)
-        self.stl_status.setText(self.grain_message() or "The fuel flow and O/F of an STL grain come from a simulation run.")
+        self.stl_status.setText(self.grain_message() or "The numbers on this tab use the STL's starting port and burning area.")
         self._show_3d.setVisible(self.grain_geom is not None)
 
     def _on_propellant(self):
@@ -1068,7 +1070,7 @@ class SizingPage(QWidget):
         try:
             if self._stl() and self.grain_geom is None:  # sizing would load it here, holding up the UI
                 raise ValueError(self.grain_message())
-            z = size_motor(cfg, self.targets())
+            z = size_motor(cfg, self.targets(), grain_tables=self.grain_tables())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
             self._result = self._cfg = None
             self.swirler_options.update_target(None)
@@ -1082,7 +1084,8 @@ class SizingPage(QWidget):
         try:
             t = self.targets()
             self._built = size_motor(cfg, SizingTargets(P_cmbr=None, burn_time=None, OF=t.OF, port_D=t.port_D,
-                                                        holes=int(cfg["inj_N"]), grain_L=self.grain_L.si("length")))
+                                                        holes=int(cfg["inj_N"]), grain_L=self.grain_L.si("length")),
+                                     grain_tables=self.grain_tables())
         except Exception:
             self._built = None
         self._layout = None

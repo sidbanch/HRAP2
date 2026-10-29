@@ -99,6 +99,9 @@ TRACES = [
     ("Nozzle flow", "mdot_n", "mass_flow"),
     ("Regression rate", "rdot", "speed"),
     ("Port ID", "grn_ID", "length"),
+    ("Burned distance", "grn_web", "length"),
+    ("Burning area", "burn_area", "area"),
+    ("Exposed case wall", "case_area", "area"),
     ("Oxidizer mass", "m_o", "mass"),
     ("Fuel mass", "m_f", "mass"),
     ("Total mass", "m_t", "mass"),
@@ -107,9 +110,13 @@ TRACES = [
 PLOT_LABELS = {
     "force": "Thrust", "pressure": "Pressure", "ratio": "O/F",
     "mass_flow": "Mass flow", "speed": "Regression rate", "length": "Length", "mass": "Mass",
-    "temperature": "Temperature",
+    "temperature": "Temperature", "area": "Area",
 }
-DEFAULT_TRACES = {"Thrust", "Tank pressure", "Chamber pressure", "Injector ΔP", "Oxidizer flow", "Fuel flow"}
+DEFAULT_TRACES = {"Thrust", "Tank pressure", "Chamber pressure", "Injector ΔP", "Oxidizer flow", "Fuel flow",
+                  "Burning area", "Exposed case wall"}
+STL_TRACES = {"grn_web", "burn_area", "case_area"}  # only an STL grain has these
+CASE_COLOR = "#e06c75"
+TRACE_COLORS = {"burn_area": "#f08a3c", "case_area": CASE_COLOR}  # as on the Grain tab
 DISPLAY_UNIT_OPTIONS = {
     "pressure": ["psi", "bar", "kPa", "MPa", "Pa", "atm"],
     "length": LENGTH_ITEMS,
@@ -121,18 +128,38 @@ DISPLAY_UNIT_OPTIONS = {
 }
 
 
+def _curve(o, settings, key: str) -> np.ndarray | None:
+    """A run's curve for a trace; None if it has none, as a round grain has no STL curves.
+    An STL grain's burning area and exposed case wall follow from its burned distance."""
+    g = getattr(settings, "grain_geometry", None)
+    if key in STL_TRACES and g is None:
+        return None
+    if key in ("burn_area", "case_area"):
+        return np.interp(o.grn_web, g.web, getattr(g, key))
+    return np.asarray(getattr(o, key), dtype=float)
+
+
+def _case_contact(o, settings) -> float | None:
+    """When an STL grain's burn first reached the case wall, if it did."""
+    g = getattr(settings, "grain_geometry", None)
+    if g is None or not math.isfinite(g.case_web):
+        return None
+    reached = np.flatnonzero(o.grn_web >= g.case_web)
+    return float(o.t[reached[0]]) if reached.size else None
+
+
 class SimWorker(QObject):
     finished = Signal(object, object, object)
     failed = Signal(str)
     progress = Signal(int, int)
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, grain_tables=None):
         super().__init__()
-        self.cfg = cfg
+        self.cfg, self.grain_tables = cfg, grain_tables  # an STL grain's tables, if the Motor tab has loaded it
 
     def run(self):
         try:
-            s, x = resolve(self.cfg)
+            s, x = resolve(self.cfg, grain_tables=self.grain_tables)
             x, o = run(s, x, on_progress=self.progress.emit)
             self.finished.emit(s, x, o)
         except Exception:
@@ -890,6 +917,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         P_cmbr = self.P_cmbr.si("pressure")
+        stl = sp.grain_shape.currentData() == "stl"
+        web = case = 0.0
 
         o = self._output
         if o is not None and o.t.size and index is not None:
@@ -909,6 +938,9 @@ class MainWindow(QMainWindow):
             of_ratio = float(o.OF[i])
             thrust = float(o.F_thr[i])
             P_cmbr = float(o.P_cmbr[i])
+            if (g := getattr(self._settings, "grain_geometry", None)) is not None:
+                web = float(o.grn_web[i])
+                case = float(np.interp(web, g.web, g.case_area))
 
         u = self.display_units
         def size(diameter: float, length: float) -> str:
@@ -937,11 +969,13 @@ class MainWindow(QMainWindow):
             f"stiffness = {100.0 * stiff:.0f}%",
         )
         grain_lines = (
-            "Fuel Grain",
+            "Fuel Grain (STL)" if stl else "Fuel Grain",
             f"size: {size(grn_OD, grn_L)}",
-            f"port = {u.text(grn_ID, 'length')}",
+            *((f"burned = {u.text(web, 'length', 3)}", f"same-area port = {u.text(grn_ID, 'length')}") if stl else
+              (f"port = {u.text(grn_ID, 'length')}",)),
             f"mass = {u.text(m_f, 'mass')} ({mass_pct:.0f}%)",
             f"fuel flow = {u.text(fuel_mdot, 'mass_flow', 3)}",
+            *((f"case wall exposed = {u.text(case, 'area', 3)}",) if case > 0 else ()),
         )
         noz_lines = (
             "Nozzle",
@@ -1027,12 +1061,13 @@ class MainWindow(QMainWindow):
             line.setValue(t[i])
             line.setVisible(True)
         bits = [f"Time: {t[i]:.3f} s"]
-        for k, (label, key, trace_quantity) in enumerate(TRACES):
-            if self.trace_list.item(k).checkState() != Qt.CheckState.Checked:
-                continue
-            value = float(getattr(self._output, key)[i])
-            bits.append(f"{label}: {self.display_units.text(value, trace_quantity)}")
+        for k, (_label, key, trace_quantity) in enumerate(TRACES):
+            item = self.trace_list.item(k)
+            values = _curve(self._output, self._settings, key)
+            if item.checkState() == Qt.CheckState.Checked and not item.isHidden() and values is not None:
+                bits.append(f"{item.text()}: {self.display_units.text(float(values[i]), trace_quantity)}")
         self.plot_readout.setText("   ·   ".join(bits))
+        self.grain_view.follow_time(float(t[i]))
         self._refresh_viz_at(i)
 
     def _refresh_viz_at(self, index: int | None):
@@ -1082,7 +1117,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Running simulation…")
         self._thread = QThread()
         self._set_running(True)
-        self._worker = SimWorker(self._running_cfg)
+        self._worker = SimWorker(self._running_cfg, self.sizing_page.grain_tables())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -1411,12 +1446,23 @@ class MainWindow(QMainWindow):
             self._time_range = (0.0, max(float(x.t[-1]) for x in shown))
         self._clear_plot()
         palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
-        checked = [i for i in range(len(TRACES)) if self.trace_list.item(i).checkState() == Qt.CheckState.Checked]
+        runs = [self._settings, *(r.settings for r in overlays)]
+        stl = any(getattr(settings, "grain_geometry", None) is not None for settings in runs)
+        self.trace_list.blockSignals(True)  # renaming an item would redraw the plots midway through this
+        for i, (label, key, _quantity) in enumerate(TRACES):
+            item = self.trace_list.item(i)
+            item.setHidden(key in STL_TRACES and not stl)
+            if key == "grn_ID":
+                item.setText("Same-area port" if stl else label)
+        self.trace_list.blockSignals(False)
+        checked = [i for i in range(len(TRACES))
+                   if self.trace_list.item(i).checkState() == Qt.CheckState.Checked and not self.trace_list.item(i).isHidden()]
         per_plot: dict[str, int] = {}
         for i in checked:
             per_plot[TRACES[i][2]] = per_plot.get(TRACES[i][2], 0) + 1
         for i in checked:
-            label, key, quantity = TRACES[i]
+            _label, key, quantity = TRACES[i]
+            label = self.trace_list.item(i).text()
             unit = self.display_units.unit(quantity)
             if quantity not in self._plots:
                 widget = pg.PlotWidget()
@@ -1440,17 +1486,16 @@ class MainWindow(QMainWindow):
                 line.setVisible(False)
                 plot.addItem(line, ignoreBounds=True)
                 self._hover_lines.append(line)
-            if o is not None:
-                pen = pg.mkPen(palette[i % len(palette)], width=2)
-                self._plots[quantity].plot(o.t, self.display_units.value(np.asarray(getattr(o, key), dtype=float), quantity),
-                                          pen=pen, name=label)
+            color = TRACE_COLORS.get(key, palette[i % len(palette)])
+            if o is not None and (values := _curve(o, self._settings, key)) is not None:
+                self._plots[quantity].plot(o.t, self.display_units.value(values, quantity), pen=pg.mkPen(color, width=2),
+                                          name=label)
             dashes = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DashDotDotLine)
             for j, overlay in enumerate(overlays):
-                ro = overlay.output
-                self._plots[quantity].plot(
-                    ro.t, self.display_units.value(np.asarray(getattr(ro, key), dtype=float), quantity),
-                    pen=pg.mkPen(palette[i % len(palette)], width=1.5, style=dashes[j % len(dashes)]),
-                    name=f"{label} ({overlay.label})")
+                if (values := _curve(overlay.output, overlay.settings, key)) is not None:
+                    self._plots[quantity].plot(
+                        overlay.output.t, self.display_units.value(values, quantity),
+                        pen=pg.mkPen(color, width=1.5, style=dashes[j % len(dashes)]), name=f"{label} ({overlay.label})")
         cfg = self._result_cfg if self._result_cfg is not None else overlays[0].cfg
         if "pressure" in self._plots:
             limit = self.display_units.value(chamber_limit(cfg), "pressure")
@@ -1462,6 +1507,12 @@ class MainWindow(QMainWindow):
                 self._plots["pressure"].addItem(pg.InfiniteLine(
                     pos=dp, angle=0, movable=False, pen=pg.mkPen("#e5c07b", width=1, style=Qt.PenStyle.DashLine),
                     label="300 psi ΔP (SPI)", labelOpts={"position": 0.05, "color": "#e5c07b", "anchors": [(0, 1), (0, 1)]}))
+        contact = _case_contact(o, self._settings) if o is not None else None
+        for plot in self._plots.values() if contact is not None else ():
+            plot.addItem(pg.InfiniteLine(
+                pos=contact, angle=90, movable=False, pen=pg.mkPen(CASE_COLOR, width=1.5, style=Qt.PenStyle.DashLine),
+                label=f"Case wall exposed, {contact:.2f} s",
+                labelOpts={"position": 0.96, "color": CASE_COLOR, "anchors": [(-0.03, 0), (-0.03, 0)]}), ignoreBounds=True)
         for plot in self._plots.values():
             vb = cast(pg.ViewBox, plot.vb)
             vb.setXRange(*self._time_range, padding=0)

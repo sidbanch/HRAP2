@@ -143,6 +143,7 @@ class GrainView(QWidget):
         self._view = None  # the 3D view, made when the first grain loads
         self._job = 0  # the newest full-detail surface asked for
         self._play_start = (0.0, 0)  # when Play was pressed, and the slider then
+        self._stale = False  # the 3D view is behind the slider, as it doesn't draw while hidden
         self._surfaces = _Surfaces()
         self._surfaces.done.connect(self._on_surface)
 
@@ -219,13 +220,16 @@ class GrainView(QWidget):
         left.addLayout(bar)
         left.addLayout(options)
 
-        self.grain = Card("Grain", ["Length", "Outer diameter", "Starting port", "Same-area round port", "Fuel",
-                                    "All burned at", "Grid"])
-        self.now = Card("At the slider", ["Time", "Burned distance", "Burning area", "Port area", "Fuel left", "O/F"])
+        self.grain = Card("Grain", ["Length", "Outer diameter", "Starting port volume", "Same-area round port", "Fuel",
+                                    "Case wall reached", "Fuel left then", "Last fuel gone at", "Grid"])
+        self.now = Card("At the slider", ["Time", "Burned distance", "Burning area", "Exposed case wall", "Port area",
+                                          "Fuel left", "O/F"])
         self.plots = pg.GraphicsLayoutWidget()
         self.plots.setMinimumHeight(300)
         self._area_plots = (self.plots.addPlot(row=0, col=0), self.plots.addPlot(row=1, col=0))
         self._markers = []
+        self._case_lines = []
+        self._area_plots[0].addLegend(offset=(-6, 6))
         for plot in self._area_plots:
             plot.showGrid(x=True, y=True, alpha=0.25)
             plot.getAxis("left").setWidth(60)
@@ -238,7 +242,12 @@ class GrainView(QWidget):
             marker.sigDragged.connect(self._on_marker)
             plot.addItem(marker, ignoreBounds=True)
             self._markers.append(marker)
+            case_line = pg.InfiniteLine(angle=90, movable=False, label="Case wall reached" if not self._case_lines else None,
+                                        labelOpts={"position": 0.12, "anchors": [(-0.04, 1), (-0.04, 1)]})
+            plot.addItem(case_line, ignoreBounds=True)
+            self._case_lines.append(case_line)
         self._area_plots[1].setXLink(self._area_plots[0])
+        self._case_label = self._case_lines[0].label
         self._area_plots[0].getAxis("bottom").setStyle(showValues=False)
         right_column = QWidget()
         right_column.setFixedWidth(370)
@@ -316,7 +325,7 @@ class GrainView(QWidget):
             self._fuel.setColor(self._colors["fuel"])
         self.plots.setBackground(self._colors["bg"])
         self.legend.setText(f'<span style="color:{self._colors["burned"]}">■</span> Burning surface&nbsp;&nbsp;&nbsp;'
-                            f'<span style="color:{self._colors["case"]}">■</span> Burned through to the case')
+                            f'<span style="color:{self._colors["case"]}">■</span> Exposed case wall')
         for plot in self._area_plots:
             for side in ("left", "bottom"):
                 plot.getAxis(side).setPen(self._colors["fg"])
@@ -324,6 +333,11 @@ class GrainView(QWidget):
         for marker in self._markers:
             marker.setPen(pg.mkPen(self._colors["fg"], width=1, style=Qt.PenStyle.DashLine))
             marker.setHoverPen(pg.mkPen(self._colors["burned"], width=2))
+        for line in self._case_lines:
+            line.setPen(pg.mkPen(self._colors["case"], width=1.5, style=Qt.PenStyle.DashLine))
+        self._case_label.setColor(self._colors["case"])
+        for card, name in ((self.grain, "Case wall reached"), (self.now, "Exposed case wall")):
+            card.values[name].setStyleSheet(f"color: {self._colors['case']}")
         self.refresh()
         if self._geom is not None:
             self._show_preview()
@@ -339,27 +353,67 @@ class GrainView(QWidget):
         fuel = u.text(g.fuel_volume[0], "volume") + (f", {u.text(rho * g.fuel_volume[0], 'mass')}" if rho > 0 else "")
         self.grain.set("Length", u.text(g.length, "length"))
         self.grain.set("Outer diameter", u.text(g.outer_diameter, "length"))
-        self.grain.set("Starting port", u.text(g.port_volume[0], "volume"), "The open volume inside the grain before it burns.")
+        self.grain.set("Starting port volume", u.text(g.port_volume[0], "volume"), "The open volume inside the grain before it burns.")
         self.grain.set("Same-area round port", u.text(2 * np.sqrt(g.port_area[0] / np.pi), "length"),
                        "The round port with the same area as this one, averaged along the grain\n"
                        "(starting port volume ÷ length). The Motor tab uses it for its drawings.")
         self.grain.set("Fuel", fuel)
-        self.grain.set("All burned at", u.text(g.web[-1], "length"),
+        reached = bool(np.isfinite(g.case_web))
+        self.grain.show_row("Fuel left then", reached)
+        if reached:
+            when = f"{u.text(g.case_web, 'length', 3)} burned"
+            t = self._run_time_at(g.case_web)
+            left = float(np.interp(g.case_web, g.web, g.fuel_volume))
+            self.grain.set("Case wall reached", when if t is None else f"{t:.2f} s, {when}",
+                           "Where the burn first breaks through the fuel to the case wall. From here on the hot gas\n"
+                           "touches the case, and the fuel left is in slivers that may break off.")
+            self.grain.set("Fuel left then", self._fuel_text(left, rho, g))
+        else:
+            self.grain.set("Case wall reached", "never", "The fuel is gone before the burn reaches the case wall.")
+        self.grain.set("Last fuel gone at", f"{u.text(g.web[-1], 'length', 3)} burned",
                        "How far the fuel burns back before none is left: the thickest part of the grain.")
         self.grain.set("Grid", f"{g.distance.size / 1e6:.1f} million cubes of {u.text(g.spacing, 'length', 3)}",
                        "The grain is split into cubes to work out how it burns back.\n"
                        "Set their size with Voxel size on the Motor tab.")
         x = u.value(g.web, "length")
-        for plot, (name, values, color) in zip(self._area_plots, (
-                ("Burning area", g.burn_area, self._colors["burned"]),
-                ("Port area", g.port_area, self._colors["port_area"]))):
+        top, bottom = self._area_plots
+        for plot in self._area_plots:
             for item in plot.listDataItems():
                 plot.removeItem(item)
-            plot.plot(x, u.value(values, "area"), pen=pg.mkPen(color, width=2))
+        top.legend.clear()
+        top.plot(x, u.value(g.burn_area, "area"), pen=pg.mkPen(self._colors["burned"], width=2), name="Burning area")
+        top.plot(x, u.value(g.case_area, "area"), pen=pg.mkPen(self._colors["case"], width=2), name="Exposed case wall")
+        bottom.plot(x, u.value(g.port_area, "area"), pen=pg.mkPen(self._colors["port_area"], width=2))
+        for plot, name in ((top, "Area"), (bottom, "Port area")):
             plot.setLabel("left", name, units=u.unit("area"), color=self._colors["fg"])
             plot.setXRange(0, float(x[-1]), padding=0)
+        for line in self._case_lines:
+            line.setVisible(reached)
+            line.setValue(u.value(g.case_web, "length") if reached else 0.0)
         self._area_plots[1].setLabel("bottom", "Burned distance", units=u.unit("length"), color=self._colors["fg"])
         self._update_numbers()
+
+    def _fuel_text(self, volume: float, rho: float, g) -> str:
+        u = self._get_units()
+        return (u.text(rho * volume, "mass") if rho > 0 else u.text(volume, "volume")) + f" ({100 * volume / g.fuel_volume[0]:.0f}%)"
+
+    def _run_time_at(self, d: float) -> float | None:
+        """When the run's burn reached a burned distance, if there's a run and it did."""
+        if not self._time_mode():
+            return None
+        reached = np.flatnonzero(np.asarray(self._run.grn_web) >= d)
+        return float(self._run.t[reached[0]]) if reached.size else None
+
+    def follow_time(self, t: float):
+        """Show the run at a time, as hovered on the Simulation tab's plots."""
+        if self._time_mode():
+            self.slider.setValue(round(float(np.clip(t / self._run.t[-1], 0, 1)) * STEPS))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._stale:
+            self._show_preview()
+            self._show_full()
 
     def _make_view(self):
         """The 3D view, made on first use so the app starts without OpenGL."""
@@ -423,9 +477,8 @@ class GrainView(QWidget):
         """Move the slider to a burned distance."""
         if self._time_mode():
             o = self._run
-            reached = np.flatnonzero(np.asarray(o.grn_web) >= d)
-            t = float(o.t[reached[0]]) if reached.size else float(o.t[-1])
-            value = t / float(o.t[-1])
+            t = self._run_time_at(d)
+            value = (float(o.t[-1]) if t is None else t) / float(o.t[-1])
         else:
             value = d / float(self._geom.web[-1])
         self.slider.setValue(round(float(np.clip(value, 0, 1)) * STEPS))
@@ -451,15 +504,16 @@ class GrainView(QWidget):
             marker.setValue(u.value(d, "length"))
             marker.blockSignals(False)
         port = float(np.interp(d, g.web, g.port_area))
-        left = float(np.interp(d, g.web, g.fuel_volume))
-        rho = self._get_density()
+        case = float(np.interp(d, g.web, g.case_area))
         self.now.set("Burned distance", u.text(d, "length"))
         self.now.set("Burning area", u.text(float(np.interp(d, g.web, g.burn_area)), "area"),
                      "The fuel surface that's burning: how fast the open volume grows per burned distance.")
+        self.now.show_row("Exposed case wall", case > 0)
+        self.now.set("Exposed case wall", f"{u.text(case, 'area')} ({100 * case / (np.pi * g.outer_diameter * g.length):.0f}%)",
+                     "Case wall the burn has reached, with no fuel left on it, and its share of the whole wall.")
         self.now.set("Port area", f"{u.text(port, 'area')}  ·  Ø{u.text(2 * np.sqrt(port / np.pi), 'length')}",
                      "The port's open area averaged along the grain, and the round port with that area.")
-        self.now.set("Fuel left", (u.text(rho * left, "mass") if rho > 0 else u.text(left, "volume"))
-                     + f" ({100 * left / g.fuel_volume[0]:.0f}%)")
+        self.now.set("Fuel left", self._fuel_text(float(np.interp(d, g.web, g.fuel_volume)), self._get_density(), g))
         self.now.show_row("Time", timed)
         self.now.show_row("O/F", timed)
         if timed:
@@ -476,12 +530,15 @@ class GrainView(QWidget):
         g = self._geom
         if g is None or self._view is None:
             return
+        self._stale = not self.isVisible()
+        if self._stale:
+            return
         self._job += 1  # a full-detail surface still being worked out is for an older position
         step = max(1, round((g.distance.size / PREVIEW_CELLS) ** (1 / 3)))
         self._set_mesh(self._burned, *_burned_arrays(g, self._web(), step, self._colors))
 
     def _show_full(self):
-        if self._geom is not None and self._view is not None and not self.play.isChecked():
+        if self._geom is not None and self._view is not None and not self.play.isChecked() and self.isVisible():
             self._job += 1
             self._surfaces.start(self._job, self._geom, self._web(), self._colors)
 

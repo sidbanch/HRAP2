@@ -123,6 +123,9 @@ class Axis(QWidget):
         self.values.setPlaceholderText("12, 15, 18, 24   or   12:24:5")
         self.values.setToolTip("Comma-separated values, or start:end:count for evenly spaced values including both ends.")
         self.unit = QComboBox()
+        self.files = QPushButton()  # grain files are picked, not typed
+        self.files.clicked.connect(self._choose_files)
+        self._files: list[str] = []
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setHorizontalSpacing(6)
@@ -130,6 +133,7 @@ class Axis(QWidget):
         layout.addWidget(self.key, 0, 0)
         layout.addWidget(self.unit, 0, 1)
         layout.addWidget(self.values, 1, 0, 1, 2)
+        layout.addWidget(self.files, 2, 0, 1, 2)
         layout.setColumnStretch(0, 1)
         self.key.currentIndexChanged.connect(self._changed)
         self.unit.currentTextChanged.connect(self._convert)
@@ -177,7 +181,11 @@ class Axis(QWidget):
         self.unit.blockSignals(False)
         self.unit.setVisible(bool(choices))
         self.values.setEnabled(bool(key))
-        if key and self.cfg:
+        self.values.setVisible(key != "grain_file")
+        self.files.setVisible(key == "grain_file")
+        if key == "grain_file":
+            self._set_files([self.cfg["grn_stl"]] if self.cfg.get("grn_shape") == "stl" and self.cfg.get("grn_stl") else [])
+        elif key and self.cfg:
             value = INPUTS[key].current(self.cfg)
             if quantity:
                 value = from_si(value, default, quantity)
@@ -186,10 +194,26 @@ class Axis(QWidget):
                 values = [min(v, 100) for v in values]
             self.values.setText(", ".join(f"{v:.3g}" for v in dict.fromkeys(values)))
 
+    def _choose_files(self):
+        start = str(Path(self._files[0]).parent) if self._files else ""
+        paths, _ = QFileDialog.getOpenFileNames(self, "Grain STL files to compare", start, "STL (*.stl)")
+        if paths:
+            self._set_files(paths)
+
+    def _set_files(self, paths):
+        self._files = list(dict.fromkeys(str(p) for p in paths))
+        names = ", ".join(Path(p).name for p in self._files)
+        self.files.setText(f"{len(self._files)} STL file{'s' if len(self._files) != 1 else ''}: "
+                           f"{names if len(names) <= 40 else names[:39] + '…'}" if self._files else "Choose STL files…")
+        self.files.setToolTip("\n".join(self._files) + "\n\n" * bool(self._files)
+                              + "The grain STLs to compare. The Motor tab's STL units, voxel size and Ends burn apply to each.")
+
     def set_axis(self, key, values=None):
         self.key.setCurrentIndex(self.key.findData(key))
         self._changed()
-        if values is not None:
+        if key == "grain_file":
+            self._set_files(values or [])
+        elif values is not None:
             quantity = INPUTS[key].quantity if key else None
             shown = [from_si(v, self._unit, quantity) if quantity else v for v in values]
             self.values.setText(", ".join(f"{v:.9g}" for v in shown))
@@ -198,6 +222,10 @@ class Axis(QWidget):
         key = self.key.currentData()
         if not key:
             return None
+        if key == "grain_file":
+            if not self._files:
+                raise ValueError("Grain file: choose the STL files to compare.")
+            return key, list(self._files)
         text = self.values.text().strip()
         try:
             if ":" in text:
@@ -243,7 +271,7 @@ class StudyRun:
         """A sweep from its file; its cases' curves are simulated again when they're plotted."""
         try:
             data = read_run(path)
-            cases = [Case(**{**c, "values": tuple((k, float(v)) for k, v in c["values"]),
+            cases = [Case(**{**c, "values": tuple((k, v if k == "grain_file" else float(v)) for k, v in c["values"]),
                              "table_OF": tuple(c.get("table_OF", (1.0, 30.0)))}, traces={}) for c in data.get("cases", [])]
             run = cls(data["motor"], [(k, list(v)) for k, v in data["axes"]], list(data["models"]), cases,
                       str(data.get("error") or ""), bool(data.get("stopped")), str(data.get("name") or path.stem),
@@ -568,8 +596,9 @@ class StudyPage(QWidget):
             return
         models = self.models.currentData()
 
-        def inputs(other=None):
-            return [key for key in allowed_inputs(models, other) if not (stl and key in ("grain_L", "port_D"))]
+        def inputs(other=None):  # the grain's own sizes don't apply to STL grains
+            stl_grain = stl or other == "grain_file"
+            return [key for key in allowed_inputs(models, other) if not (stl_grain and key in ("grain_L", "port_D"))]
 
         self.axes[0].set_choices(inputs(), models)
         self.axes[1].set_choices(inputs(self.axes[0].key.currentData()), models)
@@ -746,6 +775,8 @@ class StudyPage(QWidget):
             self.refresh()
 
     def _value_text(self, key, value, digits=4):
+        if key == "grain_file":
+            return Path(value).name
         spec = INPUTS[key]
         return self._get_units().text(value, spec.quantity, digits) if spec.quantity else f"{value:.{digits}g}"
 
