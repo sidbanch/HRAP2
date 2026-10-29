@@ -42,6 +42,7 @@ def summarize(s: Settings, x: State, o: Output) -> dict:
         "peak_pressure_bar": peak_pressure,
         "avg_pressure_bar": avg_pressure,
         "port_cm": port_cm,
+        "port_label": "Equal-area Port Diameter at Burnout" if s.grain_geometry is not None else "Port Diameter at Burnout",
         "fuel_consumed": fuel_consumed,
         "ox_consumed": ox_consumed,
         "avg_OF": avg_OF,
@@ -67,7 +68,7 @@ def format_summary(info: dict, units: DisplayUnits | None = None) -> str:
         f"    Peak Chamber Pressure: {u.text(info['peak_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)\n"
         f"    Average Chamber Pressure: {u.text(info['avg_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)\n"
         f"    Average Injector ΔP: {u.text(info['avg_inj_dP'], 'pressure', 6)}\n"
-        f"    Port Diameter at Burnout: {u.text(info['port_cm'] * .01, 'length', 6)}\n"
+        f"    {info['port_label']}: {u.text(info['port_cm'] * .01, 'length', 6)}\n"
         f"    Fuel Consumed: {u.text(info['fuel_consumed'], 'mass', 6)}\n"
         f"    Oxidizer Consumed: {u.text(info['ox_consumed'], 'mass', 6)}\n"
         f"    Average OF Ratio: {info['avg_OF']:.3f}\n"

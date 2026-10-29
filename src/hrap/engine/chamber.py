@@ -8,7 +8,10 @@ from hrap.engine.types import Settings, State
 
 def chamber(s: Settings, x: State) -> State:
     dt = s.dt
-    if s.cmbr_V == 0:
+    if s.grain_geometry is not None:
+        V = (s.cmbr_V - x.m_f / s.prop_Rho if s.cmbr_V else
+             0.25 * math.pi * x.grn_ID ** 2 * s.grn_L)
+    elif s.cmbr_V == 0:
         V = 0.25 * math.pi * x.grn_ID ** 2 * s.grn_L
     else:
         V = s.cmbr_V - 0.25 * math.pi * (s.grn_OD ** 2 - x.grn_ID ** 2) * s.grn_L

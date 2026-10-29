@@ -86,6 +86,11 @@ def default_cfg() -> dict[str, Any]:
         "prop_m": 0.0,
         "const_OF": 6.71,
         "cstar_eff": 100.0,
+        "grn_shape": "round",
+        "grn_stl": "",
+        "grn_stl_unit": "in",
+        "grn_stl_voxel": None,
+        "grn_ends_burn": False,
         "grn_ID": 2.1875,
         "grn_ID_unit": "in",
         "grn_OD": 3.375,
@@ -131,7 +136,10 @@ def default_cfg() -> dict[str, Any]:
 
 def load_json(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return _merge_cfg(data)
+    cfg = _merge_cfg(data)
+    if cfg.get("grn_stl"):
+        cfg["grn_stl"] = str((Path(path).resolve().parent / cfg["grn_stl"]).resolve())
+    return cfg
 
 
 def save_json(path: str | Path, cfg: dict[str, Any]) -> None:
@@ -199,8 +207,9 @@ def chamber_limit(cfg: dict[str, Any]) -> float:
 
 def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
     """Hardware stations and dry masses used for CG, ENG/RSE length, and the schematic."""
-    grn_OD = _len(cfg, "grn_OD")
-    grn_L = _len(cfg, "grn_L")
+    geom = _grain_geometry(cfg)
+    grn_OD = geom.outer_diameter if geom else _len(cfg, "grn_OD")
+    grn_L = geom.length if geom else _len(cfg, "grn_L")
     tnk_D = _len(cfg, "tnk_D")
     tnk_L = _len(cfg, "tnk_L")
     if int(cfg.get("tnk_V_state", 0)):
@@ -262,9 +271,16 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         from hrap.advanced.fluid import coolprop_sat
         get_sat_props = coolprop_sat(cp_fluid)
 
-    grn_OD = cfg["grn_OD"] * to_si(1.0, cfg["grn_OD_unit"], "length")
-    grn_ID = cfg["grn_ID"] * to_si(1.0, cfg["grn_ID_unit"], "length")
-    grn_L = cfg["grn_L"] * to_si(1.0, cfg["grn_L_unit"], "length")
+    geom = _grain_geometry(cfg)
+    if geom is not None:
+        if cfg.get("reg_model") != "Shifting OF":
+            raise ValueError("STL grains require Shifting OF regression")
+        grn_OD, grn_L = geom.outer_diameter, geom.length
+        grn_ID = 2 * math.sqrt(geom.port_area[0] / math.pi)
+    else:
+        grn_OD = _len(cfg, "grn_OD")
+        grn_ID = _len(cfg, "grn_ID")
+        grn_L = _len(cfg, "grn_L")
     cstar_eff = float(cfg["cstar_eff"]) / 100.0
     Pa = cfg["Pa"] * to_si(1.0, cfg["Pa_unit"], "pressure")
     P_cmbr = cfg["P_cmbr"] * to_si(1.0, cfg["P_cmbr_unit"], "pressure")
@@ -340,6 +356,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         prop_M=prop.M,
         prop_T=prop.T,
         get_sat_props=get_sat_props,
+        grain_geometry=geom,
     )
     if adv.get("live_chem"):
         from hrap.advanced.chem import live_propellant_tables
@@ -387,6 +404,9 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     mLiq_new = (tnk_V - (m_o / ox.rho_v)) / ((1.0 / ox.rho_l) - (1.0 / ox.rho_v))
     m_f = 0.25 * math.pi * (grn_OD ** 2 - grn_ID ** 2) * rho * grn_L
     m_g = 1.225 * (cmbr_V - 0.25 * math.pi * (grn_OD ** 2 - grn_ID ** 2) * grn_L)
+    if geom is not None:
+        m_f = geom.fuel_volume[0] * rho
+        m_g = 1.225 * (cmbr_V - geom.fuel_volume[0] if cmbr_V else geom.port_volume[0])
     OF0 = float(cfg["const_OF"]) if s.regression_model == "Constant OF" else 0.0
 
     x = State(
@@ -410,9 +430,6 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         F_thr=0.0,
         ox_props=ox,
     )
-    if adv.get("enabled") and adv.get("grain_shape") == "star":
-        from hrap.advanced.geometry import make_star_grain_fn
-        s.grain_fn = make_star_grain_fn(int(adv.get("star_tips") or 6))
     s.solve_tank_cooling = bool(cfg.get("solve_tank_cooling"))
     if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
@@ -437,3 +454,14 @@ def bundled_motor(name: str) -> dict[str, Any]:
 
 def clone_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(cfg)
+
+
+def _grain_geometry(cfg):
+    shape = cfg.get("grn_shape", "round")
+    if shape == "round":
+        return None
+    if shape != "stl":
+        raise ValueError("Grain shape must be round or stl")
+    from hrap.engine.grain_stl import load_grain_stl
+    return load_grain_stl(cfg.get("grn_stl", ""), units=cfg.get("grn_stl_unit", "in"),
+                          voxel=cfg.get("grn_stl_voxel"), ends_burn=cfg.get("grn_ends_burn", False))

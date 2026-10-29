@@ -2,39 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from hrap.advanced.geometry import star_vertices
-from hrap.engine.sim import run
-from hrap.io.config import bundled_motor, resolve
-
-
-def test_star_vertices_closed():
-    v = star_vertices(0.01, 0.02, 6)
-    assert v.shape == (12, 2)
-
-
-def test_star_grain_does_not_crash():
-    cfg = bundled_motor("example_98mm")
-    cfg["advanced"] = {"enabled": True, "ox_fluid": "N2O_legacy", "grain_shape": "star", "star_tips": 6}
-    s, x = resolve(cfg)
-    assert s.grain_fn is not None
-    _x, o = run(s, x)
-    assert o.t.size > 10
-    assert o.sim_end_cond
-
-
-def test_polygon_grain_shift_of():
-    from hrap.advanced.geometry import make_polygon_grain_fn, star_vertices
-
-    cfg = bundled_motor("example_98mm")
-    cfg["reg_model"] = "Shifting OF"
-    cfg["prop_a"] = 0.198
-    cfg["prop_n"] = 0.325
-    cfg["advanced"] = {"enabled": True, "grain_shape": "cylindrical"}
-    s, x = resolve(cfg)
-    s.grain_fn = make_polygon_grain_fn(star_vertices(0.01, 0.02, 5))
-    _x, o = run(s, x)
-    assert o.t.size > 10
-
 
 def test_chem_solver_one_point():
     from pathlib import Path

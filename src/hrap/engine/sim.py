@@ -41,6 +41,7 @@ def _blank_output(s: Settings) -> Output:
         m_t=z(),
         cg=z(),
         T_tnk=z(),
+        grn_web=z(),
     )
     return o
 
@@ -55,6 +56,7 @@ def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
     o.mdot_o[i] = x.mdot_o
     o.mdot_f[i] = x.mdot_f
     o.OF[i] = x.OF
+    o.grn_web[i] = x.grn_web
     o.grn_ID[i] = x.grn_ID
     o.mdot_n[i] = x.mdot_n
     o.rdot[i] = x.rdot
@@ -72,10 +74,7 @@ def sim_iteration(s: Settings, x: State, o: Output, t: float, i: int) -> tuple[S
     dt = s.dt
     t = t + dt
     x = tank(s, o, x, t)
-    if s.grain_fn is not None:
-        x = s.grain_fn(s, x)
-    else:
-        x = regress(s, x)
+    x = regress(s, x)
     x = comb(s, x, t)
     x = chamber(s, x)
     x = nozzle(s, x)
@@ -106,7 +105,7 @@ def sim_loop(
             if now - last_emit >= 0.05 or i >= n or i <= 3:
                 on_progress(min(i, n), n)
                 last_emit = now
-        if x.grn_ID >= s.grn_OD:
+        if (x.m_f <= 0 if s.grain_geometry is not None else x.grn_ID >= s.grn_OD):
             o.sim_end_cond = "Fuel Depleted"
             break
         if x.m_o <= 0:
@@ -125,7 +124,7 @@ def sim_loop(
     last = min(last, o.t.size)
     for name in (
         "t", "m_o", "P_tnk", "P_cmbr", "mdot_o", "mdot_f", "OF",
-        "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg", "T_tnk",
+        "grn_web", "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg", "T_tnk",
     ):
         setattr(o, name, getattr(o, name)[:last])
     o.inj_dP = o.P_tnk - o.P_cmbr

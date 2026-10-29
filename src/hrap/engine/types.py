@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from hrap.engine.grain_stl import GrainGeometry
 
 
 @dataclass
@@ -67,7 +70,7 @@ class Settings:
     prop_M: np.ndarray
     prop_T: np.ndarray
     get_sat_props: Optional[Callable[[float], OxProps]] = None
-    grain_fn: Optional[Callable] = None
+    grain_geometry: Optional[GrainGeometry] = None
     inj_model: str = "SPI"  # "SPI" (HRAP), "HEM" or "Dyer"
     inj_CdA_HEM: float = 0.0
     dyer_kappa: float = 1.0
@@ -106,6 +109,7 @@ class State:
     dm_g: float = 0.0
     m_t: float = 0.0
     cg: float = 0.0
+    grn_web: float = 0.0
     dT_cool: float = 0.0  # last step's tank cooling (K), the next step's starting guess
 
 
@@ -127,6 +131,7 @@ class Output:
     m_t: Optional[np.ndarray] = None
     cg: Optional[np.ndarray] = None
     T_tnk: Optional[np.ndarray] = None
+    grn_web: Optional[np.ndarray] = None
     inj_dP: Optional[np.ndarray] = None  # tank minus chamber pressure
     sim_end_cond: str = ""
     extra: dict = field(default_factory=dict)

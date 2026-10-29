@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from hrap.engine.types import Settings, State
 
 
@@ -39,6 +41,25 @@ def const_of(s: Settings, x: State) -> State:
 
 
 def regress(s: Settings, x: State) -> State:
+    if s.grain_geometry is not None:
+        return regress_stl(s, x)
     if s.regression_model == "Shifting OF":
         return shift_of(s, x)
     return const_of(s, x)
+
+
+def regress_stl(s: Settings, x: State) -> State:
+    g = s.grain_geometry
+    area = float(np.interp(x.grn_web, g.web, g.port_area))
+    a, n, m = s.prop_Reg
+    flux = x.mdot_o / area
+    x.rdot = 0.001 * a * flux ** n * g.length ** m
+    old_mass = x.m_f
+    x.grn_web = min(g.web[-1], x.grn_web + x.rdot * s.dt)
+    x.m_f = s.prop_Rho * float(np.interp(x.grn_web, g.web, g.fuel_volume))
+    # Integrate dV/dd over the step so fuel loss and chamber growth agree exactly.
+    x.mdot_f = (old_mass - x.m_f) / s.dt
+    x.OF = x.mdot_o / x.mdot_f if x.mdot_f else 0.0
+    x.grn_ID_old = x.grn_ID
+    x.grn_ID = 2 * math.sqrt(float(np.interp(x.grn_web, g.web, g.port_area)) / math.pi)
+    return x
