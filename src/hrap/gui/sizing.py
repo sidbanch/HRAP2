@@ -188,6 +188,10 @@ class GrainLoader(QObject):
 
 
 STOPPED = "Loading stopped."
+# Share of a load's time against the engine's own progress fraction, measured on cold loads of a 20 in twisted grain:
+# filling the cubes and measuring burn distances take nearly all of it.
+LOAD_PROGRESS = (0.0, 0.04, 0.22, 0.28, 0.78, 0.88, 1.0)
+LOAD_TIME = (0.0, 0.04, 0.48, 0.48, 0.88, 0.95, 1.0)
 
 # What the engine's load errors mean for someone holding an STL, and what to do about them.
 _LOAD_ADVICE = (
@@ -769,10 +773,13 @@ class SizingPage(QWidget):
             w.setVisible(stl)
         for w in self._grain_from_row:
             w.setVisible(not stl)
-        self.grain.show_row("Burning area", stl)
+        # Until an STL grain is in, its results are blank; the status line says why. One from the cache is a moment away.
+        sized = not stl or self.grain_geom is not None or (self.grain_loading() and not self._grain_shown)
+        for name in self.grain.values:
+            self.grain.show_row(name, sized and (name != "Burning area" or stl))
         self.grain.labels["Port at liquid burnout"].setText("Same-area port at liquid burnout" if stl else "Port at liquid burnout")
-        self.grain.show_row("Grain length", not self._by_length())
-        self.grain.show_row("O/F", self._by_length())
+        self.grain.show_row("Grain length", sized and not self._by_length())
+        self.grain.show_row("O/F", sized and self._by_length())
         fixed = self._fixed_nozzle()
         for w in self._P_cmbr_row:
             w.setVisible(not fixed)
@@ -948,6 +955,7 @@ class SizingPage(QWidget):
             self._grain_shown = True
             self._tick.start()
             self._show_grain_status()
+            self._show_size_from_rows()
             self.refresh()
             self.grain_changed.emit()
 
@@ -991,6 +999,7 @@ class SizingPage(QWidget):
                 row.set_si(value, "length")
                 changed |= row.spin.value() != shown
         self._show_grain_status()
+        self._show_size_from_rows()  # the Grain card's results come back
         self.grain_changed.emit()
         if changed:
             self._on_motor_edited()
@@ -1036,15 +1045,15 @@ class SizingPage(QWidget):
 
     def grain_progress_text(self) -> str:
         """The loading step, how far along the whole load is, and roughly how long is left."""
-        stage, fraction = self._grain_stage
-        elapsed = time.monotonic() - self._grain_started
-        text = f"{stage} · {100 * fraction:.0f}% · {elapsed:.0f} s in"
-        if elapsed > 2 and 0.05 < fraction < 0.97:
-            text += f", about {max(1.0, elapsed * (1 - fraction) / fraction):.0f} s left"
+        done, elapsed = self.grain_fraction(), time.monotonic() - self._grain_started
+        text = f"{self._grain_stage[0]} · {100 * done:.0f}% · {elapsed:.0f} s in"
+        if elapsed > 2 and 0.1 < done < 0.97:
+            text += f", about {max(1.0, elapsed * (1 - done) / done):.0f} s left"
         return text
 
     def grain_fraction(self) -> float:
-        return self._grain_stage[1]
+        """How far through the load, by time, as the engine's steps take very different shares of it."""
+        return float(np.interp(self._grain_stage[1], LOAD_PROGRESS, LOAD_TIME))
 
     def grain_tables(self):
         """The loaded STL grain's burn-back tables, so the engine needn't load it again; None for a round grain."""
@@ -1242,11 +1251,17 @@ class SizingPage(QWidget):
         self.tank_L.setText(u.text(self.tank_geometry()[0], "length"))
         limit = chamber_limit(cfg)
         self.limit_warning.hide()
+        if self._stl() and self.grain_geom is None:
+            # Sizing would load the STL here, holding up the UI. Until it's in, the other cards keep their last
+            # numbers, nothing can be applied from them, and the Grain card's status line says what's going on.
+            if self.grain_loading() and not self._grain_shown:
+                return  # a moment in: a grain in the cache is about to arrive
+            self._result = self._cfg = None
+            self.error.hide()
+            self.grain.sketch.show_data(None)
+            self._show_apply()
+            return
         try:
-            if self._stl() and self.grain_geom is None:  # sizing would load it here, holding up the UI
-                if self.grain_loading() and not self._grain_shown:
-                    return  # a moment in: a grain in the cache is about to arrive
-                raise ValueError(self.grain_message())
             z = size_motor(cfg, self.targets(), grain_tables=self.grain_tables())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
             self._result = self._cfg = None

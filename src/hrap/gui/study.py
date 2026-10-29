@@ -349,6 +349,7 @@ class StudyPage(QWidget):
             axis.values.textEdited.connect(self._edited)
         self.axes[0].key.currentIndexChanged.connect(lambda *_: self._sync_choices())
         self.axes[1].key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
+        self._motor_model = ""  # the motor's fuel model when the sweep last followed it
         self._axes_edited = False  # until then, the values follow the open motor
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
@@ -552,8 +553,9 @@ class StudyPage(QWidget):
         cfg = self._get_cfg()
         for axis in self.axes:
             axis.cfg = cfg
+        self._motor_model = cfg.get("reg_model") or "Shifting OF"
         if not self._axes_edited:  # start on the motor's own fuel model
-            self.models.setCurrentIndex(self.models.findData([cfg.get("reg_model") or "Shifting OF"]))
+            self.models.setCurrentIndex(self.models.findData([self._motor_model]))
         self._sync_choices()
         if not self._axes_edited:
             for axis in self.axes:
@@ -565,8 +567,9 @@ class StudyPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not self.busy():
-            self._sync_choices()  # the grain may have changed between round and STL
+        if not self.busy():  # the motor's fuel model or grain may have changed on the Motor tab
+            self._follow_motor_model()
+            self._sync_choices()
         self._update_source()
 
     def _update_source(self):
@@ -584,6 +587,13 @@ class StudyPage(QWidget):
 
     def _edited(self, *_):
         self._axes_edited = True
+
+    def _follow_motor_model(self):
+        """Sweep the motor's fuel model when it changes, while still letting the sweep pick another meanwhile."""
+        model = (self._base_override or self._get_cfg()).get("reg_model") or "Shifting OF"
+        if model != self._motor_model:
+            self._motor_model = model
+            self.models.setCurrentIndex(self.models.findData([model]))
 
     def _sync_choices(self):
         """Columns list the inputs that work with the fuel model; Rows also leave out the Columns' input and its clashes.
