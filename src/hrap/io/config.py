@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -128,7 +129,6 @@ def default_cfg() -> dict[str, Any]:
         "advanced": {
             "enabled": False,
             "ox_fluid": "N2O_legacy",
-            "grain_shape": "cylindrical",
             "live_chem": False,
         },
     }
@@ -143,7 +143,10 @@ def load_json(path: str | Path) -> dict[str, Any]:
 
 
 def save_json(path: str | Path, cfg: dict[str, Any]) -> None:
-    Path(path).write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    saved = dict(cfg)
+    if saved.get("grn_stl") and Path(saved["grn_stl"]).is_absolute():
+        saved["grn_stl"] = os.path.relpath(saved["grn_stl"], Path(path).resolve().parent)
+    Path(path).write_text(json.dumps(saved, indent=2), encoding="utf-8")
 
 
 def _merge_cfg(data: dict[str, Any]) -> dict[str, Any]:
@@ -205,9 +208,9 @@ def chamber_limit(cfg: dict[str, Any]) -> float:
     return float(cfg["P_cmbr_max"]) * to_si(1.0, cfg["P_cmbr_max_unit"], "pressure")
 
 
-def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
+def resolve_layout(cfg: dict[str, Any], grain_tables=None) -> MotorLayout:
     """Hardware stations and dry masses used for CG, ENG/RSE length, and the schematic."""
-    geom = _grain_geometry(cfg)
+    geom = grain_tables if grain_tables is not None else _grain_geometry(cfg)
     grn_OD = geom.outer_diameter if geom else _len(cfg, "grn_OD")
     grn_L = geom.length if geom else _len(cfg, "grn_L")
     tnk_D = _len(cfg, "tnk_D")
@@ -258,7 +261,7 @@ def apply_layout_mass(cfg: dict[str, Any], lay: MotorLayout) -> tuple[float, flo
     return legacy_m, legacy_cg, lay.tnk_aft, lay.grain_aft
 
 
-def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
+def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tuple[Settings, State]:
     """Mirror MATLAB RunSimulation unit conversion and initial-state setup."""
     prop_key = cfg.get("prop_id") or cfg.get("prop_nm") or "ABS"
     prop = load_propellant(str(prop_key))
@@ -271,7 +274,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
         from hrap.advanced.fluid import coolprop_sat
         get_sat_props = coolprop_sat(cp_fluid)
 
-    geom = _grain_geometry(cfg)
+    geom = grain_tables if grain_tables is not None else _grain_geometry(cfg)
     if geom is not None:
         if cfg.get("reg_model") != "Shifting OF":
             raise ValueError("STL grains require Shifting OF regression")
@@ -313,7 +316,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None) -> tuple[Settings, State]:
     vnt_CdA = 0.25 * math.pi * vnt_D ** 2 * float(cfg.get("vnt_Cd") or 0.0)
 
     mp_calc = 1 if cfg.get("mp_state") else 0
-    lay = resolve_layout(cfg)
+    lay = resolve_layout(cfg, geom)
     mtr_m, mtr_cg, tnk_X, cmbr_X = apply_layout_mass(cfg, lay)
 
     rho = cfg["prop_rho"] * to_si(1.0, cfg["prop_rho_unit"], "density")
@@ -464,4 +467,4 @@ def _grain_geometry(cfg):
         raise ValueError("Grain shape must be round or stl")
     from hrap.engine.grain_stl import load_grain_stl
     return load_grain_stl(cfg.get("grn_stl", ""), units=cfg.get("grn_stl_unit", "in"),
-                          voxel=cfg.get("grn_stl_voxel"), ends_burn=cfg.get("grn_ends_burn", False))
+                          voxel=cfg.get("grn_stl_voxel"), ends_burn=cfg.get("grn_ends_burn", False)).tables()

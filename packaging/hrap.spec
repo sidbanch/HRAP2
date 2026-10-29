@@ -14,6 +14,9 @@ SRC = ROOT / "src"
 datas = collect_data_files("hrap")
 binaries = []
 hiddenimports = [
+    "skimage.measure._marching_cubes_lewiner",
+    "skimage.measure._marching_cubes_lewiner_cy",
+    "skimage.measure._marching_cubes_lewiner_luts",
     "scipy.optimize",
     "scipy.optimize._zeros",
     "hrap",
@@ -22,7 +25,7 @@ hiddenimports = [
     "hrap.gui.viz",
 ]
 
-for pkg in ("PySide6", "pyqtgraph", "CoolProp", "trimesh", "skimage", "OpenGL"):
+for pkg in ("PySide6", "pyqtgraph", "CoolProp", "trimesh", "OpenGL"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries

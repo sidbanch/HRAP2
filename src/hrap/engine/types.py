@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 import numpy as np
 
 if TYPE_CHECKING:
-    from hrap.engine.grain_stl import GrainGeometry
+    from hrap.engine.grain_stl import GrainTables
 
 
 @dataclass
@@ -70,7 +70,7 @@ class Settings:
     prop_M: np.ndarray
     prop_T: np.ndarray
     get_sat_props: Optional[Callable[[float], OxProps]] = None
-    grain_geometry: Optional[GrainGeometry] = None
+    grain_geometry: Optional[GrainTables] = None
     inj_model: str = "SPI"  # "SPI" (HRAP), "HEM" or "Dyer"
     inj_CdA_HEM: float = 0.0
     dyer_kappa: float = 1.0

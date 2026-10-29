@@ -8,9 +8,10 @@ shows how the motor drifts from these numbers as the tank cools and the port ope
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+import numpy as np
 from scipy.optimize import brentq
 
 from hrap.engine.comb import comb
@@ -61,8 +62,10 @@ class Sizing:
     fuel_burned: float    # kg
 
 
-def size_motor(cfg: dict[str, Any], t: SizingTargets) -> Sizing:
-    s, x = resolve(cfg)
+def size_motor(cfg: dict[str, Any], t: SizingTargets, *, grain_tables=None) -> Sizing:
+    s, x = resolve(cfg, grain_tables=grain_tables)
+    if s.grain_geometry is not None:
+        t = replace(t, port_D=s.grn_ID0, grain_L=s.grn_L)
     op = s.get_sat_props(x.T_tnk) if s.get_sat_props is not None else nox(x.T_tnk)
     if t.P_cmbr is not None:
         if t.P_cmbr >= op.Pv:
@@ -93,6 +96,9 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
     flow_per_hole = liquid_flow(s, x.T_tnk, op.rho_l, P_tnk, P_cmbr) / s.inj_N
     a, n, m = (float(v) for v in s.prop_Reg[:3])
     rho = s.prop_Rho
+    g = s.grain_geometry
+    port_area = g.port_area[0] if g is not None else 0.25 * math.pi * t.port_D ** 2
+    burn_area = g.burn_area[0] if g is not None else math.pi * t.port_D * (t.grain_L or 0)
     fixed_OF = s.regression_model == "Constant OF"  # the fuel flow is the oxidizer flow ÷ the motor's O/F
     if t.holes:
         mdot_o = t.holes * flow_per_hole
@@ -104,10 +110,10 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
         if not t.grain_L or a <= 0.0 or n >= 1.0:
             raise ValueError("Sizing the oxidizer flow from O/F needs a grain length and the propellant's regression law.")
         # fuel flow = K · mdot_o^n, so O/F = mdot_o^(1−n) / K
-        K = rho * 0.001 * a * (0.25 * math.pi * t.port_D ** 2) ** -n * t.grain_L ** m * math.pi * t.port_D * t.grain_L
+        K = rho * 0.001 * a * port_area ** -n * t.grain_L ** m * burn_area
         mdot_o = (t.OF * K) ** (1.0 / (1.0 - n))
     burn_time = t.burn_time if t.burn_time and not t.holes else x.mLiq_new / mdot_o
-    ox_flux = mdot_o / (0.25 * math.pi * t.port_D ** 2)
+    ox_flux = mdot_o / port_area
     if fixed_OF:
         if not t.grain_L:
             raise ValueError("With a fixed O/F, the grain length doesn't change the fuel flow, so it can't be sized.")
@@ -117,7 +123,7 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
         if a <= 0.0:
             raise ValueError("Sizing from a grain length needs the propellant's regression law (a > 0).")
         grain_L = t.grain_L
-        mdot_f = rho * 0.001 * a * ox_flux ** n * grain_L ** m * math.pi * t.port_D * grain_L
+        mdot_f = rho * 0.001 * a * ox_flux ** n * grain_L ** m * burn_area
         OF = mdot_o / mdot_f
     else:
         OF = t.OF
@@ -139,7 +145,16 @@ def _size(s, x, t: SizingTargets, op, P_cmbr: float, ER: float | None) -> Sizing
     thrust = nozzle(s, x).F_thr
 
     port_D_end = OF_end = fuel_burned = float("nan")
-    if fixed_OF:  # the port opens by the fuel burned, as in the simulation
+    if g is not None:
+        rates = 0.001 * a * (mdot_o / g.port_area) ** n * g.length ** m
+        times = np.r_[0, np.cumsum(np.diff(g.web) * (1 / rates[1:] + 1 / rates[:-1]) / 2)]
+        web_end = float(np.interp(burn_time, times, g.web))
+        area_end = float(np.interp(web_end, g.web, g.port_area))
+        fuel_burned = rho * (g.fuel_volume[0] - np.interp(web_end, g.web, g.fuel_volume))
+        port_D_end = 2 * math.sqrt(area_end / math.pi)
+        flow_end = rho * 0.001 * a * (mdot_o / area_end) ** n * g.length ** m * np.interp(web_end, g.web, g.burn_area)
+        OF_end = mdot_o / flow_end if flow_end > 0 else float("nan")
+    elif fixed_OF:  # the port opens by the fuel burned, as in the simulation
         fuel_burned, OF_end = mdot_f * burn_time, OF
         port_D_end = math.sqrt(t.port_D ** 2 + 4.0 * fuel_burned / (math.pi * rho * grain_L))
     elif a > 0.0:

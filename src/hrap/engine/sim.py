@@ -56,6 +56,10 @@ def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
     o.mdot_o[i] = x.mdot_o
     o.mdot_f[i] = x.mdot_f
     o.OF[i] = x.OF
+    if (s.grain_geometry is not None and x.grn_web >= s.grain_geometry.case_web
+            and "case_contact_time" not in o.extra):
+        o.extra["case_contact_time"] = t
+        o.extra["case_contact_fuel_percent"] = 100 * x.m_f / o.m_f[0]
     o.grn_web[i] = x.grn_web
     o.grn_ID[i] = x.grn_ID
     o.mdot_n[i] = x.mdot_n
@@ -106,7 +110,7 @@ def sim_loop(
                 on_progress(min(i, n), n)
                 last_emit = now
         if (x.m_f <= 0 if s.grain_geometry is not None else x.grn_ID >= s.grn_OD):
-            o.sim_end_cond = "Fuel Depleted"
+            o.sim_end_cond = "Last STL Fuel Gone" if s.grain_geometry is not None else "Fuel Depleted"
             break
         if x.m_o <= 0:
             o.sim_end_cond = "Oxidizer Depleted"
@@ -151,6 +155,8 @@ def run(
     o.mdot_n[0] = x.mdot_n
     o.rdot[0] = x.rdot
     o.m_f[0] = x.m_f
+    if s.grain_geometry is not None and s.grain_geometry.case_web == 0:
+        o.extra.update(case_contact_time=0.0, case_contact_fuel_percent=100.0)
     o.T_tnk[0] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[0] = mp[0]

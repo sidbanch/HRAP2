@@ -6,6 +6,7 @@ import math
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
@@ -13,7 +14,7 @@ import numpy as np
 from hrap.engine.sim import run
 from hrap.engine.sizing import SizingTargets, size_motor
 from hrap.engine.summary import summarize
-from hrap.io.config import clone_cfg, injector_cd, resolve
+from hrap.io.config import _grain_geometry, clone_cfg, injector_cd, resolve
 from hrap.units import to_si
 
 
@@ -53,8 +54,8 @@ def _length_si(unit: str) -> float:
 class Input:
     label: str
     quantity: str | None      # display quantity for the value; None for a bare number
-    apply: Callable[[dict, float], None] | None  # None: case_cfg sizes the motor for it after the other inputs
-    current: Callable[[dict], float]
+    apply: Callable[[dict, float | str], None] | None  # None: case_cfg sizes the motor for it after the other inputs
+    current: Callable[[dict], float | str]
     models: frozenset[str] = frozenset({"Shifting OF", "Constant OF"})  # fuel models it changes anything in
     fixed_OF_note: str = ""  # what it still changes with a fixed O/F, when that's only part of the motor
 
@@ -69,12 +70,12 @@ def total_cda(cfg: dict) -> float:
     return int(cfg["inj_N"]) * 0.25 * math.pi * D ** 2 * injector_cd(cfg)
 
 
-def _sizing(cfg: dict, P_cmbr: float | None, start_OF: float | None):
+def _sizing(cfg: dict, P_cmbr: float | None, start_OF: float | None, grain_tables=None):
     """The motor at the start of the burn, with the injector sized for a starting O/F and/or the throat for a chamber pressure."""
     return size_motor(cfg, SizingTargets(P_cmbr=P_cmbr, burn_time=None, OF=start_OF or 0.0,
                                          port_D=_current_length("grn_ID")(cfg),
                                          holes=None if start_OF else int(cfg["inj_N"]),
-                                         grain_L=_current_length("grn_L")(cfg)))
+                                         grain_L=_current_length("grn_L")(cfg)), grain_tables=grain_tables)
 
 
 def _current_start_OF(cfg: dict) -> float:
@@ -104,6 +105,8 @@ INPUTS: dict[str, Input] = {
     "start_OF": Input("Starting O/F", None, None, _current_start_OF, frozenset({"Shifting OF"})),
     "a_scale": Input("Burn rate a ×", None, _scale_a, lambda c: 1.0, frozenset({"Shifting OF"})),
     "cstar_eff": Input("C* efficiency (%)", None, lambda c, v: c.update(cstar_eff=v), lambda c: float(c["cstar_eff"])),
+    "grain_file": Input("Grain file", None, lambda c, v: c.update(grn_shape="stl", grn_stl=str(v)),
+                        lambda c: c.get("grn_stl", ""), frozenset({"Shifting OF"})),
 }
 
 MODELS = {"Shifting OF": "Burn-rate law", "Constant OF": "Fixed O/F"}
@@ -113,7 +116,7 @@ OUTSIDE_TABLE_LIMIT = 0.05  # share of impulse outside the combustion table that
 
 @dataclass(frozen=True)
 class Case:
-    values: tuple[tuple[str, float], ...]  # (input key, SI value) in study order
+    values: tuple[tuple[str, float | str], ...]  # (input key, SI value) in study order
     model: str                             # HRAP regression model the case ran with
     peak_P_cmbr: float    # Pa, absolute
     avg_inj_dP: float     # Pa, tank minus chamber, averaged over the burn; skips the chamber-filling spike
@@ -128,6 +131,8 @@ class Case:
     burnout: bool         # the port reached the grain's outside diameter
     end_cond: str
     traces: dict[str, np.ndarray] = field(repr=False, compare=False)
+    grain_file: str = ""
+    grain_label: str = ""
     inj_CdA: float = math.nan  # m², total; set by the inputs or sized for a starting O/F
     throat: float = math.nan   # m; set by the inputs or sized for the chamber pressure target
     outside_impulse: float = 0.0  # share of the total impulse made while the O/F was outside the combustion table
@@ -139,7 +144,7 @@ class Case:
         """Outside the table long enough to matter: HRAP reuses the table's edge values there."""
         return self.outside_impulse > OUTSIDE_TABLE_LIMIT
 
-    def value(self, key: str) -> float:
+    def value(self, key: str) -> float | str:
         return dict(self.values)[key]
 
 
@@ -159,12 +164,18 @@ OUTPUTS = [  # (label, Case field, display quantity)
 ]
 
 
-def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None,
-             throat_P: float | None = None) -> dict[str, Any]:
+def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float | str]], model: str | None,
+             throat_P: float | None = None, grain_tables=None) -> dict[str, Any]:
     """The motor with the study's input values and fuel-flow model applied. A starting O/F sizes the
     injector, and throat_P (Pa) sizes the throat and expansion ratio, as the Motor tab would."""
+    check_axes(cfg, [key for key, _ in values], [model])
     c = clone_cfg(cfg)
     for key, value in values:
+        if key == "grain_file":
+            if not isinstance(value, (str, Path)) or not Path(value).is_file():
+                raise ValueError("Grain file must name an existing STL file")
+            c.update(grn_shape="stl", grn_stl=str(Path(value).resolve()))
+            continue
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{INPUTS[key].label} must be finite and above zero.")
         if key in ("fill", "cstar_eff") and value > 100:
@@ -175,7 +186,7 @@ def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
         c["reg_model"] = model
     start_OF = dict(values).get("start_OF")
     if start_OF or throat_P:
-        z = _sizing(c, throat_P, start_OF)
+        z = _sizing(c, throat_P, start_OF, grain_tables)
         if start_OF:
             _set_cda(c, z.inj_CdA)
         if throat_P:
@@ -183,10 +194,10 @@ def case_cfg(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
     return c
 
 
-def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: str | None,
-             throat_P: float | None = None) -> Case:
-    c = case_cfg(cfg, values, model, throat_P)
-    s, x = resolve(c)
+def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float | str]], model: str | None,
+             throat_P: float | None = None, grain_tables=None) -> Case:
+    c = case_cfg(cfg, values, model, throat_P, grain_tables)
+    s, x = resolve(c, grain_tables=grain_tables)
     if not 0 < s.grn_ID0 < s.grn_OD or s.grn_L <= 0:
         raise ValueError("Starting port must be smaller than the grain outside diameter; length must be positive.")
     if s.noz_ER < 1:
@@ -204,13 +215,15 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
     fuel = float(np.sum(mdot_f[1:k + 1] * dt))
     ox = float(np.sum(mdot_o[1:k + 1] * dt))
     indices = np.unique(np.linspace(0, len(t) - 1, min(1000, len(t))).astype(int))
-    OD = float(c["grn_OD"]) * _length_si(c.get("grn_OD_unit") or "in")
+    OD = s.grn_OD
     port_end = float(np.max(o.grn_ID))
     step = np.gradient(t)
     outside = burning & ((o.OF < np.min(s.prop_OF)) | (o.OF > np.max(s.prop_OF)))
     impulse = float(np.sum(o.F_thr * step))
     return Case(
-        values=tuple((key, float(v)) for key, v in values),
+        values=tuple((key, str(v) if key == "grain_file" else float(v)) for key, v in values),
+        grain_file=str(c.get("grn_stl", "")) if c.get("grn_shape") == "stl" else "",
+        grain_label=Path(c.get("grn_stl", "")).name if c.get("grn_shape") == "stl" else "",
         model=c.get("reg_model") or "Shifting OF",
         peak_P_cmbr=float(np.max(o.P_cmbr)),
         avg_inj_dP=float(np.mean(inj_dP)) if inj_dP.size else 0.0,
@@ -222,7 +235,8 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
         OF_liquid=ox / fuel if fuel > 0 else float("nan"),
         fuel_burned=float(info["fuel_consumed"]),
         port_end=port_end,
-        burnout=o.sim_end_cond == "Fuel Depleted" or port_end >= OD * (1 - 1e-6),
+        burnout=(x.m_f <= 0 if s.grain_geometry is not None else
+                 o.sim_end_cond == "Fuel Depleted" or port_end >= OD * (1 - 1e-6)),
         end_cond=info["end_cond"],
         traces={name: getattr(o, name)[indices] for name in ("t", "F_thr", "P_cmbr", "OF", "grn_ID")},
         inj_CdA=total_cda(c),
@@ -233,7 +247,7 @@ def run_case(cfg: dict[str, Any], values: Sequence[tuple[str, float]], model: st
     )
 
 
-def grid(axes: Sequence[tuple[str, Sequence[float]]]) -> list[tuple[tuple[str, float], ...]]:
+def grid(axes: Sequence[tuple[str, Sequence[float | str]]]) -> list[tuple[tuple[str, float | str], ...]]:
     """Every combination of the axes' values, as (key, value) pairs."""
     keys = [key for key, _ in axes]
     return [tuple(zip(keys, combo)) for combo in itertools.product(*(values for _, values in axes))]
@@ -253,6 +267,11 @@ def check_axes(cfg: dict[str, Any], keys: Sequence[str], models: Sequence[str | 
     if len(set(keys)) != len(keys):
         raise ValueError("Choose different inputs for the two axes.")
     used = [m or cfg.get("reg_model") or "Shifting OF" for m in models]
+    if cfg.get("grn_shape") == "stl" or "grain_file" in keys:
+        if any(m != "Shifting OF" for m in used):
+            raise ValueError("STL sweeps require the burn-rate law, not fixed O/F")
+        if any(key in ("grain_L", "port_D") for key in keys):
+            raise ValueError("STL grain length and starting port come from the file and cannot be swept")
     for key in keys:
         if key not in allowed_inputs(used):
             only = " and ".join(MODELS[m] for m in INPUTS[key].models)
@@ -261,7 +280,7 @@ def check_axes(cfg: dict[str, Any], keys: Sequence[str], models: Sequence[str | 
         raise ValueError(f"{INPUTS[keys[0]].label} and {INPUTS[keys[1]].label} both set the injector.")
 
 
-def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
+def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float | str]]],
           models: Sequence[str | None] = (None,),
           stopped: Callable[[], bool] = lambda: False, throat_P: float | None = None) -> Iterator[Case]:
     """Run combinations in parallel; stop queues no further cases and drains running workers.
@@ -273,6 +292,13 @@ def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
     if not jobs:
         raise ValueError("Choose at least one value and fuel model.")
     workers = min(len(jobs), 8, max(1, (os.cpu_count() or 2) - 1))
+    has_file_axis = any(key == "grain_file" for key, _ in axes)
+    grain_tables = _grain_geometry(cfg) if cfg.get("grn_shape") == "stl" and not has_file_axis else None
+    file_tables = {}
+    for values, model in jobs:
+        filename = dict(values).get("grain_file")
+        if filename is not None and filename not in file_tables:
+            file_tables[filename] = _grain_geometry({**cfg, "grn_shape": "stl", "grn_stl": filename})
     pending = iter(jobs)
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {}
@@ -280,7 +306,8 @@ def study(cfg: dict[str, Any], axes: Sequence[tuple[str, Sequence[float]]],
             job = next(pending, None)
             if job is not None:
                 values, model = job
-                futures[pool.submit(run_case, cfg, values, model, throat_P)] = job
+                tables = file_tables.get(dict(values).get("grain_file"), grain_tables)
+                futures[pool.submit(run_case, cfg, values, model, throat_P, tables)] = job
         for _ in range(workers):
             if not stopped():
                 submit()

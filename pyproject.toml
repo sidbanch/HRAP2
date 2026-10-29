@@ -21,6 +21,7 @@ dependencies = [
     "pyqtgraph",
     "coolprop",
     "trimesh",
+    "networkx",
     "scikit-image",
     "PyOpenGL",
 ]

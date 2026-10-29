@@ -6,20 +6,24 @@ heat transfer, detached slivers, or structural failure after wall contact.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+import os
+import tempfile
+from dataclasses import dataclass, fields
 from functools import lru_cache
 from pathlib import Path
+from zipfile import BadZipFile
 
 import numpy as np
 import trimesh
 from scipy import ndimage
-from scipy.signal import savgol_filter
-from skimage.draw import polygon
+from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 
 
 @dataclass
-class GrainGeometry:
+class GrainTables:
     web: np.ndarray
     port_volume: np.ndarray
     burn_area: np.ndarray
@@ -27,42 +31,107 @@ class GrainGeometry:
     fuel_volume: np.ndarray
     length: float
     outer_diameter: float
+    case_area: np.ndarray
+    case_web: float
+
+
+@dataclass
+class GrainGeometry(GrainTables):
     distance: np.ndarray
     spacing: float
     origin: np.ndarray
     mesh_vertices: np.ndarray
     mesh_faces: np.ndarray
 
+    def tables(self) -> GrainTables:
+        return GrainTables(**{f.name: getattr(self, f.name) for f in fields(GrainTables)})
+
 
 def load_grain_stl(path, *, units: str = "in", voxel: float | None = None,
                    ends_burn: bool = False) -> GrainGeometry:
     """Load fuel, with voxel size expressed in the chosen STL units.
 
-    The longest bounding-box axis becomes z. Supply an axis-aligned STL; a
+    The axis with matching transverse dimensions becomes z. Supply an axis-aligned STL; a
     general oblique orientation cannot be inferred reliably from its bounds.
     """
+    if not path:
+        raise ValueError("No STL file chosen")
+    if not isinstance(path, (str, Path)):
+        raise ValueError("STL path must be a file name")
     path = Path(path).expanduser().resolve()
     return _load(str(path), path.stat().st_mtime_ns, units, voxel, ends_burn)
 
 
 @lru_cache(maxsize=2)
 def _load(path, mtime, units, voxel, ends_burn):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    digest.update(json.dumps([4, units, voxel, ends_burn]).encode())
+    cache = _cache_dir() / (digest.hexdigest() + ".npz")
+    try:
+        with np.load(cache, allow_pickle=False) as saved:
+            values = {f.name: saved[f.name] for f in fields(GrainGeometry)}
+            for key in ("length", "outer_diameter", "case_web", "spacing"):
+                values[key] = float(values[key])
+            result = GrainGeometry(**values)
+        cache.touch()
+        return result
+    except (OSError, ValueError, KeyError, EOFError, BadZipFile):
+        pass
+    result = _build(path, units, voxel, ends_burn)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache.parent, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            np.savez(stream, **{f.name: getattr(result, f.name) for f in fields(GrainGeometry)})
+        os.replace(temporary, cache)
+        size = 0
+        for entry in sorted(cache.parent.glob("*.npz"), key=lambda p: p.stat().st_mtime, reverse=True):
+            size += entry.stat().st_size
+            if size > 1024 ** 3:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        if "temporary" in locals():
+            temporary.unlink(missing_ok=True)
+    return result
+
+
+def _cache_dir():
+    from PySide6.QtCore import QCoreApplication, QStandardPaths
+
+    from hrap import APP_NAME
+    if QCoreApplication.instance() is not None:
+        root = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+    else:
+        root = Path(QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)) / "HCAT" / APP_NAME
+    return root / "grain-cache"
+
+
+def _build(path, units, voxel, ends_burn):
     if units not in ("in", "mm"):
         raise ValueError("STL units must be in or mm")
     scale = 0.0254 if units == "in" else 0.001
     mesh = trimesh.load_mesh(path, process=True)
-    if not isinstance(mesh, trimesh.Trimesh) or not mesh.is_watertight:
-        raise ValueError("STL must contain closed, watertight fuel solids")
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise ValueError("STL must contain triangular fuel solids")
+    counts = np.bincount(mesh.edges_unique_inverse)
+    if np.any(counts % 2):
+        raise ValueError("STL fuel solids have open edges; export closed solids")
     mesh.apply_scale(scale)
-    axis = int(np.argmax(mesh.extents))
-    order = [i for i in range(3) if i != axis] + [axis]
+    extents = mesh.extents
+    mismatch = [abs(extents[(i + 1) % 3] - extents[(i + 2) % 3]) / max(extents[(i + 1) % 3], extents[(i + 2) % 3])
+                for i in range(3)]
+    axis = int(np.argmin(mismatch))
+    order = [(axis + 1) % 3, (axis + 2) % 3, axis]
     mesh.vertices = mesh.vertices[:, order]
     mesh.vertices -= mesh.bounds.mean(axis=0)
     width, depth, length = mesh.extents
-    if abs(width - depth) > 0.05 * max(width, depth) or length < max(width, depth):
+    if abs(width - depth) > 0.05 * max(width, depth):
         raise ValueError("Align the grain axis with X, Y or Z and use a cylindrical outer case")
     radius = max(width, depth) / 2
-    spacing = max(0.000508, (width * depth * length / 24_000_000) ** (1/3)) if voxel is None else voxel * scale
+    spacing = max(0.00076, (width * depth * length / 24_000_000) ** (1/3)) if voxel is None else voxel * scale
     if not np.isfinite(spacing) or spacing <= 0:
         raise ValueError("Voxel size must be positive")
     # Use an integer number of axial cells, preserving the exact grain length.
@@ -75,17 +144,12 @@ def _load(path, mtime, units, voxel, ends_burn):
     coords = origin[0] + np.arange(nxy) * spacing
     case = coords[:, None] ** 2 + coords[None, :] ** 2 <= radius ** 2
     fuel = np.zeros((nxy, nxy, nz), dtype=bool)
-    for part in mesh.split(only_watertight=True):
-        for k in range(nz):
-            section = part.section(plane_origin=[0, 0, origin[2] + k * spacing], plane_normal=[0, 0, 1])
-            if section is None:
-                continue
-            layer = np.zeros((nxy, nxy), dtype=bool)
-            for loop in section.discrete:
-                ij = (loop[:, :2] - origin[:2]) / spacing
-                rows, cols = polygon(ij[:, 0], ij[:, 1], layer.shape)
-                layer[rows, cols] ^= True
-            fuel[:, :, k] |= layer
+    for k in range(nz):
+        lines, face_ids = trimesh.intersections.mesh_plane(
+            mesh, plane_origin=[0, 0, origin[2] + k * spacing], plane_normal=[0, 0, 1], return_faces=True)
+        fuel[:, :, k] = _scanlines(lines, mesh.face_normals[face_ids, 1], coords)
+    # Treat sub-cell assembly gaps as bonded joints, not additional burning faces.
+    fuel = ndimage.binary_closing(fuel, structure=np.ones((1, 1, 3)), border_value=1)
     void = case[:, :, None] & ~fuel
     labels, count = ndimage.label(void)
     sizes = np.bincount(labels.ravel())
@@ -97,69 +161,135 @@ def _load(path, mtime, units, voxel, ends_burn):
         raise ValueError("The largest port must open at both ends of the grain")
     del labels, void
     fuel = case[:, :, None] & ~port
-    # Ask EDT for nearest-port indices, then form distances one layer at a time.
-    # SciPy's full-grid coordinate differences otherwise peak near 2 GB here.
-    nearest = ndimage.distance_transform_edt(~port, return_distances=False, return_indices=True)
-    distance = np.empty(port.shape, dtype=np.float32)
-    xx, yy = np.ogrid[:nxy, :nxy]
-    for k in range(nz):
-        squared = (nearest[0, :, :, k] - xx) ** 2 + (nearest[1, :, :, k] - yy) ** 2
-        squared += (nearest[2, :, :, k] - k) ** 2
-        distance[:, :, k] = np.sqrt(squared) * spacing
-    del nearest
-    # Distances between cell centres overestimate the interface by half a cell.
-    distance[fuel] = np.maximum(distance[fuel] - spacing / 2, spacing / 2)
-    if ends_burn:
-        axial = (np.minimum(np.arange(nz), np.arange(nz)[::-1]) + 0.5) * spacing
-        np.minimum(distance, axial[None, None, :], out=distance)
-    distance[~np.broadcast_to(case[:, :, None], fuel.shape)] = np.inf
+    if not fuel.any():
+        raise ValueError("No fuel is resolved at this cube size; choose smaller cubes")
     centres = mesh.triangles_center
-    ijk = ((centres - origin) / spacing).T
-    near_port = ndimage.map_coordinates(distance, ijk, order=0, mode="nearest") <= spacing
-    end_face = np.abs(centres[:, 2]) > length / 2 - spacing / 10
-    initial_area = float(mesh.area_faces[near_port & ~end_face].sum())
-    if ends_burn:
-        initial_area += float(mesh.area_faces[end_face].sum())
-    values = distance[fuel]
-    web = np.linspace(0, float(values.max()), max(24, int(values.max() / spacing * 2) + 2))
-    hist = np.histogram(values, bins=web)[0]
-    burned = np.r_[0, np.cumsum(hist)].astype(float) * spacing ** 3
-    total = burned[-1]
-    # A quadratic volume curve removes lattice noise for smoothly evolving ports.
-    # Only use it when its residual is below a quarter cell of interface motion;
-    # mergers and slivers otherwise retain the local histogram smoothing.
-    fit = np.polynomial.Polynomial.fit(web[2:-2], burned[2:-2], 2).convert()
-    tolerance = total / web[-1] * spacing / 4
-    if (np.max(np.abs(fit(web[2:-2]) - burned[2:-2])) < tolerance
-            and initial_area > 0 and np.all(fit.deriv()(web) > 0)):
-        # The STL gives an accurate initial surface area without differentiating
-        # voxel counts. Constrain the smooth fit to that measured initial slope.
-        design = np.c_[np.ones(len(web) - 4), web[2:-2] ** 2]
-        _, quadratic = np.linalg.lstsq(design, burned[2:-2] - initial_area * web[2:-2], rcond=None)[0]
-        fit = np.polynomial.Polynomial([0, initial_area, quadratic])
-        roots = (fit - total).roots()
-        positive = [r.real for r in roots if abs(r.imag) < 1e-10 and r.real > 0]
-        end = min(positive, key=lambda r: abs(r - web[-1])) if positive else 0
-        if abs(end - web[-1]) < spacing:
-            web = np.linspace(0, end, len(web))
-            burned = fit(web)
-        else:
-            burned = _smooth_volume(burned)
-    else:
-        burned = _smooth_volume(burned)
-    burned = np.maximum.accumulate(np.clip(burned, 0, total))
-    burned[0], burned[-1] = 0, total
-    volume = port.sum() * spacing ** 3 + burned
-    area = np.maximum(0, np.gradient(volume, web, edge_order=2))
-    return GrainGeometry(web, volume, area, volume / length, burned[-1] - burned,
-                         float(length), float(2 * radius), distance, spacing, origin,
+    normals = mesh.face_normals
+    near = np.zeros(len(centres), dtype=bool)
+    for sign in (-1, 1):
+        indices = ((centres + sign * normals * spacing - origin) / spacing).T
+        near |= ndimage.map_coordinates(port.astype(np.uint8), indices, order=0, mode="nearest") > 0
+    caps = np.abs(centres[:, 2]) >= length / 2 - spacing / 10
+    outer = np.all(np.linalg.norm(mesh.triangles[:, :, :2], axis=2) > radius - spacing / 10, axis=1)
+    # Axial assembly faces and inhibited ends cannot seed the burn distance.
+    surface = mesh.triangles[near & ~caps & ~outer]
+    if not len(surface):
+        raise ValueError("Could not identify the grain's open port surface")
+    tree, triangle_ids = _surface_tree(surface, spacing)
+    # Distance is smooth away from the initial interface. Sample that region on
+    # a two-cell grid, then evaluate the interface band directly on STL triangles.
+    # This avoids expensive nearest-surface searches deep inside the empty bore.
+    stride = 2
+    cx = np.unique(np.r_[np.arange(0, nxy, stride), nxy - 1])
+    cz = np.unique(np.r_[np.arange(0, nz, stride), nz - 1])
+    deep_port = ndimage.binary_erosion(port, iterations=5)
+    coarse = np.empty((len(cx), len(cx), len(cz)), dtype=np.float32)
+    coarse_xy = np.array(np.meshgrid(cx, cx, indexing="ij")).reshape(2, -1).T
+    for j, k in enumerate(cz):
+        points = np.c_[origin[:2] + coarse_xy * spacing, np.full(len(coarse_xy), origin[2] + k * spacing)]
+        evaluate = ~deep_port[coarse_xy[:, 0], coarse_xy[:, 1], k]
+        dist = np.full(len(points), 5 * spacing)
+        dist[evaluate] = _surface_distance(points[evaluate], tree, triangle_ids, surface)
+        dist[port[coarse_xy[:, 0], coarse_xy[:, 1], k]] *= -1
+        coarse[:, :, j] = dist.reshape(len(cx), len(cx))
+    distance = np.full(port.shape, np.inf, dtype=np.float32)
+    xy = np.column_stack(np.nonzero(case))
+    uv = np.c_[np.interp(xy[:, 0], cx, np.arange(len(cx))), np.interp(xy[:, 1], cx, np.arange(len(cx)))]
+    for k in range(nz):
+        w = np.interp(k, cz, np.arange(len(cz)))
+        dist = ndimage.map_coordinates(coarse, np.c_[uv, np.full(len(xy), w)].T, order=1)
+        near = np.abs(dist) < 2 * spacing
+        points = np.c_[origin[:2] + xy[near] * spacing, np.full(near.sum(), origin[2] + k * spacing)]
+        dist[near] = _surface_distance(points, tree, triangle_ids, surface)
+        dist = np.abs(dist)
+        dist[port[xy[:, 0], xy[:, 1], k]] *= -1
+        if ends_burn:
+            dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
+        distance[xy[:, 0], xy[:, 1], k] = dist
+    angle = np.arange(max(16, int(np.ceil(2 * np.pi * radius / spacing))))
+    angle = angle * 2 * np.pi / len(angle)
+    wall_points = radius * np.c_[np.cos(angle), np.sin(angle)]
+    wall_distances = []
+    for k in range(nz):
+        points = np.c_[wall_points, np.full(len(wall_points), origin[2] + k * spacing)]
+        dist = _surface_distance(points, tree, triangle_ids, surface)
+        if ends_burn:
+            dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
+        wall_distances.append(dist)
+    wall_distances = np.sort(np.concatenate(wall_distances))
+    case_web = 0.0 if ends_burn else float(wall_distances[0])
+    # A fixed physical filter width makes the table independent of grid phase
+    # and resolution. Reflect at the last occupied bin rather than smearing fuel
+    # into empty space beyond the last surface.
+    values = distance[np.isfinite(distance)]
+    step = min(spacing / 4, 0.000135)
+    low, high = float(values.min()), float(values.max())
+    edges = np.linspace(low, high, int(np.ceil((high - low) / step)) + 1)
+    step = edges[1] - edges[0]
+    counts = np.histogram(values, edges)[0].astype(float)
+    smoothed = ndimage.gaussian_filter1d(counts, sigma=0.00054 / step, mode="reflect")
+    cumulative = np.r_[0, np.cumsum(smoothed)] * spacing ** 3
+    port_volume = float(np.interp(0, edges, cumulative))
+    total = np.pi * radius ** 2 * length
+    end = max(high, float(wall_distances[-1]))
+    web = np.r_[np.arange(0, end, step), end]
+    area = np.interp(web, (edges[1:] + edges[:-1]) / 2, smoothed * spacing ** 3 / step)
+    burned = np.r_[0, np.cumsum((area[1:] + area[:-1]) * np.diff(web) / 2)]
+    scale_area = (total - port_volume) / burned[-1]
+    area *= scale_area
+    volume = port_volume + burned * scale_area
+    volume[-1] = total
+    case_area = np.searchsorted(wall_distances, web, side="right") / len(wall_distances) * 2 * np.pi * radius * length
+    area[-1] = 0.0
+    distance[distance < 0] = 0
+    return GrainGeometry(web, volume, area, volume / length, total - volume,
+                         float(length), float(2 * radius), case_area, case_web, distance, spacing, origin,
                          np.asarray(mesh.vertices), np.asarray(mesh.faces))
 
 
-def _smooth_volume(burned):
-    smoothed = savgol_filter(burned, min(11, len(burned) // 2 * 2 - 1), 2)
-    smoothed -= smoothed[0]
-    return smoothed * burned[-1] / smoothed[-1]
+def _scanlines(lines, normals_y, coords):
+    """Vectorized winding fill: overlapping bodies union instead of XOR."""
+    layer = np.zeros((len(coords), len(coords)), dtype=bool)
+    if not len(lines):
+        return layer
+    a, b = lines[:, 0, :2], lines[:, 1, :2]
+    for i, x in enumerate(coords):
+        hit = ((a[:, 0] <= x) & (b[:, 0] > x)) | ((b[:, 0] <= x) & (a[:, 0] > x))
+        if not hit.any():
+            continue
+        y = a[hit, 1] + (x - a[hit, 0]) * (b[hit, 1] - a[hit, 1]) / (b[hit, 0] - a[hit, 0])
+        order = np.argsort(y)
+        winding = np.cumsum(-np.sign(normals_y[hit][order]))
+        indices = np.searchsorted(y[order], coords, side="right") - 1
+        layer[i] = (indices >= 0) & (winding[np.maximum(indices, 0)] != 0)
+    return layer
+
+
+def _surface_tree(triangles, spacing):
+    # Sample rows across each triangle without recursively subdividing skinny STL
+    # facets: long cylindrical facets otherwise generate millions of tiny faces.
+    samples, sample_ids = [], []
+    for index, tri in enumerate(triangles):
+        lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=0), axis=1)
+        i = int(lengths.argmax())
+        a, b, c = tri[i], tri[(i + 1) % 3], tri[(i + 2) % 3]
+        height = np.linalg.norm(np.cross(b - a, c - a)) / lengths[i]
+        rows = max(1, int(np.ceil(height / spacing)))
+        for row in range(rows):
+            fraction = (row + 0.5) / rows
+            count = max(1, int(np.ceil((1 - fraction) * lengths[i] / spacing)))
+            along = (np.arange(count) + 0.5) / count
+            samples.append((1 - fraction) * (a + along[:, None] * (b - a)) + fraction * c)
+            sample_ids.append(np.full(count, index, dtype=np.int32))
+    return cKDTree(np.concatenate(samples)), np.concatenate(sample_ids)
+
+
+def _surface_distance(points, tree, ids, triangles):
+    _, nearest = tree.query(points, k=4)
+    candidates = triangles[ids[nearest]].reshape(-1, 3, 3)
+    repeated = np.repeat(points, 4, axis=0)
+    closest = trimesh.triangles.closest_point(candidates, repeated)
+    return np.linalg.norm(closest - repeated, axis=1).reshape(-1, 4).min(axis=1)
 
 
 def port_surface(geom: GrainGeometry, web: float, *, step: int = 1):
