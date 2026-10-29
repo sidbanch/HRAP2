@@ -208,7 +208,7 @@ _SETTING_NAMES = {
     "inj_D": "injector bore", "inj_N": "injectors", "grn_L": "grain length", "grn_ID": "starting port",
     "grn_OD": "grain OD", "prop_a": "burn rate a", "prop_n": "burn rate n", "cstar_eff": "C* eff", "const_OF": "O/F",
     "reg_model": "fuel flow", "inj_model": "flow model", "grn_shape": "grain shape", "grn_stl": "STL",
-    "grn_stl_voxel": "voxel size", "grn_ends_burn": "ends burn",
+    "grn_stl_voxel": "cube size", "grn_ends_burn": "ends burn",
     "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
     "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
     "sw_cd_from_geometry": "Cd from geometry", "ptc_stock": "stock PTC", "ox_fluid": "oxidizer fluid",

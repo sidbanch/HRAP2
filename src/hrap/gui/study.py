@@ -206,7 +206,7 @@ class Axis(QWidget):
         self.files.setText(f"{len(self._files)} STL file{'s' if len(self._files) != 1 else ''}: "
                            f"{names if len(names) <= 40 else names[:39] + '…'}" if self._files else "Choose STL files…")
         self.files.setToolTip("\n".join(self._files) + "\n\n" * bool(self._files)
-                              + "The grain STLs to compare. The Motor tab's STL units, voxel size and Ends burn apply to each.")
+                              + "The grain STLs to compare. The Motor tab's STL units, cube size and Ends burn apply to each.")
 
     def set_axis(self, key, values=None):
         self.key.setCurrentIndex(self.key.findData(key))

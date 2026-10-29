@@ -282,6 +282,11 @@ class GrainView(QWidget):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(12)
         right.addWidget(self.grain)
+        self.grain_warning = QLabel("")  # the cubes are too coarse for the grain's thinnest walls
+        self.grain_warning.setObjectName("notApplied")
+        self.grain_warning.setWordWrap(True)
+        self.grain_warning.hide()
+        right.addWidget(self.grain_warning)
         right.addWidget(self.now)
         right.addWidget(self.plots, 1)
 
@@ -346,8 +351,8 @@ class GrainView(QWidget):
         self._reset_camera(float(size[2]))
         u = self._get_units()
         self._right.show()
-        self.now.hide()
-        self.plots.hide()
+        for w in (self.now, self.plots, self.grain_warning):
+            w.hide()
         for row in self.grain.values:
             self.grain.show_row(row, row in ("Length", "Outer diameter"))
         self.grain.set("Length", u.text(float(size[2]), "length"))
@@ -445,7 +450,9 @@ class GrainView(QWidget):
                        "How far the fuel burns back before none is left: the thickest part of the grain.")
         self.grain.set("Grid", f"{g.distance.size / 1e6:.1f} million cubes of {u.text(g.spacing, 'length', 3)}",
                        "The grain is split into cubes to work out how it burns back.\n"
-                       "Set their size with Voxel size on the Motor tab.")
+                       "Set their size with Cube size on the Motor tab.")
+        self.grain_warning.setText(g.resolution_warning)
+        self.grain_warning.setVisible(bool(g.resolution_warning))
         x = u.value(g.web, "length")
         top, bottom = self._area_plots
         for plot in self._area_plots:

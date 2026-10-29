@@ -205,12 +205,12 @@ _LOAD_ADVICE = (
     ("triangular", "It isn't a mesh HRAP can read. Export the fuel from CAD again as an STL."),
     ("Align the grain axis", "The grain's axis has to run along the STL's X, Y or Z axis, with a round outside. "
                              "Line it up in CAD and export it again."),
-    ("Voxel size is too small", "That voxel size needs over 35 million cubes. Make it larger, or set it to Auto. "
+    ("Voxel size is too small", "That cube size needs over 35 million cubes. Make it larger, or set it to Auto. "
                                 "If the grain came out about 25 times too big, set STL units to mm."),
     ("no open port", "No port was found inside it. Check the file is the fuel grain and its port runs all the way "
                      "through."),
     ("open at both ends", "The port has to run all the way through the grain, open at both ends."),
-    ("No fuel is resolved", "The cubes are too big to see the fuel between port and case. Make the voxel size smaller."),
+    ("No fuel is resolved", "The cubes are too big to see the fuel between port and case. Make the cube size smaller."),
     ("port surface", "Its port surface couldn't be found. Check the file is the fuel grain."),
 )
 
@@ -623,7 +623,7 @@ class SizingPage(QWidget):
         grain_form.add("Shape", self.grain_shape)
         self._stl_rows = [*grain_form.add("STL file", _beside(self.stl_file, load_stl), span=True),
                           *grain_form.add("STL units", self.stl_unit)]
-        voxel_row = grain_form.add("Voxel size", self.stl_voxel, "in")
+        voxel_row = grain_form.add("Cube size", self.stl_voxel, "in")
         self._voxel_unit = voxel_row[2]
         status = _beside(self.stl_status, _beside(self.stl_progress, self._grain_action))
         self._stl_rows += [*voxel_row, *grain_form.add("", self.ends_burn), status]
@@ -1099,13 +1099,13 @@ class SizingPage(QWidget):
             text = f"Loading: {self.grain_progress_text()}"
         elif g is None:
             text = self.grain_message()
-        elif not 0.03 < g.length < 2.5:
-            text = (f"This grain is {self._get_units().text(g.length, 'length')} long. If that's wrong, "
-                    "the STL units are wrong.")
         else:
-            text = "The numbers on this tab use the STL's starting port and burning area."
-        self.stl_status.setText(text)
-        self.stl_status.setObjectName("notApplied" if self._grain_error and not self.grain_stopped() else "cardLabel")
+            units = "" if 0.03 < g.length < 2.5 else (f"This grain is {self._get_units().text(g.length, 'length')} long. "
+                                                       "If that's wrong, the STL units are wrong.")
+            text = " ".join(note for note in (units, g.resolution_warning) if note)
+        warn = (self._grain_error and not self.grain_stopped()) or (g is not None and bool(text))
+        self.stl_status.setText(text or "The numbers on this tab use the STL's starting port and burning area.")
+        self.stl_status.setObjectName("notApplied" if warn else "cardLabel")
         self.stl_status.style().unpolish(self.stl_status)
         self.stl_status.style().polish(self.stl_status)
         self.stl_progress.setVisible(loading)
