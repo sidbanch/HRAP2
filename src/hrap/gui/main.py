@@ -11,7 +11,7 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -160,6 +160,7 @@ class SimRun:
     time: str = ""  # when it was first run
     output: object = None  # its curves, simulated again after it's read from its file
     state: object = None  # the simulation's final state, for the summary
+    settings: object = None  # what it simulated
 
     def save(self):
         write_run(self.file, {"label": self.label, "time": self.time, "changes": list(self.changes),
@@ -207,7 +208,8 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
     changes = []
     for k, v in b.items():
         key = k.split(".")[-1]
-        if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
+        if (key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or k.startswith("sizing.round_grain.")
+                or _same_cfg(a.get(k), v)):
             continue
         name = _SETTING_NAMES.get(key, key.replace("_", " "))
         if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
@@ -231,6 +233,23 @@ def _same_cfg(a, b) -> bool:
         return (isinstance(a, (int, float)) and isinstance(b, (int, float))
                 and math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12))
     return a == b
+
+
+class _Resimulator(QObject):
+    """Simulates runs read from their files again, off the UI thread, as an STL grain can take a minute to load."""
+    done = Signal(object, object)  # the run, and (settings, state, output) or an error message
+    _lock = threading.Lock()  # one at a time, as each may hold a large grain in memory
+
+    def start(self, sim_run: SimRun):
+        def work():
+            with self._lock:
+                try:
+                    s, x = resolve(sim_run.cfg)
+                    x, o = run(s, x)
+                    self.done.emit(sim_run, (s, x, o))
+                except Exception as exc:
+                    self.done.emit(sim_run, str(exc) or type(exc).__name__)
+        threading.Thread(target=work, daemon=True).start()
 
 
 class _Updater(QObject):
@@ -273,6 +292,8 @@ class MainWindow(QMainWindow):
         self._close_when_finished = False
         self._result_cfg = None
         self._sim_runs: list[SimRun] = []
+        self._waiting_runs: dict[Path, list[Callable[[], None]]] = {}  # runs being simulated again, and what then
+        self._wanted_run: SimRun | None = None  # the run last clicked, which shows once it's simulated again
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
         # The session (open motors, unsaved edits, runs of motors without a file) is kept beside the settings a test
@@ -428,6 +449,8 @@ class MainWindow(QMainWindow):
         self._update_btn.hide()
         self._update_btn.clicked.connect(self._update_clicked)
         self.statusBar().addPermanentWidget(self._update_btn)
+        self._resimulator = _Resimulator()
+        self._resimulator.done.connect(self._on_resimulated)
         self._updater = _Updater()
         self._updater.found.connect(self._update_found)
         self._updater.installed.connect(self._update_installed)
@@ -1141,7 +1164,7 @@ class MainWindow(QMainWindow):
         mine = [r for r in self._sim_runs if r.file.parent == folder]
         same = next((r for r in mine if _same_cfg(r.cfg, cfg)), None)
         if same is not None:  # rerunning an earlier run's settings shows that run instead of adding a copy
-            same.output, same.state = o, x
+            same.output, same.state, same.settings = o, x, s
             self._select_run(same)
             return
         name = str(cfg.get("mtr_nm") or "motor")
@@ -1155,22 +1178,34 @@ class MainWindow(QMainWindow):
         results = {"total_impulse": info["total_impulse"], "peak_P_cmbr": info["peak_pressure_bar"] * 1e5,
                    "burn_time": info["burn_time"]}
         run = SimRun(file, f"{number}. {name}: {what}", cfg, tuple(changes), results,
-                     datetime.now().isoformat(timespec="seconds"), o, x)
+                     datetime.now().isoformat(timespec="seconds"), o, x, s)
         run.save()
         self._sim_runs.append(run)
         self._add_run_item(run)
         self._select_run(run)
 
-    def _simulate(self, sim_run: SimRun) -> bool:
-        """Give a run read from its file its curves back by simulating it again. False if it no longer runs."""
-        if sim_run.output is None:
-            try:
-                s, x = resolve(sim_run.cfg)
-                sim_run.state, sim_run.output = run(s, x)
-            except Exception as exc:
-                self.statusBar().showMessage(f"Couldn't simulate {sim_run.label} again: {exc}")
-                return False
-        return True
+    def _with_curves(self, sim_run: SimRun, then: Callable[[], None]):
+        """Do something with a run's curves, once it's simulated again if it was read from its file."""
+        if sim_run.output is not None:
+            then()
+            return
+        waiting = self._waiting_runs.setdefault(sim_run.file, [])
+        if then not in waiting:
+            waiting.append(then)
+        if len(waiting) == 1:
+            self._resimulator.start(sim_run)
+            stl = " Its grain STL can take a minute to load." if sim_run.cfg.get("grn_shape") == "stl" else ""
+            self.statusBar().showMessage(f"Simulating {sim_run.label} again…{stl}")
+
+    def _on_resimulated(self, sim_run: SimRun, result):
+        waiting = self._waiting_runs.pop(sim_run.file, [])
+        if isinstance(result, str):
+            self.statusBar().showMessage(f"Couldn't simulate {sim_run.label} again: {result}")
+        elif sim_run in self._sim_runs:  # not deleted meanwhile
+            sim_run.settings, sim_run.state, sim_run.output = result
+            self.statusBar().clearMessage()
+            for then in waiting:
+                then()
 
     def _sync_runs(self):
         """List the saved runs of every open motor and of motors without a file, keeping the ones already listed."""
@@ -1204,7 +1239,14 @@ class MainWindow(QMainWindow):
 
     def _load_run(self, run: SimRun):
         """Put a run's settings back into its motor and show its results, to compare or carry on from it."""
-        if self._thread is not None or not self._simulate(run):
+        self._wanted_run = run
+        if self._thread is not None:
+            return
+        if run.output is None:
+            def show():
+                if self._wanted_run is run:  # not another run clicked meanwhile
+                    self._load_run(run)
+            self._with_curves(run, show)
             return
         # Its motor: the one whose runs folder it's in. Motors without a file share one, so their runs go by name.
         tab = next((i for i, m in enumerate(self._motors()) if self._runs_dir(m) == run.file.parent
@@ -1216,7 +1258,7 @@ class MainWindow(QMainWindow):
         self._output = self._settings = self._state = self._result_cfg = None
         self._cfg_to_form(run.cfg)
         self._update_tab_marker()
-        self._settings, self._state = resolve(run.cfg)[0], run.state
+        self._settings, self._state = run.settings, run.state
         self._output, self._result_cfg = run.output, run.cfg
         self._show_results()
         self._select_run(run)
@@ -1263,13 +1305,8 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(self.run_list.viewport().mapToGlobal(pos))
         if chosen is rename:
             self.run_list.editItem(item)
-        elif chosen is csv and self._simulate(run):
-            name = "".join(c if c.isalnum() or c in " -_." else "_" for c in run.label).strip() or "run"
-            path, _ = QFileDialog.getSaveFileName(self, "Export run", self._dialog_path(f"{name}.csv"), "CSV (*.csv)")
-            if path:
-                self._remember_file_dir(path)
-                export_csv(path, run.output)
-                self.statusBar().showMessage(f"Saved {path}")
+        elif chosen is csv:
+            self._with_curves(run, lambda: self._export_run(run))
         elif chosen is delete:
             shown = run.output is not None and run.output is self._output
             self._sim_runs.remove(run)
@@ -1281,6 +1318,14 @@ class MainWindow(QMainWindow):
                 self._invalidate_results()
             else:
                 self._refresh_plot()
+
+    def _export_run(self, run: SimRun):
+        name = "".join(c if c.isalnum() or c in " -_." else "_" for c in run.label).strip() or "run"
+        path, _ = QFileDialog.getSaveFileName(self, "Export run", self._dialog_path(f"{name}.csv"), "CSV (*.csv)")
+        if path:
+            self._remember_file_dir(path)
+            export_csv(path, run.output)
+            self.statusBar().showMessage(f"Saved {path}")
 
     def _clear_runs(self):
         if not self._sim_runs or QMessageBox.question(
@@ -1297,9 +1342,12 @@ class MainWindow(QMainWindow):
                 if self.run_list.item(i).checkState() == Qt.CheckState.Checked}
 
     def _overlay_runs(self) -> list[SimRun]:
-        """Ticked runs other than the one shown."""
-        ticked = self._ticked()
-        return [r for r in self._sim_runs if str(r.file) in ticked and self._simulate(r) and r.output is not self._output]
+        """Ticked runs other than the one shown. Ones read from their files show once they're simulated again."""
+        ticked = [r for r in self._sim_runs if str(r.file) in self._ticked()]
+        for r in ticked:
+            if r.output is None:
+                self._with_curves(r, self._refresh_plot)
+        return [r for r in ticked if r.output is not None and r.output is not self._output]
 
     def _show_results(self):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output

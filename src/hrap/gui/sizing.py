@@ -119,18 +119,37 @@ class FieldGrid(QGridLayout):
 
 
 class GrainLoader(QObject):
-    """Reads a grain STL off the UI thread; it takes from seconds to a minute."""
+    """Reads grain STLs off the UI thread, one at a time, as each takes up to a minute and a lot of memory.
+    A request made meanwhile waits, replacing any earlier one still waiting."""
     done = Signal(object, object)  # the request it answers, and its GrainGeometry or an error message
+    _read = Signal(object, object)
+
+    def __init__(self):
+        super().__init__()
+        self._reading: tuple | None = None
+        self._waiting: tuple | None = None
+        self._read.connect(self._on_read)
 
     def load(self, request: tuple):
+        if self._reading is not None:
+            self._waiting = request
+            return
+        self._reading = request
+
         def work():
             try:
                 from hrap.engine.grain_stl import load_grain_stl
                 path, units, voxel, ends_burn = request
-                self.done.emit(request, load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn))
+                self._read.emit(request, load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn))
             except Exception as exc:
-                self.done.emit(request, str(exc) or type(exc).__name__)
+                self._read.emit(request, str(exc) or type(exc).__name__)
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_read(self, request: tuple, result):
+        waiting, self._reading, self._waiting = self._waiting, None, None
+        self.done.emit(request, result)
+        if waiting is not None and waiting != request:
+            self.load(waiting)
 
 
 def mid_section(geom) -> np.ndarray:
@@ -235,6 +254,7 @@ class SizingPage(QWidget):
         self._grain_request: tuple | None = None  # what grain_geom is, or is loading, for
         self._grain_error = ""
         self._section: np.ndarray | None = None
+        self._round_grain: dict | None = None  # the round grain's sizes, kept while the grain comes from an STL
         self._grain_loader = GrainLoader()
         self._grain_loader.done.connect(self._on_grain_loaded)
 
@@ -611,8 +631,9 @@ class SizingPage(QWidget):
                      self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
         self.stl_voxel.valueChanged.connect(self._on_motor_edited)
-        for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model, self.grain_shape, self.stl_unit):
+        for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model, self.stl_unit):
             combo.currentIndexChanged.connect(self._on_motor_edited)
+        self.grain_shape.currentIndexChanged.connect(self._on_grain_shape)
         for box in (self.sw_cd_geom, self.hem_same, self.ends_burn):
             box.toggled.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
@@ -713,7 +734,8 @@ class SizingPage(QWidget):
         return {"size_from": ("holes", "burn_time", "OF")[self.size_from.currentIndex()],
                 "grain_from": "grain_L" if self._by_length() else "OF",
                 "nozzle_from": "throat" if self._fixed_nozzle() else "P_cmbr",
-                "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value()}
+                "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value(),
+                **({"round_grain": self._round_grain} if self._stl() and self._round_grain else {})}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
         """Load saved targets. A motor without any opens with every part manual, so nothing is sized."""
@@ -725,6 +747,7 @@ class SizingPage(QWidget):
         self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "OF" else 0)
         self.nozzle_from.setCurrentIndex(1 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
+        self._round_grain = saved.get("round_grain")
         self._loading = False
 
     def _on_motor_edited(self, *_):
@@ -806,6 +829,20 @@ class SizingPage(QWidget):
 
     def _stl(self) -> bool:
         return self.grain_shape.currentData() == "stl"
+
+    def _on_grain_shape(self):
+        """An STL grain's sizes replace the round grain's, which come back when the grain is round again."""
+        if self._loading:
+            return
+        rows = {"grn_L": self.grain_L, "grn_OD": self.grain_OD, "grn_ID": self.port_D}
+        if self._stl():
+            self._round_grain = {k: v for name, row in rows.items()
+                                 for k, v in ((name, row.spin.value()), (f"{name}_unit", row.unit.currentText()))}
+        elif self._round_grain:
+            for name, row in rows.items():
+                row.set_display(self._round_grain[name], self._round_grain[f"{name}_unit"])
+            self._round_grain = None
+        self._on_motor_edited()
 
     def _pick_stl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load grain STL", str(Path(self._stl_path).parent) if self._stl_path else "",
