@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from hrap.engine.grain_stl import _load, load_grain_stl, port_surface
+from hrap.engine.grain_stl import _load, load_grain_stl, port_surface, read_grain_mesh
 from hrap.engine.sim import run
 from hrap.engine.study import case_cfg, run_case, study
 from hrap.engine.summary import summarize
@@ -52,7 +52,20 @@ def test_stl_geometry_and_simulation(tmp_path, monkeypatch):
     monkeypatch.setattr("hrap.engine.grain_stl._cache_dir", lambda: tmp_path / "cache")
     path = tmp_path / 'cylinder.stl'
     trimesh.creation.annulus(r_min=1.25, r_max=1.695, height=20, sections=256).export(path)
-    g = load_grain_stl(path)
+    events = []
+    g = load_grain_stl(path, progress=lambda *event: events.append(event))
+    assert events[0] == ("Reading STL", 0.0) and events[-1] == ("Ready", 1.0)
+    assert len(events) > 10 and np.all(np.diff([fraction for _, fraction in events]) >= 0)
+    vertices, faces = read_grain_mesh(path)
+    np.testing.assert_array_equal(vertices, g.mesh_vertices)
+    np.testing.assert_array_equal(faces, g.mesh_faces)
+    before = set((tmp_path / "cache").iterdir())
+    def cancel(stage, fraction):
+        if fraction > 0.25:
+            raise RuntimeError("cancelled")
+    with pytest.raises(RuntimeError, match="cancelled"):
+        load_grain_stl(path, voxel=0.1, progress=cancel)
+    assert set((tmp_path / "cache").iterdir()) == before
     assert load_grain_stl(path) is g
     radius = 1.25 * 0.0254 + g.web
     burning = g.web < 0.445 * 0.0254 - g.spacing / 2
@@ -102,7 +115,9 @@ def test_stl_geometry_and_simulation(tmp_path, monkeypatch):
     assert np.all(fine.distance[np.isfinite(fine.distance)] >= 0)
     assert len(pickle.dumps(fine.tables())) < 20000
     _load.cache_clear()
-    cached = load_grain_stl(twist_path, voxel=0.54 / 25.4)
+    events = []
+    cached = load_grain_stl(twist_path, voxel=0.54 / 25.4, progress=lambda *event: events.append(event))
+    assert events == [("Ready", 1.0)]
     np.testing.assert_array_equal(cached.distance, fine.distance)
     cfg.update(reg_model="Shifting OF", grn_stl=str(twist_path), t_max=0.02)
     settings, _ = resolve(cfg)

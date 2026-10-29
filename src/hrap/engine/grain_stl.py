@@ -10,9 +10,11 @@ import hashlib
 import json
 import os
 import tempfile
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 from zipfile import BadZipFile
 
 import numpy as np
@@ -20,6 +22,14 @@ import trimesh
 from scipy import ndimage
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
+
+_progress: ContextVar[Callable[[str, float], None] | None] = ContextVar("grain_progress", default=None)
+
+
+def _report(stage: str, fraction: float):
+    callback = _progress.get()
+    if callback is not None:
+        callback(stage, fraction)
 
 
 @dataclass
@@ -48,18 +58,31 @@ class GrainGeometry(GrainTables):
 
 
 def load_grain_stl(path, *, units: str = "in", voxel: float | None = None,
-                   ends_burn: bool = False) -> GrainGeometry:
+                   ends_burn: bool = False,
+                   progress: Callable[[str, float], None] | None = None) -> GrainGeometry:
     """Load fuel, with voxel size expressed in the chosen STL units.
 
     The axis with matching transverse dimensions becomes z. Supply an axis-aligned STL; a
     general oblique orientation cannot be inferred reliably from its bounds.
+    Progress receives a stage name and overall fraction; raising cancels the load.
+    Memory and disk cache hits report only ("Ready", 1.0).
     """
+    path = _stl_path(path)
+    token = _progress.set(progress)
+    try:
+        result = _load(str(path), path.stat().st_mtime_ns, units, voxel, ends_burn)
+        _report("Ready", 1.0)
+        return result
+    finally:
+        _progress.reset(token)
+
+
+def _stl_path(path):
     if not path:
         raise ValueError("No STL file chosen")
     if not isinstance(path, (str, Path)):
         raise ValueError("STL path must be a file name")
-    path = Path(path).expanduser().resolve()
-    return _load(str(path), path.stat().st_mtime_ns, units, voxel, ends_burn)
+    return Path(path).expanduser().resolve()
 
 
 @lru_cache(maxsize=2)
@@ -81,6 +104,7 @@ def _load(path, mtime, units, voxel, ends_burn):
     except (OSError, ValueError, KeyError, EOFError, BadZipFile):
         pass
     result = _build(path, units, voxel, ends_burn)
+    _report("Saving geometry", 0.98)
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=cache.parent, suffix=".tmp", delete=False) as stream:
@@ -109,7 +133,9 @@ def _cache_dir():
     return root / "grain-cache"
 
 
-def _build(path, units, voxel, ends_burn):
+def read_grain_mesh(path, *, units: str = "in") -> tuple[np.ndarray, np.ndarray]:
+    """Read the STL quickly; vertices are centred, oriented along z and in metres."""
+    path = _stl_path(path)
     if units not in ("in", "mm"):
         raise ValueError("STL units must be in or mm")
     scale = 0.0254 if units == "in" else 0.001
@@ -130,6 +156,16 @@ def _build(path, units, voxel, ends_burn):
     width, depth, length = mesh.extents
     if abs(width - depth) > 0.05 * max(width, depth):
         raise ValueError("Align the grain axis with X, Y or Z and use a cylindrical outer case")
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+
+
+def _build(path, units, voxel, ends_burn):
+    _report("Reading STL", 0.0)
+    vertices, faces = read_grain_mesh(path, units=units)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    width, depth, length = mesh.extents
+    scale = 0.0254 if units == "in" else 0.001
+    _report("Filling cubes", 0.04)
     radius = max(width, depth) / 2
     spacing = max(0.00076, (width * depth * length / 24_000_000) ** (1/3)) if voxel is None else voxel * scale
     if not np.isfinite(spacing) or spacing <= 0:
@@ -148,8 +184,11 @@ def _build(path, units, voxel, ends_burn):
         lines, face_ids = trimesh.intersections.mesh_plane(
             mesh, plane_origin=[0, 0, origin[2] + k * spacing], plane_normal=[0, 0, 1], return_faces=True)
         fuel[:, :, k] = _scanlines(lines, mesh.face_normals[face_ids, 1], coords)
+        if k % 16 == 0:
+            _report("Filling cubes", 0.04 + 0.18 * (k + 1) / nz)
     # Treat sub-cell assembly gaps as bonded joints, not additional burning faces.
     fuel = ndimage.binary_closing(fuel, structure=np.ones((1, 1, 3)), border_value=1)
+    _report("Finding the port", 0.24)
     void = case[:, :, None] & ~fuel
     labels, count = ndimage.label(void)
     sizes = np.bincount(labels.ravel())
@@ -175,6 +214,7 @@ def _build(path, units, voxel, ends_burn):
     surface = mesh.triangles[near & ~caps & ~outer]
     if not len(surface):
         raise ValueError("Could not identify the grain's open port surface")
+    _report("Measuring burn distances", 0.28)
     tree, triangle_ids = _surface_tree(surface, spacing)
     # Distance is smooth away from the initial interface. Sample that region on
     # a two-cell grid, then evaluate the interface band directly on STL triangles.
@@ -192,6 +232,8 @@ def _build(path, units, voxel, ends_burn):
         dist[evaluate] = _surface_distance(points[evaluate], tree, triangle_ids, surface)
         dist[port[coarse_xy[:, 0], coarse_xy[:, 1], k]] *= -1
         coarse[:, :, j] = dist.reshape(len(cx), len(cx))
+        if j % 16 == 0:
+            _report("Measuring burn distances", 0.38 + 0.15 * (j + 1) / len(cz))
     distance = np.full(port.shape, np.inf, dtype=np.float32)
     xy = np.column_stack(np.nonzero(case))
     uv = np.c_[np.interp(xy[:, 0], cx, np.arange(len(cx))), np.interp(xy[:, 1], cx, np.arange(len(cx)))]
@@ -206,9 +248,12 @@ def _build(path, units, voxel, ends_burn):
         if ends_burn:
             dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
         distance[xy[:, 0], xy[:, 1], k] = dist
+        if k % 16 == 0:
+            _report("Measuring burn distances", 0.53 + 0.25 * (k + 1) / nz)
     angle = np.arange(max(16, int(np.ceil(2 * np.pi * radius / spacing))))
     angle = angle * 2 * np.pi / len(angle)
     wall_points = radius * np.c_[np.cos(angle), np.sin(angle)]
+    _report("Measuring case exposure", 0.78)
     wall_distances = []
     for k in range(nz):
         points = np.c_[wall_points, np.full(len(wall_points), origin[2] + k * spacing)]
@@ -216,11 +261,14 @@ def _build(path, units, voxel, ends_burn):
         if ends_burn:
             dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
         wall_distances.append(dist)
+        if k % 16 == 0:
+            _report("Measuring case exposure", 0.78 + 0.10 * (k + 1) / nz)
     wall_distances = np.sort(np.concatenate(wall_distances))
     case_web = 0.0 if ends_burn else float(wall_distances[0])
     # A fixed physical filter width makes the table independent of grid phase
     # and resolution. Reflect at the last occupied bin rather than smearing fuel
     # into empty space beyond the last surface.
+    _report("Building tables", 0.90)
     values = distance[np.isfinite(distance)]
     step = min(spacing / 4, 0.000135)
     low, high = float(values.min()), float(values.max())
@@ -241,6 +289,7 @@ def _build(path, units, voxel, ends_burn):
     volume[-1] = total
     case_area = np.searchsorted(wall_distances, web, side="right") / len(wall_distances) * 2 * np.pi * radius * length
     area[-1] = 0.0
+    _report("Building tables", 0.96)
     distance[distance < 0] = 0
     return GrainGeometry(web, volume, area, volume / length, total - volume,
                          float(length), float(2 * radius), case_area, case_web, distance, spacing, origin,
@@ -270,6 +319,8 @@ def _surface_tree(triangles, spacing):
     # facets: long cylindrical facets otherwise generate millions of tiny faces.
     samples, sample_ids = [], []
     for index, tri in enumerate(triangles):
+        if index % 512 == 0:
+            _report("Measuring burn distances", 0.28 + 0.10 * index / len(triangles))
         lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=0), axis=1)
         i = int(lengths.argmax())
         a, b, c = tri[i], tri[(i + 1) % 3], tri[(i + 2) % 3]
