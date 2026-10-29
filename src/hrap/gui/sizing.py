@@ -1036,7 +1036,7 @@ class SizingPage(QWidget):
             self._result = self._cfg = None
             self.swirler_options.update_target(None)
             self.error.setText(str(exc) or type(exc).__name__)
-            self.error.show()
+            self.error.setVisible(not self.grain_loading())  # the Grain card says it's loading
             for card in (self.injector, self.nozzle, self.grain, self.performance):
                 card.clear()
             self._show_apply()
