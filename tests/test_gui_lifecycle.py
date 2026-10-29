@@ -199,7 +199,7 @@ def wait_for_study(window):
 def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatch):
     import json
 
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QApplication, QFileDialog
 
     from hrap.engine.study import case_cfg
     from hrap.io.config import resolve
@@ -229,7 +229,12 @@ def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatc
     page.table.item(0, 0).setSelected(True)
     selected = page._selected()[0]
     expected, _ = resolve(case_cfg(result.cfg, selected.values, selected.model))
-    page._open()
+    motors = window.motor_tabs.count()
+    page._open()  # sized off the UI thread, as it may load an STL grain
+    deadline = time.monotonic() + 15
+    while window.motor_tabs.count() == motors and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
     actual, _ = resolve(window._form_to_cfg())
     assert actual.grn_L == pytest.approx(expected.grn_L)
     assert actual.regression_model == expected.regression_model

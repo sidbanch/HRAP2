@@ -53,7 +53,7 @@ from hrap.engine.study import (
     uses_spi,
 )
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
-from hrap.gui.sizing import card_frame
+from hrap.gui.sizing import LoadStopped, card_frame
 from hrap.gui.widgets import UnitRow
 from hrap.io.config import chamber_limit, clone_cfg
 from hrap.units import AREA_ITEMS, LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, DisplayUnits, from_si, to_si
@@ -297,18 +297,73 @@ def _uses_stl(cfg: dict, axes) -> bool:
     return cfg.get("grn_shape") == "stl" or any(key == "grain_file" for key, _ in axes)
 
 
-class _CaseCurves(QObject):
-    """Simulates saved sweep cases again off the UI thread, as their STL grains can take a while to load."""
-    done = Signal(object, object)  # the case, and its curves or an error message
+class _CaseJobs(QObject):
+    """Simulates saved sweep cases again for their curves, or works out a case to open as a motor, off the UI thread
+    and one job at a time, as each may load an STL grain. A newer request waits for the running job and stops it
+    between cases or while it loads a grain, except that wanting curves never stops or replaces opening a case."""
+    progress = Signal(str)
+    curves = Signal(object, object)  # a case, and its curves or an error message
+    opened = Signal(object, object)  # a case, and its motor settings or an error message
+    idle = Signal()
+    _finished = Signal()
 
-    def start(self, result, cases):
-        def work():
+    def __init__(self):
+        super().__init__()
+        self._running: tuple | None = None  # (kind, its stop flag)
+        self._waiting: tuple | None = None  # the newest request meanwhile
+        self._finished.connect(self._next)
+
+    def request(self, kind: str, result, cases: list):
+        if self._running is not None:
+            if kind == "curves" and "open" in (self._running[0], self._waiting and self._waiting[0]):
+                return
+            self._running[1].set()
+            self._waiting = (kind, result, cases)
+            return
+        stop = Event()
+        self._running = (kind, stop)
+        Thread(target=self._work, args=(kind, result, cases, stop), daemon=True).start()
+
+    def _work(self, kind, result, cases, stop):
+        done = self.opened if kind == "open" else self.curves
+        try:
             for c in cases:
+                if stop.is_set():
+                    break
                 try:
-                    self.done.emit(c, run_case(result.cfg, c.values, c.model, result.throat_P).traces)
+                    tables = self._grain_tables(result.cfg, c, stop)
+                    if kind == "open":
+                        done.emit(c, case_cfg(result.cfg, c.values, c.model, result.throat_P, tables))
+                    else:
+                        done.emit(c, run_case(result.cfg, c.values, c.model, result.throat_P, tables).traces)
+                except LoadStopped:
+                    break
                 except Exception as exc:
-                    self.done.emit(c, str(exc) or type(exc).__name__)
-        Thread(target=work, daemon=True).start()
+                    done.emit(c, str(exc) or type(exc).__name__)
+        finally:
+            self._finished.emit()
+
+    def _grain_tables(self, cfg: dict, case, stop: Event):
+        """The case's STL grain, loaded here with its progress; None for a round grain."""
+        path = dict(case.values).get("grain_file") or (cfg.get("grn_stl") if cfg.get("grn_shape") == "stl" else None)
+        if not path:
+            return None
+        from hrap.engine.grain_stl import load_grain_stl
+
+        def report(stage: str, fraction: float):
+            if stop.is_set():
+                raise LoadStopped
+            self.progress.emit(f"Loading {Path(path).name}: {stage} · {100 * fraction:.0f}%")
+        return load_grain_stl(path, units=cfg.get("grn_stl_unit") or "in", voxel=cfg.get("grn_stl_voxel"),
+                              ends_burn=bool(cfg.get("grn_ends_burn")), progress=report).tables()
+
+    def _next(self):
+        self._running = None
+        waiting, self._waiting = self._waiting, None
+        if waiting is not None:
+            self.request(*waiting)
+        else:
+            self.idle.emit()
 
 
 class StudyWorker(QObject):
@@ -369,9 +424,12 @@ class StudyPage(QWidget):
         self.axes[1].key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
         self._motor_model = ""  # the motor's fuel model when the sweep last followed it
         self._axes_edited = False  # until then, the values follow the open motor
-        self._curves = _CaseCurves()
-        self._curves.done.connect(self._on_case_curves)
-        self._simulating: set[int] = set()  # ids of saved cases being simulated again for their curves
+        self._jobs = _CaseJobs()
+        self._jobs.progress.connect(lambda text: self.status.setText(text))  # the label is made further down
+        self._jobs.curves.connect(self._on_case_curves)
+        self._jobs.opened.connect(self._on_case_opened)
+        self._jobs.idle.connect(lambda: self._wanted_curves.clear())
+        self._wanted_curves: set[int] = set()  # ids of the saved cases last asked to be simulated again
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
                                     "chamber pressure target, instead of the motor's own nozzle.")
@@ -917,17 +975,20 @@ class StudyPage(QWidget):
         return [self._cells[i.row(), i.column()] for i in self.table.selectedItems() if (i.row(), i.column()) in self._cells]
 
     def _selection(self):
+        missing = [c for c in self._selected()[:8] if not c.traces]  # read from their file, which doesn't keep curves
+        if missing and {id(c) for c in missing} != self._wanted_curves:
+            self._wanted_curves = {id(c) for c in missing}
+            self._jobs.request("curves", self.result, missing)
+            self.status.setText("Simulating the selected cases again…")
+        self._draw_selection()
+
+    def _draw_selection(self):
         cases = self._selected()
         self.open_btn.setEnabled(len(cases) == 1 and not self.busy())
         self.plot.clear()
         key, quantity = self.trace.currentData()
         u = self._get_units()
         self.plot.setLabel("left", self.trace.currentText(), units=u.unit(quantity))
-        missing = [c for c in cases[:8] if not c.traces and id(c) not in self._simulating]
-        if missing:  # read from their file, which doesn't keep curves
-            self._simulating.update(id(c) for c in missing)
-            self._curves.start(self.result, missing)
-            self.status.setText("Simulating the selected cases again…")
         for i, c in enumerate(cases[:8]):
             if not c.traces:
                 continue
@@ -974,22 +1035,28 @@ class StudyPage(QWidget):
         return why
 
     def _on_case_curves(self, case, traces):
-        self._simulating.discard(id(case))
         if isinstance(traces, str):
             self.status.setText(f"Couldn't simulate {self._label(case)} again: {traces}")
             return
         case.traces.update(traces)
+        self.status.setText("")
         if any(c is case for c in self._selected()):
-            self._selection()
+            self._draw_selection()
 
     def _open(self):
         selected = self._selected()
         if self.busy() or len(selected) != 1:
             return
-        c = selected[0]
-        cfg = case_cfg(self.result.cfg, c.values, c.model, self.result.throat_P)
+        self.status.setText(f"Getting {self._label(selected[0])} ready to open…")
+        self._jobs.request("open", self.result, selected)
+
+    def _on_case_opened(self, case, cfg):
+        if isinstance(cfg, str):
+            self.status.setText(f"Couldn't open {self._label(case)}: {cfg}")
+            return
         cfg["sizing"] = {}  # open the exact built geometry, without old target sizing
-        cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} ({self._label(c).replace(' · ', ', ')})"
+        cfg["mtr_nm"] = f"{cfg.get('mtr_nm') or 'Motor'} ({self._label(case).replace(' · ', ', ')})"
+        self.status.setText("")
         self._on_open(cfg)
 
     def _load(self):

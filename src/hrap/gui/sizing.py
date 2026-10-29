@@ -120,8 +120,8 @@ class FieldGrid(QGridLayout):
         self._rows += 1
 
 
-class _Stopped(Exception):
-    pass
+class LoadStopped(Exception):
+    """Raised from a load's progress callback to stop it."""
 
 
 class GrainLoader(QObject):
@@ -153,7 +153,7 @@ class GrainLoader(QObject):
 
         def report(stage: str, fraction: float):
             if stop.is_set():
-                raise _Stopped
+                raise LoadStopped
             self.progress.emit(request, stage, fraction)
 
         def read_mesh():
@@ -167,7 +167,7 @@ class GrainLoader(QObject):
             try:
                 from hrap.engine.grain_stl import load_grain_stl
                 result = load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn, progress=report)
-            except _Stopped:
+            except LoadStopped:
                 result = None
             except Exception as exc:
                 result = str(exc) or type(exc).__name__
