@@ -91,7 +91,7 @@ def _load(path, mtime, units, voxel, ends_burn):
     with open(path, "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
-    digest.update(json.dumps([4, units, voxel, ends_burn]).encode())
+    digest.update(json.dumps([5, units, voxel, ends_burn]).encode())
     cache = _cache_dir() / (digest.hexdigest() + ".npz")
     try:
         with np.load(cache, allow_pickle=False) as saved:
@@ -207,10 +207,11 @@ def _build(path, units, voxel, ends_burn):
     near = np.zeros(len(centres), dtype=bool)
     for sign in (-1, 1):
         indices = ((centres + sign * normals * spacing - origin) / spacing).T
-        near |= ndimage.map_coordinates(port.astype(np.uint8), indices, order=0, mode="nearest") > 0
-    caps = np.abs(centres[:, 2]) >= length / 2 - spacing / 10
+        near ^= ndimage.map_coordinates(port.astype(np.uint8), indices, order=0, mode="nearest") > 0
+    caps = (np.abs(centres[:, 2]) >= length / 2 - spacing / 10) & (np.abs(normals[:, 2]) > 1 - 1e-8)
     outer = np.all(np.linalg.norm(mesh.triangles[:, :, :2], axis=2) > radius - spacing / 10, axis=1)
-    # Axial assembly faces and inhibited ends cannot seed the burn distance.
+    # A port face separates fuel from the port. Matching assembly faces have
+    # the same material on both sides and must not seed the burn distance.
     surface = mesh.triangles[near & ~caps & ~outer]
     if not len(surface):
         raise ValueError("Could not identify the grain's open port surface")
@@ -218,18 +219,16 @@ def _build(path, units, voxel, ends_burn):
     tree, triangle_ids = _surface_tree(surface, spacing)
     # Distance is smooth away from the initial interface. Sample that region on
     # a two-cell grid, then evaluate the interface band directly on STL triangles.
-    # This avoids expensive nearest-surface searches deep inside the empty bore.
+    # Retain actual negative distances inside the bore: fabricated distances
+    # can leak across zero when the volume histogram is smoothed.
     stride = 2
     cx = np.unique(np.r_[np.arange(0, nxy, stride), nxy - 1])
     cz = np.unique(np.r_[np.arange(0, nz, stride), nz - 1])
-    deep_port = ndimage.binary_erosion(port, iterations=5)
     coarse = np.empty((len(cx), len(cx), len(cz)), dtype=np.float32)
     coarse_xy = np.array(np.meshgrid(cx, cx, indexing="ij")).reshape(2, -1).T
     for j, k in enumerate(cz):
         points = np.c_[origin[:2] + coarse_xy * spacing, np.full(len(coarse_xy), origin[2] + k * spacing)]
-        evaluate = ~deep_port[coarse_xy[:, 0], coarse_xy[:, 1], k]
-        dist = np.full(len(points), 5 * spacing)
-        dist[evaluate] = _surface_distance(points[evaluate], tree, triangle_ids, surface)
+        dist = _surface_distance(points, tree, triangle_ids, surface)
         dist[port[coarse_xy[:, 0], coarse_xy[:, 1], k]] *= -1
         coarse[:, :, j] = dist.reshape(len(cx), len(cx))
         if j % 16 == 0:
@@ -245,8 +244,6 @@ def _build(path, units, voxel, ends_burn):
         dist[near] = _surface_distance(points, tree, triangle_ids, surface)
         dist = np.abs(dist)
         dist[port[xy[:, 0], xy[:, 1], k]] *= -1
-        if ends_burn:
-            dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
         distance[xy[:, 0], xy[:, 1], k] = dist
         if k % 16 == 0:
             _report("Measuring burn distances", 0.53 + 0.25 * (k + 1) / nz)
@@ -255,9 +252,11 @@ def _build(path, units, voxel, ends_burn):
     wall_points = radius * np.c_[np.cos(angle), np.sin(angle)]
     _report("Measuring case exposure", 0.78)
     wall_distances = []
+    side_end = 0.0
     for k in range(nz):
         points = np.c_[wall_points, np.full(len(wall_points), origin[2] + k * spacing)]
         dist = _surface_distance(points, tree, triangle_ids, surface)
+        side_end = max(side_end, float(dist.max()))
         if ends_burn:
             dist = np.minimum(dist, (min(k, nz - 1 - k) + 0.5) * spacing)
         wall_distances.append(dist)
@@ -265,9 +264,8 @@ def _build(path, units, voxel, ends_burn):
             _report("Measuring case exposure", 0.78 + 0.10 * (k + 1) / nz)
     wall_distances = np.sort(np.concatenate(wall_distances))
     case_web = 0.0 if ends_burn else float(wall_distances[0])
-    # A fixed physical filter width makes the table independent of grid phase
-    # and resolution. Reflect at the last occupied bin rather than smearing fuel
-    # into empty space beyond the last surface.
+    # Smooth lattice noise on at most one cell, so refinement also shrinks the
+    # filter. Reflect at the last occupied bin instead of extending the fuel.
     _report("Building tables", 0.90)
     values = distance[np.isfinite(distance)]
     step = min(spacing / 4, 0.000135)
@@ -275,11 +273,12 @@ def _build(path, units, voxel, ends_burn):
     edges = np.linspace(low, high, int(np.ceil((high - low) / step)) + 1)
     step = edges[1] - edges[0]
     counts = np.histogram(values, edges)[0].astype(float)
-    smoothed = ndimage.gaussian_filter1d(counts, sigma=0.00054 / step, mode="reflect")
+    sigma = min(spacing, 0.00054) / step
+    smoothed = ndimage.gaussian_filter1d(counts, sigma=sigma, mode="reflect")
     cumulative = np.r_[0, np.cumsum(smoothed)] * spacing ** 3
     port_volume = float(np.interp(0, edges, cumulative))
     total = np.pi * radius ** 2 * length
-    end = max(high, float(wall_distances[-1]))
+    end = max(high, side_end)
     web = np.r_[np.arange(0, end, step), end]
     area = np.interp(web, (edges[1:] + edges[:-1]) / 2, smoothed * spacing ** 3 / step)
     burned = np.r_[0, np.cumsum((area[1:] + area[:-1]) * np.diff(web) / 2)]
@@ -287,6 +286,13 @@ def _build(path, units, voxel, ends_burn):
     area *= scale_area
     volume = port_volume + burned * scale_area
     volume[-1] = total
+    if ends_burn:
+        web, remaining = _burning_ends(distance, case, edges, sigma, web, total - volume, spacing, length)
+        volume = total - remaining
+        area = np.maximum(0, np.gradient(volume, web, edge_order=2))
+        for k in range(nz):
+            distance[:, :, k][case] = np.minimum(distance[:, :, k][case],
+                                               (min(k, nz - 1 - k) + 0.5) * spacing)
     case_area = np.searchsorted(wall_distances, web, side="right") / len(wall_distances) * 2 * np.pi * radius * length
     area[-1] = 0.0
     _report("Building tables", 0.96)
@@ -294,6 +300,35 @@ def _build(path, units, voxel, ends_burn):
     return GrainGeometry(web, volume, area, volume / length, total - volume,
                          float(length), float(2 * radius), case_area, case_web, distance, spacing, origin,
                          np.asarray(mesh.vertices), np.asarray(mesh.faces))
+
+
+def _burning_ends(distance, case, edges, sigma, web, fuel_volume, spacing, length):
+    """Retain only the fraction of each axial cell between the receding ends.
+
+    End burning does not change the initial port volume. Keeping the end motion
+    out of the side-distance histogram avoids smoothing end fuel into the port.
+    """
+    end = min(float(web[-1]), length / 2)
+    shortened_web = np.r_[web[web < end], end]
+    fuel = np.interp(shortened_web, web, fuel_volume)
+    weights = np.zeros(len(shortened_web))
+    surviving = np.zeros(len(shortened_web))
+    nz = distance.shape[2]
+    for k in range(nz):
+        counts = np.histogram(distance[:, :, k][case], edges)[0].astype(float)
+        smoothed = ndimage.gaussian_filter1d(counts, sigma=sigma, mode="reflect")
+        cumulative = np.r_[0, np.cumsum(smoothed)]
+        local_fuel = np.maximum(0, case.sum() - np.interp(shortened_web, edges, cumulative))
+        overlap = np.clip(np.minimum((k + 1) * spacing, length - shortened_web)
+                          - np.maximum(k * spacing, shortened_web), 0, spacing) / spacing
+        weights += local_fuel
+        surviving += local_fuel * overlap
+        if k % 16 == 0:
+            _report("Building tables", 0.90 + 0.04 * (k + 1) / nz)
+    fraction = np.divide(surviving, weights, out=np.zeros_like(weights), where=weights > 0)
+    remaining = fuel * fraction
+    remaining[-1] = 0
+    return shortened_web, remaining
 
 
 def _scanlines(lines, normals_y, coords):

@@ -50,6 +50,7 @@ def base_motor():
 
 def test_stl_geometry_and_simulation(tmp_path, monkeypatch):
     monkeypatch.setattr("hrap.engine.grain_stl._cache_dir", lambda: tmp_path / "cache")
+    _check_small_grains(tmp_path)
     path = tmp_path / 'cylinder.stl'
     trimesh.creation.annulus(r_min=1.25, r_max=1.695, height=20, sections=256).export(path)
     events = []
@@ -142,3 +143,37 @@ def test_stl_geometry_and_simulation(tmp_path, monkeypatch):
         joined_geom = load_grain_stl(joined, voxel=1 / 25.4)
         assert joined_geom.burn_area[0] == pytest.approx(2 * np.pi * 0.03175 * joined_geom.length, rel=0.02)
         assert joined_geom.case_web == pytest.approx(0.445 * 0.0254, abs=joined_geom.spacing / 4)
+
+
+def _check_small_grains(tmp_path):
+    # A short annulus reproduces the fine-grid shortcut bug without a large grid.
+    path = tmp_path / "mini.stl"
+    trimesh.creation.annulus(r_min=5, r_max=10, height=10, sections=128).export(path)
+    side_area = 2 * np.pi * 0.005 * 0.01
+    end_area = 2 * np.pi * (0.01**2 - 0.005**2)
+    initial_fuel = np.pi * (0.01**2 - 0.005**2) * 0.01
+    for pitch in (0.4, 0.2, 0.1):
+        inhibited = load_grain_stl(path, units="mm", voxel=pitch)
+        burning = load_grain_stl(path, units="mm", voxel=pitch, ends_burn=True)
+        assert inhibited.burn_area[0] == pytest.approx(side_area, rel=0.02)
+        assert burning.burn_area[0] == pytest.approx(side_area + end_area, rel=0.02)
+        assert inhibited.fuel_volume[0] == pytest.approx(initial_fuel, rel=0.006)
+        assert burning.fuel_volume[0] == pytest.approx(inhibited.fuel_volume[0], rel=1e-12)
+        web = np.array([0, 0.0005, 0.001])
+        expected = np.pi * (0.01**2 - (0.005 + web)**2) * (0.01 - 2 * web)
+        np.testing.assert_allclose(np.interp(web, burning.web, burning.fuel_volume), expected, rtol=0.01)
+
+    single_path, joint_path = tmp_path / "thin.stl", tmp_path / "thin-joint.stl"
+    trimesh.creation.annulus(r_min=9, r_max=10, height=30, sections=128).export(single_path)
+    first = trimesh.creation.annulus(r_min=9, r_max=10, height=15, sections=128)
+    second = first.copy()
+    first.apply_translation([0, 0, -7.5])
+    second.apply_translation([0, 0, 7.5])
+    trimesh.util.concatenate([first, second]).export(joint_path)
+    single = load_grain_stl(single_path, units="mm", voxel=0.76)
+    joint = load_grain_stl(joint_path, units="mm", voxel=0.76)
+    assert joint.case_web == pytest.approx(single.case_web, abs=1e-9)
+    assert joint.case_web == pytest.approx(0.001, abs=1e-9)
+    assert np.interp(0.0005, joint.web, joint.case_area) == 0
+    np.testing.assert_allclose(joint.fuel_volume, np.interp(joint.web, single.web, single.fuel_volume),
+                               atol=single.fuel_volume[0] * 0.005, rtol=0)
