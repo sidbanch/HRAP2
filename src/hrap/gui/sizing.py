@@ -140,11 +140,12 @@ class GrainLoader(QObject):
 
     def load(self, request: tuple):
         if self._reading is not None:
-            if self._reading[0] != request:
-                self._reading[1].set()
+            reading, stop = self._reading
+            if reading == request and not stop.is_set():
+                self._waiting = None  # it's loading already
+            else:  # stop the one loading; once it has, this one loads (even if it's the same, as it was told to stop)
+                stop.set()
                 self._waiting = request
-            else:
-                self._waiting = None
             return
         stop = threading.Event()
         self._reading = (request, stop)
@@ -178,12 +179,17 @@ class GrainLoader(QObject):
     def stop(self):
         if self._reading is not None:
             self._reading[1].set()
-        self._waiting = None
+        waiting, self._waiting = self._waiting, None
+        if waiting is not None:
+            self.done.emit(waiting, None)  # stopped before it started
 
     def _on_read(self, request: tuple, result):
         waiting, self._reading, self._waiting = self._waiting, None, None
+        if result is None and waiting == request:
+            self.load(request)  # stopped for another request, but wanted again since: load it afresh
+            return
         self.done.emit(request, result)
-        if waiting is not None:
+        if waiting is not None and waiting != request:
             self.load(waiting)
 
 

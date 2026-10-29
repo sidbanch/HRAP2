@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import Callable, cast
 
 import numpy as np
@@ -293,6 +293,24 @@ class StudyRun:
         return len(grid(self.axes)) * len(self.models)
 
 
+def _uses_stl(cfg: dict, axes) -> bool:
+    return cfg.get("grn_shape") == "stl" or any(key == "grain_file" for key, _ in axes)
+
+
+class _CaseCurves(QObject):
+    """Simulates saved sweep cases again off the UI thread, as their STL grains can take a while to load."""
+    done = Signal(object, object)  # the case, and its curves or an error message
+
+    def start(self, result, cases):
+        def work():
+            for c in cases:
+                try:
+                    self.done.emit(c, run_case(result.cfg, c.values, c.model, result.throat_P).traces)
+                except Exception as exc:
+                    self.done.emit(c, str(exc) or type(exc).__name__)
+        Thread(target=work, daemon=True).start()
+
+
 class StudyWorker(QObject):
     case_done = Signal(object)
     failed = Signal(str)
@@ -351,6 +369,9 @@ class StudyPage(QWidget):
         self.axes[1].key.currentIndexChanged.connect(lambda *_: self._show_throat_option())
         self._motor_model = ""  # the motor's fuel model when the sweep last followed it
         self._axes_edited = False  # until then, the values follow the open motor
+        self._curves = _CaseCurves()
+        self._curves.done.connect(self._on_case_curves)
+        self._simulating: set[int] = set()  # ids of saved cases being simulated again for their curves
         self.size_throat = QCheckBox("Size the throat for each case")
         self.size_throat.setToolTip("Each case gets the throat and expansion ratio that the Motor tab would size for its\n"
                                     "chamber pressure target, instead of the motor's own nozzle.")
@@ -657,8 +678,9 @@ class StudyPage(QWidget):
                 return
             if result.total > 500:
                 raise ValueError(f"That is {result.total} simulations. Narrow the ranges to at most 500.")
-            for values in grid(axes):
-                case_cfg(cfg, values, models[0], throat_P)
+            if not _uses_stl(cfg, axes):  # sizing STL cases here would load their grains on the UI thread; the run checks them
+                for values in grid(axes):
+                    case_cfg(cfg, values, models[0], throat_P)
         except Exception as exc:
             self.status.setText(str(exc))
             return
@@ -901,13 +923,14 @@ class StudyPage(QWidget):
         key, quantity = self.trace.currentData()
         u = self._get_units()
         self.plot.setLabel("left", self.trace.currentText(), units=u.unit(quantity))
+        missing = [c for c in cases[:8] if not c.traces and id(c) not in self._simulating]
+        if missing:  # read from their file, which doesn't keep curves
+            self._simulating.update(id(c) for c in missing)
+            self._curves.start(self.result, missing)
+            self.status.setText("Simulating the selected cases again…")
         for i, c in enumerate(cases[:8]):
-            if not c.traces:  # read from its file, which doesn't keep curves
-                try:
-                    c.traces.update(run_case(self.result.cfg, c.values, c.model, self.result.throat_P).traces)
-                except Exception as exc:
-                    self.status.setText(f"Couldn't simulate {self._label(c)} again: {exc}")
-                    continue
+            if not c.traces:
+                continue
             values = np.array([u.value(v, quantity) for v in c.traces[key]])
             self.plot.plot(c.traces["t"], values, name=" / ".join(self._value_text(k, v) for k, v in c.values) + " · " + MODELS[c.model], pen=pg.mkPen(pg.intColor(i, hues=8), width=2))
         if len(cases) == 1:
@@ -950,6 +973,15 @@ class StudyPage(QWidget):
                        "overpredicts nitrous flow.")
         return why
 
+    def _on_case_curves(self, case, traces):
+        self._simulating.discard(id(case))
+        if isinstance(traces, str):
+            self.status.setText(f"Couldn't simulate {self._label(case)} again: {traces}")
+            return
+        case.traces.update(traces)
+        if any(c is case for c in self._selected()):
+            self._selection()
+
     def _open(self):
         selected = self._selected()
         if self.busy() or len(selected) != 1:
@@ -975,8 +1007,9 @@ class StudyPage(QWidget):
                 raise ValueError("A sweep can contain at most 500 cases.")
             check_axes(cfg, [k for k, _ in axes], models)
             throat_P = data.get("throat_P")
-            for values in grid(axes):
-                case_cfg(cfg, values, models[0], throat_P)
+            if not _uses_stl(cfg, axes):
+                for values in grid(axes):
+                    case_cfg(cfg, values, models[0], throat_P)
             self._base_override = cfg
             self.size_throat.setChecked(bool(throat_P))
             for axis in self.axes:

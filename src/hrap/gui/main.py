@@ -1321,9 +1321,15 @@ class MainWindow(QMainWindow):
         if self._thread is not None:
             return
         if run.output is None:
-            def show():
-                if self._wanted_run is run:  # not another run clicked meanwhile
+            motor, cfg = self._shown, self._form_to_cfg()
+
+            def show():  # never over newer edits, another motor, or another run clicked meanwhile
+                if self._wanted_run is not run:
+                    return
+                if self._shown is motor and _same_cfg(self._form_to_cfg(), cfg):
                     self._load_run(run)
+                else:
+                    self.statusBar().showMessage(f"{run.label} is simulated again. Click it to show it.")
             self._with_curves(run, show)
             return
         # Its motor: the one whose runs folder it's in. Motors without a file share one, so their runs go by name.
@@ -1655,6 +1661,7 @@ class MainWindow(QMainWindow):
         motor = self.motor_tabs.tabData(index) if index >= 0 else None
         if motor is None or motor is self._shown:
             return
+        self._wanted_run = None  # a run clicked on the last motor doesn't load into this one
         if self._shown is not None:
             self._stash()
         self._shown = None  # loading the pages mustn't mark anything edited
