@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from hrap.gui.viz import DARK_VIZ, LIGHT_VIZ
@@ -177,10 +178,23 @@ class InjectorSketch(Sketch):
 
 
 class GrainSketch(Sketch):
-    """Grain cross-section: the starting port, and the port when the liquid runs out as a dashed circle."""
+    """Grain cross-section: the starting port, and the port when the liquid runs out as a dashed circle.
+    An STL grain shows its own cross-section instead."""
 
-    def draw(self, p: QPainter, r: QRectF, od: float, port: float, port_end: float):
+    def draw(self, p: QPainter, r: QRectF, od: float, port: float, port_end: float,
+             section: np.ndarray | None = None, section_width: float = 0.0):
         c, px = r.center(), min(r.width(), r.height()) / od
+        if section is not None:  # 0 outside the grain, 1 fuel, 2 port
+            h, w = section.shape
+            image = QImage(section.data, w, h, w, QImage.Format.Format_Indexed8)
+            image.setColorTable([0, self.color("grain").rgba(), self.color("port").rgba()])
+            side = section_width * px
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.drawImage(QRectF(c.x() - side / 2, c.y() - side / 2, side, side), image)
+            p.setPen(QPen(self.color("outline"), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            _circle(p, c, od * px)
+            return
         p.setPen(QPen(self.color("outline"), 1.0))
         p.setBrush(self.color("grain"))
         _circle(p, c, od * px)

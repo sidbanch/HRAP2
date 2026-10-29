@@ -55,12 +55,13 @@ from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
+from hrap.gui.grain_view import GrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
-from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
+from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, UnitRow
 from hrap.io.config import (
     bundled_motor,
     chamber_limit,
@@ -178,13 +179,14 @@ _SETTING_NAMES = {
     "tnk_cond": "tank temp", "fill": "fill", "tnk_V": "tank volume", "noz_thrt": "throat", "noz_ex": "expansion ratio",
     "inj_D": "injector bore", "inj_N": "injectors", "grn_L": "grain length", "grn_ID": "starting port",
     "grn_OD": "grain OD", "prop_a": "burn rate a", "prop_n": "burn rate n", "cstar_eff": "C* eff", "const_OF": "O/F",
-    "reg_model": "fuel flow", "inj_model": "flow model", "grain_shape": "grain shape", "star_tips": "star tips",
+    "reg_model": "fuel flow", "inj_model": "flow model", "grn_shape": "grain shape", "grn_stl": "STL",
+    "grn_stl_voxel": "voxel size", "grn_ends_burn": "ends burn",
     "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
     "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
     "sw_cd_from_geometry": "Cd from geometry", "ptc_stock": "stock PTC", "ox_fluid": "oxidizer fluid",
     "enabled": "advanced options", "live_chem": "live chemistry", "dt": "timestep", "t_max": "max run time",
 }
-_SETTING_UNITS = {"tnk_cond": "T_tnk_unit"}  # where a setting's unit lives, when not at "<key>_unit"
+_SETTING_UNITS = {"tnk_cond": "T_tnk_unit", "grn_stl_voxel": "grn_stl_unit"}  # where a setting's unit lives, when not at "<key>_unit"
 
 # Settings that follow from other settings, so a run's "what changed" leaves them out.
 _DERIVED_KEYS = {"tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
@@ -211,11 +213,13 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
         if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
             D = to_si(float(b["inj_D"]), b.get("inj_D_unit") or "in", "length")
             changes.append(f"CdA {from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²")
+        elif key == "grn_stl":  # the file's name, not its whole path
+            changes.append(f"{name} {Path(v).name}")
         elif isinstance(v, float):
             unit = "%" if key == "fill" else str(b.get(_SETTING_UNITS.get(key, f"{key}_unit")) or "")
             changes.append(f"{name} {v:.4g}{' ' + unit if unit else ''}")
         else:
-            changes.append(f"{name} {v}")
+            changes.append(f"{name} {'auto' if v is None else v}")
     return changes
 
 
@@ -384,6 +388,9 @@ class MainWindow(QMainWindow):
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
         self.sizing_page.applied.connect(self._on_applied)
+        self.sizing_page.grain_changed.connect(self._sync_grain_view)
+        self.sizing_page.show_grain.connect(lambda: self.tabs.setCurrentWidget(self.grain_view))
+        self.grain_view = GrainView(lambda: self.display_units, lambda: self.sizing_page.rho.si("density"))
         self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_unsaved,
                                     lambda: self._runs_dir(self._shown), self.sizing_page.unapplied, self._save_output)
         self.study_page.started.connect(self._sync_busy)
@@ -394,7 +401,10 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.addTab(self.sizing_page, "Motor")
+        self.tabs.addTab(self.grain_view, "Grain")
+        self.tabs.setTabVisible(self.tabs.indexOf(self.grain_view), False)
         self.tabs.addTab(splitter, "Simulation")
+        self._sim_page = splitter
         self.tabs.addTab(self.study_page, "Sweep")
         self.tabs.addTab(self.mass_page, "Mass && export")
         self.tabs.setCurrentWidget(splitter)
@@ -513,20 +523,11 @@ class MainWindow(QMainWindow):
         self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
         self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
                                  "HEM and Dyer always use CoolProp.")
-        self.grain_shape = PlainComboBox()
-        self.grain_shape.addItems(["cylindrical", "star"])
-        self.star_tips = PlainSpinBox()
-        self.star_tips.setRange(3, 16)
-        self.star_tips.setValue(6)
         af.addRow(self.solve_tank_cooling)
         af.addRow(self.adv_on)
         af.addRow(self.live_chem)
         af.addRow("Oxidizer fluid", self.ox_fluid)
-        af.addRow("Grain shape", self.grain_shape)
-        af.addRow("Star tips", self.star_tips)
-        self.grain_shape.currentTextChanged.connect(lambda shape: af.setRowVisible(self.star_tips, shape == "star"))
         self.adv_on.toggled.connect(self._sync_advanced)
-        af.setRowVisible(self.star_tips, False)
         root.addWidget(adv)
 
         # Runs: every finished simulation, to draw under the current one
@@ -714,8 +715,6 @@ class MainWindow(QMainWindow):
             "advanced": {
                 "enabled": self.adv_on.isChecked(),
                 "ox_fluid": self.ox_fluid.currentText(),
-                "grain_shape": self.grain_shape.currentText(),
-                "star_tips": self.star_tips.value(),
                 "live_chem": self.live_chem.isChecked(),
             },
             "export_OD": self.dry_OD.si("length"),
@@ -732,7 +731,7 @@ class MainWindow(QMainWindow):
         self._legacy_mtr_m_unit = str(cfg.get("mtr_m_unit") or "kg")
         self._legacy_mtr_cg = float(cfg.get("mtr_cg") or 0.0)
         self._legacy_mtr_cg_unit = str(cfg.get("mtr_cg_unit") or "in")
-        lay = resolve_layout(cfg)
+        lay = resolve_layout({**cfg, "grn_shape": "round"})  # only the tank and chamber positions, which the grain doesn't move
         self.tnk_start.set_display(from_si(lay.tnk0, cfg.get("tnk_start_unit") or "in", "length"), cfg.get("tnk_start_unit") or "in")
         self.cmbr_start.set_display(from_si(lay.cmbr0, cfg.get("cmbr_start_unit") or "in", "length"), cfg.get("cmbr_start_unit") or "in")
         self.tnk_m.set_display(cfg.get("tnk_m", 0), cfg.get("tnk_m_unit", "kg"))
@@ -748,10 +747,6 @@ class MainWindow(QMainWindow):
         self._sync_advanced()
         if adv.get("ox_fluid"):
             self.ox_fluid.setCurrentText(str(adv["ox_fluid"]))
-        if adv.get("grain_shape"):
-            self.grain_shape.setCurrentText(str(adv["grain_shape"]))
-        if adv.get("star_tips"):
-            self.star_tips.setValue(int(adv["star_tips"]))
         self.live_chem.setChecked(bool(adv.get("live_chem")))
         self.sizing_page.load_motor(cfg)
         self.sizing_page.set_targets(cfg.get("sizing") or {}, cfg)
@@ -779,9 +774,15 @@ class MainWindow(QMainWindow):
         self.unapplied_text.setText("Not applied: " + ", ".join(changes) + ".")
         self.unapplied.setVisible(bool(changes))
 
+    def _sync_grain_view(self):
+        """The Grain tab shows while the grain comes from an STL."""
+        sp = self.sizing_page
+        self.tabs.setTabVisible(self.tabs.indexOf(self.grain_view), sp.grain_shape.currentData() == "stl")
+        self.grain_view.set_grain(sp.grain_geom, sp.grain_message(), busy=sp.grain_loading())
+
     def _on_applied(self):
         self.statusBar().showMessage("Applied to motor.")
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self._sim_page)
 
     def _connect_derived(self):
         for row in (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m, self.P_cmbr):
@@ -1018,7 +1019,7 @@ class MainWindow(QMainWindow):
     def _sync_advanced(self, *_):
         """The advanced options only apply with Enable advanced options ticked, so grey them out otherwise."""
         on = self.adv_on.isChecked()
-        controls = (self.live_chem, self.ox_fluid, self.grain_shape, self.star_tips)
+        controls = (self.live_chem, self.ox_fluid)
         tips = self.__dict__.setdefault("_advanced_tips", {w: w.toolTip() for w in controls})
         for w in controls:
             w.setEnabled(on)
@@ -1044,6 +1045,7 @@ class MainWindow(QMainWindow):
         self.summary.clear()
         self._clear_plot()
         self._refresh_viz()
+        self.grain_view.set_run(None)
         self._sync_run_button()
         self.statusBar().showMessage("Inputs changed, run again to update.")
 
@@ -1306,6 +1308,7 @@ class MainWindow(QMainWindow):
         self.summary.setPlainText(format_summary(info, self.display_units))
         self._refresh_plot()
         self._refresh_viz()
+        self.grain_view.set_run(o)
         u = self.display_units
         peak, limit = float(np.max(o.P_cmbr)), chamber_limit(cast(dict, self._result_cfg))
         over = peak > limit
@@ -1527,6 +1530,7 @@ class MainWindow(QMainWindow):
             self.summary.clear()
             self._clear_plot()
             self._refresh_viz()
+            self.grain_view.set_run(None)
         self._sync_run_button()
         self._update_tab_marker()
 
@@ -1535,7 +1539,7 @@ class MainWindow(QMainWindow):
         self._add_motor(cfg, title=cfg["mtr_nm"])
         self._shown.saved = None
         self._update_tab_marker()
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self._sim_page)
 
     def _stash(self):
         """Keep the shown motor's settings and last run, so switching back brings them back."""
@@ -1753,7 +1757,7 @@ class MainWindow(QMainWindow):
             i = min(int(data.get("current", 0)), self.motor_tabs.count() - 1)
             self.motor_tabs.setCurrentIndex(i)
             self._on_motor_tab(i)
-        if 0 <= int(data.get("page", -1)) < self.tabs.count():
+        if 0 <= int(data.get("page", -1)) < self.tabs.count() and self.tabs.isTabVisible(int(data["page"])):
             self.tabs.setCurrentIndex(int(data["page"]))
         if data.get("geometry"):
             self.restoreGeometry(QByteArray.fromBase64(data["geometry"].encode()))
@@ -1825,6 +1829,7 @@ class MainWindow(QMainWindow):
         self._update_derived_labels()
         self.sizing_page.refresh()
         self.study_page.refresh()
+        self.grain_view.refresh()
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
             self.summary.setPlainText(format_summary(info, units))
@@ -1838,6 +1843,7 @@ class MainWindow(QMainWindow):
             self.motor_panel.set_theme(name)
         if hasattr(self, "sizing_page"):
             self.sizing_page.set_theme(name)
+            self.grain_view.set_theme(name)
 
     def _about(self):
         QMessageBox.about(

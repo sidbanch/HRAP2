@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import math
+import threading
+from pathlib import Path
 from typing import Callable, cast
 
-from PySide6.QtCore import Qt, Signal
+import numpy as np
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -15,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -107,6 +112,32 @@ class FieldGrid(QGridLayout):
         self.addWidget(widget, self._rows, 1, 1, 2, Qt.AlignmentFlag.AlignLeft)
         self._rows += 1
 
+    def add_line(self, widget: QWidget):
+        """A line across the whole grid."""
+        self.addWidget(widget, self._rows, 0, 1, 3)
+        self._rows += 1
+
+
+class GrainLoader(QObject):
+    """Reads a grain STL off the UI thread; it takes from seconds to a minute."""
+    done = Signal(object, object)  # the request it answers, and its GrainGeometry or an error message
+
+    def load(self, request: tuple):
+        def work():
+            try:
+                from hrap.engine.grain_stl import load_grain_stl
+                path, units, voxel, ends_burn = request
+                self.done.emit(request, load_grain_stl(path, units=units, voxel=voxel, ends_burn=ends_burn))
+            except Exception as exc:
+                self.done.emit(request, str(exc) or type(exc).__name__)
+        threading.Thread(target=work, daemon=True).start()
+
+
+def mid_section(geom) -> np.ndarray:
+    """The grain's cross-section halfway along: 0 outside it, 1 fuel, 2 port."""
+    d = geom.distance[:, :, geom.distance.shape[2] // 2].T
+    return np.ascontiguousarray(np.where(np.isinf(d), 0, np.where(d > 0, 1, 2)), dtype=np.uint8)
+
 
 class Card(QFrame):
     """A titled block of label / value rows."""
@@ -187,6 +218,8 @@ class SizingPage(QWidget):
     motor_edited = Signal()  # a motor setting on this page changed
     sized = Signal()  # the sizing was worked out again, so what Apply to motor would change may differ
     applied = Signal()
+    grain_changed = Signal()  # the STL grain started loading, loaded, failed or was dropped
+    show_grain = Signal()  # View in 3D was clicked
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits]):
         super().__init__()
@@ -198,6 +231,12 @@ class SizingPage(QWidget):
         self._port_error = ""
         self._loading = False
         self._swirler = False
+        self.grain_geom = None  # the loaded STL grain (GrainGeometry)
+        self._grain_request: tuple | None = None  # what grain_geom is, or is loading, for
+        self._grain_error = ""
+        self._section: np.ndarray | None = None
+        self._grain_loader = GrainLoader()
+        self._grain_loader.done.connect(self._on_grain_loaded)
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.burn_time = PlainDoubleSpinBox()
@@ -445,15 +484,52 @@ class SizingPage(QWidget):
         self.pre_L.setToolTip("Empty space between the injector plate and the front of the grain.\n"
                               "The chamber's gas volume sets how fast its pressure builds at ignition.")
         self.post_L.setToolTip("Empty space between the back of the grain and the nozzle.")
+        self.grain_shape = PlainComboBox()
+        self.grain_shape.addItem("Round", "round")
+        self.grain_shape.addItem("From STL", "stl")
+        self.grain_shape.setToolTip("Round: a straight round port, from the sizes below.\n"
+                                    "From STL: any port shape, from a 3D model of the fuel. It burns back evenly from the\n"
+                                    "port's whole surface at the burn-rate law's rate.")
+        self._stl_path = ""
+        self.stl_file = QLabel("")
+        self.stl_file.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # long names don't widen the card
+        load_stl = QPushButton("Load STL…")
+        load_stl.setToolTip("A closed (watertight) model of the fuel, with the grain's axis along the STL's X, Y or Z axis.")
+        load_stl.clicked.connect(self._pick_stl)
+        self.stl_unit = PlainComboBox()
+        self.stl_unit.addItems(["in", "mm"])
+        self.stl_unit.setToolTip("The unit the STL's numbers are in. STL files don't say, so check the CAD export.")
+        self.stl_voxel = PlainDoubleSpinBox()
+        self.stl_voxel.setDecimals(3)
+        self.stl_voxel.setRange(0, 10)
+        self.stl_voxel.setSpecialValueText("Auto")
+        self.stl_voxel.setKeyboardTracking(False)  # each change loads the grain again
+        self.stl_voxel.setToolTip("Size of the cubes the grain is split into to work out how it burns back. Auto uses about\n"
+                                  "24 million cubes, none under 0.5 mm. Half the size is 8 times the cubes and slower to load.")
+        self.ends_burn = QCheckBox("Ends burn")
+        self.ends_burn.setToolTip("The grain also burns back from its two end faces. Leave it off for inhibited or bonded ends.")
+        self.stl_status = QLabel("")
+        self.stl_status.setObjectName("cardLabel")
+        self.stl_status.setWordWrap(True)
+        self._show_3d = QPushButton("View in 3D")
+        self._show_3d.clicked.connect(self.show_grain)
         grain_form = FieldGrid()
-        grain_form.add("Sizing", self.grain_from)
+        grain_form.add("Shape", self.grain_shape)
+        self._stl_rows = [*grain_form.add("STL file", _beside(self.stl_file, load_stl), span=True),
+                          *grain_form.add("STL units", self.stl_unit)]
+        voxel_row = grain_form.add("Voxel size", self.stl_voxel, "in")
+        self._voxel_unit = voxel_row[2]
+        status = _beside(self.stl_status, self._show_3d)
+        self._stl_rows += [*voxel_row, *grain_form.add("", self.ends_burn), status]
+        grain_form.add_line(status)
+        self._grain_from_row = grain_form.add("Sizing", self.grain_from)
         self._grain_L_row = grain_form.add("Grain length", self.grain_L)
         grain_form.add("Starting port", self.port_D)
         grain_form.add("Outer diameter", self.grain_OD)
         grain_form.add("Pre-combustion", self.pre_L)
         grain_form.add("Post-combustion", self.post_L)
-        self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Grain length", "O/F", "Port at liquid burnout",
-                                    "O/F at liquid burnout", "Fuel burned"], GrainSketch(), grain_form)
+        self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Burning area", "Grain length", "O/F",
+                                    "Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"], GrainSketch(), grain_form)
         self.performance = Card("Start of burn", ["Thrust", "Isp", "Impulse over the burn time"])
 
         self.limit_warning = QLabel("")
@@ -534,9 +610,10 @@ class SizingPage(QWidget):
         for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.sw_xi,
                      self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
-        for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model):
+        self.stl_voxel.valueChanged.connect(self._on_motor_edited)
+        for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model, self.grain_shape, self.stl_unit):
             combo.currentIndexChanged.connect(self._on_motor_edited)
-        for box in (self.sw_cd_geom, self.hem_same):
+        for box in (self.sw_cd_geom, self.hem_same, self.ends_burn):
             box.toggled.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
         self.grain_from.currentIndexChanged.connect(self._on_size_from)
@@ -593,8 +670,17 @@ class SizingPage(QWidget):
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
         for w in self._grain_L_row:
             w.setVisible(self._by_length())
-        self.grain.show_row("Grain length", not self._by_length())
-        self.grain.show_row("O/F", self._by_length())
+        # The fuel flow here is worked out for a round port, so an STL grain's comes from a simulation run.
+        stl = self._stl()
+        for w in self._stl_rows:
+            w.setVisible(stl)
+        for w in self._grain_from_row:
+            w.setVisible(not stl)
+        for name in ("Fuel flow", "Port at liquid burnout", "O/F at liquid burnout", "Fuel burned"):
+            self.grain.show_row(name, not stl)
+        self.grain.show_row("Burning area", stl)
+        self.grain.show_row("Grain length", not self._by_length() and not stl)
+        self.grain.show_row("O/F", self._by_length() and not stl)
         fixed = self._fixed_nozzle()
         for w in self._P_cmbr_row:
             w.setVisible(not fixed)
@@ -690,17 +776,96 @@ class SizingPage(QWidget):
             self.inj_Cd_HEM.blockSignals(False)
         for w in self._vent_rows:
             w.setVisible(self.vent.currentText() != "None")
+        stl = self._stl()
+        fixed_item = cast(QStandardItemModel, self.reg_model.model()).item(1)
+        fixed_item.setEnabled(not stl)
+        fixed_item.setToolTip("An STL grain burns back by the burn-rate law." if stl else "")
+        if stl and self._fixed_OF():
+            self.reg_model.setCurrentIndex(0)
         fixed = self._fixed_OF()
         for w in self._burn_rate_rows:
             w.setVisible(not fixed)
         for w in self._const_OF_row:
             w.setVisible(fixed)
         # With a fixed O/F, neither the flow nor the grain length changes the O/F, so neither can be sized for one.
+        # An STL grain has its own length, and its fuel flow comes from a simulation run.
         for combo, index in ((self.size_from, 2), (self.grain_from, 1)):
-            cast(QStandardItemModel, combo.model()).item(index).setEnabled(not fixed)
-            if fixed and combo.currentIndex() == index:
+            cast(QStandardItemModel, combo.model()).item(index).setEnabled(not fixed and not stl)
+            if (fixed or stl) and combo.currentIndex() == index:
                 combo.setCurrentIndex(0)
+        for row in (self.grain_L, self.port_D, self.grain_OD):
+            row.setEnabled(not stl)
+        self.grain_L.setToolTip("From the STL." if stl else "Grain length. The fuel flow and starting O/F follow from it.")
+        self.grain_OD.setToolTip("From the STL. It's also the chamber bore in the drawings." if stl else
+                                 "Grain outer diameter. It's also the chamber bore in the drawings.")
+        self.port_D.setToolTip("The round port with the same area as the STL's starting port, averaged along the grain\n"
+                               "(its volume ÷ length). The drawings use it." if stl else "Starting port diameter.")
+        self._voxel_unit.setText(self.stl_unit.currentText())
+        self._sync_grain()
         self._show_size_from_rows()
+
+    def _stl(self) -> bool:
+        return self.grain_shape.currentData() == "stl"
+
+    def _pick_stl(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load grain STL", str(Path(self._stl_path).parent) if self._stl_path else "",
+                                              "STL (*.stl)")
+        if path:
+            self._stl_path = str(Path(path).resolve())
+            self._on_motor_edited()
+
+    def _sync_grain(self):
+        """Load the STL grain when its file or settings change, off the UI thread since it takes a while."""
+        request = (self._stl_path, self.stl_unit.currentText(), self.stl_voxel.value() or None,
+                   self.ends_burn.isChecked()) if self._stl() and self._stl_path else None
+        if request == self._grain_request:
+            return
+        self._grain_request, self.grain_geom, self._section, self._grain_error = request, None, None, ""
+        if request is not None:
+            if Path(request[0]).is_file():
+                self._grain_loader.load(request)
+            else:
+                self._grain_error = f"Can't find {request[0]}."
+        self._show_grain_status()
+        self.grain_changed.emit()
+
+    def _on_grain_loaded(self, request: tuple, result):
+        if request != self._grain_request:
+            return  # the STL or its settings changed while it loaded
+        if isinstance(result, str):
+            self._grain_error = f"Couldn't load {Path(request[0]).name}: {result}"
+        else:
+            self.grain_geom, self._section = result, mid_section(result)
+        changed = False
+        if self.grain_geom is not None:  # the round sizes become the STL's, for the drawings, layout and sizing
+            for row, value in ((self.grain_L, result.length), (self.grain_OD, result.outer_diameter),
+                               (self.port_D, 2 * math.sqrt(result.port_area[0] / math.pi))):
+                shown = row.spin.value()
+                row.set_si(value, "length")
+                changed |= row.spin.value() != shown
+        self._show_grain_status()
+        self.grain_changed.emit()
+        if changed:
+            self._on_motor_edited()
+        else:
+            self.refresh()
+
+    def grain_message(self) -> str:
+        """What's in the way of showing the STL grain, if anything."""
+        if not self._stl_path:
+            return "Load the fuel's STL file on the Grain card."
+        if self._grain_error:
+            return self._grain_error
+        return f"Loading {Path(self._stl_path).name}… A fine grid can take a minute." if self.grain_geom is None else ""
+
+    def grain_loading(self) -> bool:
+        return self._grain_request is not None and self.grain_geom is None and not self._grain_error
+
+    def _show_grain_status(self):
+        self.stl_file.setText(Path(self._stl_path).name or "none")
+        self.stl_file.setToolTip(self._stl_path)
+        self.stl_status.setText(self.grain_message() or "The fuel flow and O/F of an STL grain come from a simulation run.")
+        self._show_3d.setVisible(self.grain_geom is not None)
 
     def _on_propellant(self):
         """Fill in the propellant's own density and burn rate."""
@@ -775,6 +940,11 @@ class SizingPage(QWidget):
             self.inj_Cd_HEM.setValue(hem_cd)
         self.dyer_kappa.setValue(float(cfg.get("dyer_kappa") or 1.0))
 
+        self.grain_shape.setCurrentIndex(max(self.grain_shape.findData(cfg.get("grn_shape") or "round"), 0))
+        self._stl_path = str(cfg.get("grn_stl") or "")
+        self.stl_unit.setCurrentText(str(cfg.get("grn_stl_unit") or "in"))
+        self.stl_voxel.setValue(float(cfg.get("grn_stl_voxel") or 0.0))
+        self.ends_burn.setChecked(bool(cfg.get("grn_ends_burn")))
         for row, name in ((self.port_D, "grn_ID"), (self.grain_OD, "grn_OD"), (self.grain_L, "grn_L"),
                           (self.pre_L, "cmbr_pre_L"), (self.post_L, "cmbr_post_L")):
             show(row, name)
@@ -820,6 +990,8 @@ class SizingPage(QWidget):
             "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
             **field("P_cmbr_max", self.P_limit),
+            "grn_shape": self.grain_shape.currentData(), "grn_stl": self._stl_path, "grn_stl_unit": self.stl_unit.currentText(),
+            "grn_stl_voxel": self.stl_voxel.value() or None, "grn_ends_burn": self.ends_burn.isChecked(),
             **field("grn_ID", self.port_D), **field("grn_OD", self.grain_OD), **field("grn_L", self.grain_L),
             **field("cmbr_pre_L", self.pre_L), **field("cmbr_post_L", self.post_L), "cmbr_V_state": 1,
             **field("noz_thrt", self.throat_D), "noz_def": "Nozzle Expansion Ratio", "noz_ex": self.noz_ER.value(),
@@ -857,6 +1029,8 @@ class SizingPage(QWidget):
         limit = chamber_limit(cfg)
         self.limit_warning.hide()
         try:
+            if self._stl() and self.grain_geom is None:  # sizing would load it here, holding up the UI
+                raise ValueError(self.grain_message())
             z = size_motor(cfg, self.targets())
         except Exception as exc:  # the motor form can hold any combination; show why sizing can't run
             self._result = self._cfg = None
@@ -981,8 +1155,15 @@ class SizingPage(QWidget):
             self.injector.sketch.show_data({"bore": bore, "hole": self._hole_D(cfg), "holes": holes,
                                             "caption": f"{holes} × {hole} holes"})
         end = f" → {from_si(z.port_D_end, u.length, 'length'):.3g}" if math.isfinite(z.port_D_end) else ""
-        self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end,
-                                     "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}"})
+        g = self.grain_geom
+        if self._stl() and g is not None:
+            self.grain.sketch.show_data({"od": g.outer_diameter, "port": t.port_D, "port_end": math.nan,
+                                         "section": self._section, "section_width": g.distance.shape[0] * g.spacing,
+                                         "caption": "halfway along the grain"})
+            self.grain.set("Burning area", u.text(float(g.burn_area[0]), "area"), "The starting port's surface, from the STL.")
+        else:
+            self.grain.sketch.show_data({"od": bore, "port": t.port_D, "port_end": z.port_D_end,
+                                         "caption": f"port {from_si(t.port_D, u.length, 'length'):.3g}{end} {u.length}"})
 
         self._show_throat()
         self.nozzle.set("Expansion ratio", f"{z.ER:.2f}",
