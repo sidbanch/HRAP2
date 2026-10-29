@@ -440,6 +440,9 @@ class MainWindow(QMainWindow):
         self.sizing_page.grain_changed.connect(self._sync_grain_view)
         self.sizing_page.show_grain.connect(lambda: self.tabs.setCurrentWidget(self.grain_view))
         self.sizing_page.grain_progress.connect(self._show_grain_progress)
+        self._load_learned_timing()
+        self.sizing_page.load_timing_learned.connect(lambda: self._prefs.setValue(
+            "grainLoadTimeShares", ",".join(str(x) for x in self.sizing_page.load_time_shares)))
         self.grain_view = GrainView(lambda: self.display_units, lambda: self.sizing_page.rho.si("density"))
         self.grain_view.cancel_load.connect(self.sizing_page.stop_grain_load)
         self.grain_view.message_action.connect(self._on_grain_message_action)
@@ -844,6 +847,15 @@ class MainWindow(QMainWindow):
             if self._grain_was_loading or sp.grain_failed():
                 self.statusBar().showMessage(sp.grain_message())
         self._grain_was_loading = sp.grain_loading_shown()
+
+    def _load_learned_timing(self):
+        """How the last cold STL loads' time was spread over their steps, for the time left on the next."""
+        try:
+            shares = tuple(float(x) for x in str(self._prefs.value("grainLoadTimeShares") or "").split(","))
+        except ValueError:
+            return
+        if len(shares) == len(self.sizing_page.load_time_shares) and list(shares) == sorted(shares):
+            self.sizing_page.load_time_shares = shares
 
     def _on_grain_message_action(self):
         if self.sizing_page.grain_stopped():

@@ -188,8 +188,8 @@ class GrainLoader(QObject):
 
 
 STOPPED = "Loading stopped."
-# Share of a load's time against the engine's own progress fraction, measured on cold loads of a 20 in twisted grain:
-# filling the cubes and measuring burn distances take nearly all of it.
+# Share of a load's time against the engine's own progress fraction, to start from: measured on cold loads of a 20 in
+# twisted grain, where filling the cubes and measuring burn distances take nearly all of it. Each cold load updates it.
 LOAD_PROGRESS = (0.0, 0.04, 0.22, 0.28, 0.78, 0.88, 1.0)
 LOAD_TIME = (0.0, 0.04, 0.48, 0.48, 0.88, 0.95, 1.0)
 
@@ -301,6 +301,7 @@ class SizingPage(QWidget):
     applied = Signal()
     grain_changed = Signal()  # the STL grain is loading (and on screen), loaded, failed, stopped or dropped
     grain_progress = Signal()  # loading went on
+    load_timing_learned = Signal()  # load_time_shares changed after a cold load
     show_grain = Signal()  # View in 3D was clicked
 
     def __init__(self, get_cfg: Callable[[], dict], get_units: Callable[[], DisplayUnits]):
@@ -319,6 +320,8 @@ class SizingPage(QWidget):
         self.grain_mesh: tuple | None = None  # the STL's shape (vertices, faces), shown while its burn-back loads
         self._grain_stage = ("", 0.0)  # loading: the step it's on, and the share of the whole load done
         self._grain_started = self._grain_took = 0.0
+        self._load_samples: list[tuple[float, float]] = []  # (engine progress, seconds) through this load
+        self.load_time_shares = LOAD_TIME  # share of a load's time at each of LOAD_PROGRESS
         self._grain_shown = False  # loading is on screen; a grain in the cache loads too fast to show it
         self._show_loading = QTimer(self, singleShot=True, interval=250)
         self._show_loading.timeout.connect(self._on_slow_load)
@@ -943,7 +946,7 @@ class SizingPage(QWidget):
             self._grain_loader.stop()
             self._grain_error = f"Can't find {request[0]}. If it moved, load it again with Load STL…"
         else:
-            self._grain_started = time.monotonic()
+            self._grain_started, self._load_samples = time.monotonic(), []
             self._grain_loader.load(request)
             self._show_loading.start()
         self._show_grain_status()
@@ -969,6 +972,7 @@ class SizingPage(QWidget):
     def _on_grain_progress(self, request: tuple, stage: str, fraction: float):
         if request == self._grain_request and self.grain_geom is None:
             self._grain_stage = (stage, fraction)
+            self._load_samples.append((fraction, time.monotonic() - self._grain_started))
             if self._grain_shown:
                 self._show_grain_status()
                 self.grain_progress.emit()
@@ -991,6 +995,7 @@ class SizingPage(QWidget):
             self._grain_error = plain_load_error(Path(request[0]).name, result)
         else:
             self.grain_geom, self._section, self.grain_mesh = result, mid_section(result), None
+            self._learn_load_timing()
         changed = False
         if self.grain_geom is not None:  # the round sizes become the STL's, for the drawings, layout and sizing
             for row, value in ((self.grain_L, result.length), (self.grain_OD, result.outer_diameter),
@@ -1005,6 +1010,18 @@ class SizingPage(QWidget):
             self._on_motor_edited()
         else:
             self.refresh()
+
+    def _learn_load_timing(self):
+        """Share the next loads' time out more like this one's, as the steps' speeds change with the engine and computer."""
+        samples = self._load_samples
+        if self._grain_took < 2 or len(samples) < 10 or samples[-1][0] < 0.9:
+            return  # from the cache, or too little to go on
+        progress, seconds = np.array(samples).T
+        measured = np.maximum.accumulate(np.interp(LOAD_PROGRESS, progress, seconds) / self._grain_took)
+        shares = 0.5 * np.array(self.load_time_shares) + 0.5 * np.clip(measured, 0, 1)
+        shares[0], shares[-1] = 0.0, 1.0
+        self.load_time_shares = tuple(round(float(x), 4) for x in shares)
+        self.load_timing_learned.emit()
 
     def _on_grain_action(self):
         if self.grain_loading():
@@ -1053,7 +1070,7 @@ class SizingPage(QWidget):
 
     def grain_fraction(self) -> float:
         """How far through the load, by time, as the engine's steps take very different shares of it."""
-        return float(np.interp(self._grain_stage[1], LOAD_PROGRESS, LOAD_TIME))
+        return float(np.interp(self._grain_stage[1], LOAD_PROGRESS, self.load_time_shares))
 
     def grain_tables(self):
         """The loaded STL grain's burn-back tables, so the engine needn't load it again; None for a round grain."""
