@@ -84,6 +84,8 @@ def test_quitting_keeps_unsaved_edits_for_next_time(window, tmp_path):
         assert all(again._edited(m) for m in motors)
         assert motors[0].path == first.path and motors[1].path == ""
         assert again.tabs.currentIndex() == 2
+        assert [r.name for r in again.study_page.runs] == []  # the second motor's sweeps: each motor lists its own
+        again.motor_tabs.setCurrentIndex(0)
         assert [r.name for r in again.study_page.runs] == ["Named run"]
     finally:
         again._session_timer.stop()
@@ -238,7 +240,7 @@ def test_study_snapshot_units_history_and_open_case(window, tmp_path, monkeypatc
     actual, _ = resolve(window._form_to_cfg())
     assert actual.grn_L == pytest.approx(expected.grn_L)
     assert actual.regression_model == expected.regression_model
-    assert page.result is result
+    assert page.result is None  # the case opened as a new motor, which has no sweeps yet
     assert window._edited(window._shown)
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (path, ""))
     page._load()

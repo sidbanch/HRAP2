@@ -499,7 +499,7 @@ class StudyPage(QWidget):
         self.history.setMinimumHeight(90)
         self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.history.setToolTip("Every sweep is kept in a runs folder beside the motor's file.\n"
+        self.history.setToolTip("This motor's sweeps, kept in a runs folder beside its file.\n"
                                 "Double-click a run to rename it, or right-click to rename or delete it.")
         self.history.currentRowChanged.connect(self._show_run)
         self.history.itemChanged.connect(self._renamed)
@@ -825,11 +825,12 @@ class StudyPage(QWidget):
             self.history.setCurrentRow(min(row, len(self.runs) - 1))
             self._show_run(self.history.currentRow())
 
-    def sync_runs(self, folders: list[Path]):
-        """List the sweeps saved in these folders, keeping the ones already listed and the shown one where it can."""
+    def sync_runs(self, folder: Path, name: str | None):
+        """List the motor's sweeps: the ones saved in its runs folder, with its name too when it has no file (those
+        share the app's folder). Keeps the ones already listed, and the shown one where it can."""
         listed = {r.file: r for r in self.runs if r.file is not None}
-        runs = (listed.get(p) or StudyRun.read(p) for p in run_files(folders, "sweep"))
-        runs = sorted((r for r in runs if r is not None), key=lambda r: r.time)
+        runs = (listed.get(p) or StudyRun.read(p) for p in run_files([folder], "sweep"))
+        runs = sorted((r for r in runs if r is not None and name in (None, r.cfg.get("mtr_nm"))), key=lambda r: r.time)
         if self.busy():
             runs.append(self.result)  # saved when it finishes
         self.runs = runs

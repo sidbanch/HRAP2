@@ -183,27 +183,28 @@ class GrainScene(QObject):
 
     def set_grain(self, geom):
         """Show a loaded grain, not burned yet."""
-        self._make_view()
         self._geom, self._shown, self._detailed = geom, None, None
-        self._fuel.setColor(self.colors["fuel"])
-        self._burned.hide()  # until its first surface is worked out
-        self._set_mesh(self._fuel, *_mesh_arrays(geom.mesh_vertices, geom.mesh_faces))
-        self._frame(geom.length, geom.outer_diameter)
+        self._show_fuel(geom.mesh_vertices, geom.mesh_faces, geom.length, geom.outer_diameter)
         self.burn_to(self._holder, 0.0)
 
     def set_shape(self, vertices: np.ndarray, faces: np.ndarray, length: float, diameter: float):
         """A grain still loading: just its shape."""
-        self._make_view()
         self._geom = None
-        self._burned.hide()
-        self._fuel.setColor(self.colors["preview"])
-        self._set_mesh(self._fuel, *_mesh_arrays(vertices, faces))
-        self._frame(length, diameter)
+        self._show_fuel(vertices, faces, length, diameter)
 
-    def _frame(self, length: float, diameter: float):
+    def _show_fuel(self, vertices: np.ndarray, faces: np.ndarray, length: float, diameter: float):
+        first = self._view is None
+        if first:
+            self._make_view()
+        self._burned.hide()  # until the grain's first burned surface is worked out
+        self._fuel.setColor(self.colors["fuel" if self._geom is not None else "preview"])
+        self._set_mesh(self._fuel, *_mesh_arrays(vertices, faces))
         self._size = (length, diameter)
         self._cameras.clear()
-        self.reset_camera()
+        if first and self._holder is not None:
+            self._place()  # only now: showing the view paints it at once, and its items need their meshes
+        else:
+            self.reset_camera()
 
     def reset_camera(self):
         """Fit the whole grain in the view."""
@@ -274,8 +275,6 @@ class GrainScene(QObject):
 
     def _make_view(self):
         """The 3D view, made on first use so the app starts without OpenGL."""
-        if self._view is not None:
-            return
         import pyqtgraph.opengl as gl
         from OpenGL import GL
         from pyqtgraph.opengl import shaders
@@ -284,8 +283,10 @@ class GrainScene(QObject):
             """See-through, without hiding its own far side."""
             def paint(self):
                 GL.glDepthMask(GL.GL_FALSE)
-                super().paint()
-                GL.glDepthMask(GL.GL_TRUE)
+                try:
+                    super().paint()
+                finally:
+                    GL.glDepthMask(GL.GL_TRUE)  # or the depth buffer stops being cleared, and every frame after is wrong
 
         def shader(name, fragment):
             return shaders.ShaderProgram(name, [shaders.VertexShader(_VERTEX), shaders.FragmentShader(fragment)])
@@ -300,8 +301,6 @@ class GrainScene(QObject):
         self._fuel.setDepthValue(1)  # drawn after the burned region, which shows through it
         self._view.addItem(self._burned)
         self._view.addItem(self._fuel)
-        if self._holder is not None:
-            self._place()
 
     def _set_mesh(self, item, v, f, n, colors=None):
         md = self._gl.MeshData(vertexes=v, faces=f, vertexColors=colors)
