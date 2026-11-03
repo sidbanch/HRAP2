@@ -19,6 +19,7 @@ from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSettings, QSt
 from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTabBar,
     QTabWidget,
@@ -55,7 +57,7 @@ from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
-from hrap.gui.grain_view import GrainView
+from hrap.gui.grain_view import GrainScene, GrainView, RunGrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
@@ -426,6 +428,7 @@ class MainWindow(QMainWindow):
         top_l.addWidget(self.name, 1)
         top_l.addWidget(save_btn)
 
+        self.grain_scene = GrainScene()  # the STL grain in 3D, shared by the Grain tab and the Simulation tab
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._form = self._make_form()
         splitter.addWidget(self._form)
@@ -443,7 +446,7 @@ class MainWindow(QMainWindow):
         self._load_learned_timing()
         self.sizing_page.load_timing_learned.connect(lambda: self._prefs.setValue(
             "grainLoadTimeShares", ",".join(str(x) for x in self.sizing_page.load_time_shares)))
-        self.grain_view = GrainView(lambda: self.display_units, lambda: self.sizing_page.rho.si("density"))
+        self.grain_view = GrainView(self.grain_scene, lambda: self.display_units, lambda: self.sizing_page.rho.si("density"))
         self.grain_view.cancel_load.connect(self.sizing_page.stop_grain_load)
         self.grain_view.message_action.connect(self._on_grain_message_action)
         self.study_page = StudyPage(self._form_to_cfg, lambda: self.display_units, self._open_unsaved,
@@ -715,11 +718,33 @@ class MainWindow(QMainWindow):
         plots = QWidget()
         plots_l = QVBoxLayout(plots)
         plots_l.setContentsMargins(0, 0, 0, 0)
-        plots_l.addWidget(mid, 1)
-        plots_l.addWidget(self.plot_readout)
-        plots.setMinimumHeight(260)
+        # Under the plots: the motor drawing or, for an STL grain, the grain in 3D, both at the time hovered.
         self.motor_panel = MotorPanel()
-        self.viz = self.motor_panel.viz
+        self.run_grain = RunGrainView(self.grain_scene, lambda: self.display_units)
+        self._panel = QStackedWidget()
+        self._panel.addWidget(self.motor_panel)
+        self._panel.addWidget(self.run_grain)
+        self._panel_switch = QWidget()
+        switch_l = QHBoxLayout(self._panel_switch)
+        switch_l.setContentsMargins(0, 0, 0, 0)
+        switch_l.setSpacing(0)
+        choice = QButtonGroup(self._panel_switch)
+        for text in ("Motor drawing", "Grain"):
+            button = QPushButton(text)
+            button.setObjectName("switch")
+            button.setCheckable(True)
+            choice.addButton(button)
+            switch_l.addWidget(button)
+        self._show_grain = cast(QPushButton, choice.buttons()[1])
+        (self._show_grain if self._prefs.value("simulationPanel") == "grain" else choice.buttons()[0]).setChecked(True)
+        self._show_grain.toggled.connect(self._on_panel_choice)
+        self._panel_switch.hide()  # until an STL grain is in
+        readout = QHBoxLayout()
+        readout.addWidget(self.plot_readout, 1)
+        readout.addWidget(self._panel_switch, 0, Qt.AlignmentFlag.AlignBottom)
+        plots_l.addWidget(mid, 1)
+        plots_l.addLayout(readout)
+        plots.setMinimumHeight(260)
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
@@ -727,7 +752,7 @@ class MainWindow(QMainWindow):
         # Drag the dividers to trade plot height for the diagram or the summary.
         column = QSplitter(Qt.Orientation.Vertical)
         column.setChildrenCollapsible(False)
-        for part, stretch in ((plots, 5), (self.motor_panel, 3), (self.summary, 2)):
+        for part, stretch in ((plots, 5), (self._panel, 3), (self.summary, 2)):
             column.addWidget(part)
             column.setStretchFactor(column.indexOf(part), stretch)
         column.setSizes([520, 300, 120])
@@ -832,21 +857,34 @@ class MainWindow(QMainWindow):
         self.unapplied.setVisible(bool(changes))
 
     def _sync_grain_view(self):
-        """The Grain tab shows while the grain comes from an STL: the grain, its loading, or what's in the way."""
+        """The Grain tab shows while the grain comes from an STL: the grain, its loading, or what's in the way.
+        The Simulation tab can show a loaded STL grain instead of the motor drawing."""
         sp, gv = self.sizing_page, self.grain_view
         self.tabs.setTabVisible(self.tabs.indexOf(gv), sp.grain_shape.currentData() == "stl")
         if sp.grain_geom is not None:
             gv.set_grain(sp.grain_geom)
+            self._panel_switch.show()
             if self._grain_was_loading:
                 self.statusBar().showMessage(f"Loaded {sp.grain_name()} in {sp.grain_load_seconds():.0f} s.")
         elif sp.grain_loading_shown():
             gv.set_loading(sp.grain_name(), sp.grain_mesh)
+            self._panel_switch.hide()
             self._show_grain_progress()
         elif not sp.grain_loading():  # while it loads, a grain from the cache is a moment away: leave things be
             gv.set_message(sp.grain_message(), "Load again" if sp.grain_stopped() else "Open the Motor tab")
+            self._panel_switch.hide()
             if self._grain_was_loading or sp.grain_failed():
                 self.statusBar().showMessage(sp.grain_message())
         self._grain_was_loading = sp.grain_loading_shown()
+        self._sync_panel()
+
+    def _on_panel_choice(self):
+        self._prefs.setValue("simulationPanel", "grain" if self._show_grain.isChecked() else "drawing")
+        self._sync_panel()
+
+    def _sync_panel(self):
+        grain = not self._panel_switch.isHidden() and self._show_grain.isChecked()
+        self._panel.setCurrentWidget(self.run_grain if grain else self.motor_panel)
 
     def _load_learned_timing(self):
         """How the last cold STL loads' time was spread over their steps, for the time left on the next."""
@@ -1107,7 +1145,7 @@ class MainWindow(QMainWindow):
             if item.checkState() == Qt.CheckState.Checked and not item.isHidden() and values is not None:
                 bits.append(f"{item.text()}: {self.display_units.text(float(values[i]), trace_quantity)}")
         self.plot_readout.setText("   ·   ".join(bits))
-        self.grain_view.follow_time(float(t[i]))
+        self.run_grain.show_at(float(t[i]), float(self._output.grn_web[i]))
         self._refresh_viz_at(i)
 
     def _refresh_viz_at(self, index: int | None):
@@ -1143,7 +1181,7 @@ class MainWindow(QMainWindow):
         self.summary.clear()
         self._clear_plot()
         self._refresh_viz()
-        self.grain_view.set_run(None)
+        self.run_grain.set_run(False)
         self._sync_run_button()
         self.statusBar().showMessage("Inputs changed, run again to update.")
 
@@ -1440,7 +1478,7 @@ class MainWindow(QMainWindow):
         self.summary.setPlainText(format_summary(info, self.display_units))
         self._refresh_plot()
         self._refresh_viz()
-        self.grain_view.set_run(o)
+        self.run_grain.set_run(True)
         u = self.display_units
         peak, limit = float(np.max(o.P_cmbr)), chamber_limit(cast(dict, self._result_cfg))
         over = peak > limit
@@ -1679,7 +1717,7 @@ class MainWindow(QMainWindow):
             self.summary.clear()
             self._clear_plot()
             self._refresh_viz()
-            self.grain_view.set_run(None)
+            self.run_grain.set_run(False)
         self._sync_run_button()
         self._update_tab_marker()
 
@@ -1979,6 +2017,7 @@ class MainWindow(QMainWindow):
         self.sizing_page.refresh()
         self.study_page.refresh()
         self.grain_view.refresh()
+        self.run_grain.refresh()
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
             self.summary.setPlainText(format_summary(info, units))
@@ -1992,7 +2031,9 @@ class MainWindow(QMainWindow):
             self.motor_panel.set_theme(name)
         if hasattr(self, "sizing_page"):
             self.sizing_page.set_theme(name)
-            self.grain_view.set_theme(name)
+            self.grain_scene.set_theme(name)
+            self.grain_view.set_theme()
+            self.run_grain.set_theme()
 
     def _about(self):
         QMessageBox.about(

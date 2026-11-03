@@ -92,6 +92,8 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border-radius: 2px;
             padding: 6px 14px;
         }}
+        QPushButton#switch {{ padding: 4px 12px; }}
+        QPushButton#switch:checked {{ background: {accent}; border-color: {accent}; color: white; }}
         QPushButton#runButton {{
             background: {accent};
             color: white;
