@@ -1030,46 +1030,44 @@ class MainWindow(QMainWindow):
         def size(diameter: float, length: float) -> str:
             return f"Ø{u.value(diameter, 'length'):.3g} × {u.text(length, 'length', 3)}"
 
+        def at_time(text: str) -> str:  # flows and thrust only mean something at a time in a run
+            return text if time_s is not None else "—"
+
         mass_pct = 100.0 * m_f / m_f0 if m_f0 > 1e-12 else 0.0
         dp_inj = P_tnk - P_cmbr
-        stiff = (dp_inj / P_cmbr) if P_cmbr > 1e-9 else 0.0
         vnt_on = _vent_visible(vnt, vnt_D)
-        vent_lines = ("Orifice Vent", f"Ø{u.text(vnt_D, 'length', 3)}") if vnt_on else ()
-        tank_lines = (
-            "Oxidizer Tank",
-            f"size: {size(tnk_D, tnk_L)}",
-            f"volume: {u.text(tnk_V, 'volume')}",
-            f"mass = {u.text(m_o, 'mass')} ({100.0 * fill:.0f}%)",
-            f"T = {u.text(T, 'temperature')}",
-        )
-        inj_lines = (
-            "Injectors",
-            (f"{inj_N} swirler{'s' if inj_N > 1 else ''}, exit Ø{u.text(inj_D, 'length', 3)}"
-             if sp.inj_type.currentText() == "Swirler" else f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}"),
-            f"Cd: {inj_Cd:.2f}",
-            f"A: {u.text(inj_A, 'area')}",
-            f"ox flow = {u.text(ox_mdot, 'mass_flow', 3)}",
-            f"ΔP = {u.text(dp_inj, 'pressure')}",
-            f"stiffness = {100.0 * stiff:.0f}%",
-        )
-        grain_lines = (
-            "Fuel Grain (STL)" if stl else "Fuel Grain",
-            f"size: {size(grn_OD, grn_L)}",
-            *((f"burned = {u.text(web, 'length', 3)}", f"same-area port = {u.text(grn_ID, 'length')}") if stl else
-              (f"port = {u.text(grn_ID, 'length')}",)),
-            f"mass = {u.text(m_f, 'mass')} ({mass_pct:.0f}%)",
-            f"fuel flow = {u.text(fuel_mdot, 'mass_flow', 3)}",
-            *((f"case wall exposed = {u.text(case, 'area', 3)}",) if case > 0 else ()),
-        )
-        noz_lines = (
-            "Nozzle",
-            f"throat: Ø{u.text(th, 'length')}",
-            f"exit: Ø{u.text(exit_d, 'length')}",
-            f"expansion ratio: {er:.2f}",
-            f"O/F = {of_ratio:.2f}",
-            f"flow = {u.text(noz_mdot, 'mass_flow', 3)}",
-            f"thrust = {u.text(thrust, 'force')}",
-        )
+        vent_card = ("Vent", (("Orifice", f"Ø{u.text(vnt_D, 'length', 3)}"),)) if vnt_on else None
+        tank_card = ("Oxidizer tank", (
+            ("Size", size(tnk_D, tnk_L)),
+            ("Volume", u.text(tnk_V, "volume", 3)),
+            ("Mass", f"{u.text(m_o, 'mass', 3)} ({100.0 * fill:.0f}%)"),
+            ("Temperature", u.text(T, "temperature", 3)),
+        ))
+        swirler = sp.inj_type.currentText() == "Swirler"
+        inj_card = ("Injector", (
+            ("Swirlers" if swirler else "Holes", f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}"),
+            ("Cd", f"{inj_Cd:.3g}"),
+            ("Area", u.text(inj_A, "area", 3)),
+            ("Oxidizer flow", at_time(u.text(ox_mdot, "mass_flow", 3))),
+            ("ΔP", at_time(u.text(dp_inj, "pressure", 3))),
+            ("Stiffness", at_time(f"{100.0 * dp_inj / P_cmbr:.0f}%" if P_cmbr > 1e-9 else "—")),
+        ))
+        grain_card = ("Fuel grain (STL)" if stl else "Fuel grain", (
+            ("Size", size(grn_OD, grn_L)),
+            *((("Burned", u.text(web, "length", 3)), ("Same-area port", u.text(grn_ID, "length", 3))) if stl else
+              (("Port", u.text(grn_ID, "length", 3)),)),
+            ("Mass", f"{u.text(m_f, 'mass', 3)} ({mass_pct:.0f}%)"),
+            ("Fuel flow", at_time(u.text(fuel_mdot, "mass_flow", 3))),
+            *((("Case wall exposed", u.text(case, "area", 3)),) if case > 0 else ()),
+        ))
+        noz_card = ("Nozzle", (
+            ("Throat", f"Ø{u.text(th, 'length', 3)}"),
+            ("Exit", f"Ø{u.text(exit_d, 'length', 3)}"),
+            ("Expansion ratio", f"{er:.3g}"),
+            ("O/F", f"{of_ratio:.3g}" if math.isfinite(of_ratio) else "—"),
+            ("Flow", at_time(u.text(noz_mdot, "mass_flow", 3))),
+            ("Thrust", at_time(u.text(thrust, "force", 3))),
+        ))
 
         lay = self._form_layout()
         return MotorView(
@@ -1092,19 +1090,13 @@ class MainWindow(QMainWindow):
             post_L=lay.x_case - lay.grn1,
             tnk_dry_kg=lay.tnk_m,
             cmbr_dry_kg=lay.cmbr_m,
-            tank_lines=tank_lines,
-            inj_lines=inj_lines,
-            grain_lines=grain_lines,
-            noz_lines=noz_lines,
-            vent_lines=vent_lines,
-            overlay_tank=(
-                f"{100.0 * fill:.0f}%",
-                u.text(P_tnk, "pressure"),
-            ),
-            overlay_grain=(
-                f"{mass_pct:.0f}%",
-                u.text(P_cmbr, "pressure"),
-            ),
+            tank_card=tank_card,
+            inj_card=inj_card,
+            grain_card=grain_card,
+            noz_card=noz_card,
+            vent_card=vent_card,
+            overlay_tank=(f"{100.0 * fill:.0f}%", u.text(P_tnk, "pressure", 3)),
+            overlay_grain=(f"{mass_pct:.0f}%", u.text(P_cmbr, "pressure", 3)),
             time_s=time_s,
             display_units=u,
         )

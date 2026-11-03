@@ -154,8 +154,8 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
         assert units.pressure in window.summary.toPlainText()
         assert units.force in window.summary.toPlainText()
         view = window._motor_view(1)
-        assert view.overlay_tank[1] == units.text(pressure[1], "pressure")
-        assert units.unit("mass_flow") in view.inj_lines[4]
+        assert view.overlay_tank[1] == units.text(pressure[1], "pressure", 3)
+        assert units.unit("mass_flow") in dict(view.inj_card[1])["Oxidizer flow"]
         assert view.display_units.length == units.length
         window.plot.setCurrentWidget(window._plot_widgets["pressure"])
         QApplication.processEvents()

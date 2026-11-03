@@ -13,52 +13,51 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hrap.gui.theme import colors_for, mix
 from hrap.layout import motor_layout
 from hrap.units import LENGTH, DisplayUnits
 
-SPEC_GAP = 6.0
+SPEC_GAP = 8.0  # between cards
 SPEC_MIN_W = 56.0
-SPAN_H = 28.0
-RULER_H = 28.0
-TITLE_H = 18.0
+SPAN_H = 24.0
+RULER_H = 26.0
+TITLE_H = 20.0
 VENT_HEAD_PX = 16.0
 VENT_MIN_W = 5.0
 VENT_MIN_H = 12.0
+CARD_PAD = 12.0, 12.0  # as the pages' cards, a little narrower so four fit across the default window
+CARD_RADIUS = 6.0
+CARD_ROW_GAP = 3.0
+CARD_COLUMN_GAP = 10.0
+STROKE = 1.0  # every outline, line and tick
 
-DARK_VIZ = {
-    "bg": "#1a1d23",
-    "border": "#3a404c",
-    "tank": "#5b8def",
-    "tank_empty": "#252d3c",
-    "grain": "#c98652",
-    "port": "#14171c",
-    "plate": "#d8dce3",
-    "inj": "#8fb4f0",
-    "outline": "#c5c9d1",
-    "text": "#e8eaed",
-    "muted": "#9aa3b0",
-    "card": "#252a33",
-    "overlay": "#f4f6fa",
-    "span": "#7aa4f0",
-    "ruler": "#c5c9d1",
-}
-LIGHT_VIZ = {
-    "bg": "#f4f5f7",
-    "border": "#c5c9d1",
-    "tank": "#3d6fd4",
-    "tank_empty": "#d5dce8",
-    "grain": "#c47a3c",
-    "port": "#f7f8fa",
-    "plate": "#ffffff",
-    "inj": "#8aa8de",
-    "outline": "#111111",
-    "text": "#1b1d21",
-    "muted": "#5c6370",
-    "card": "#ffffff",
-    "overlay": "#1b1d21",
-    "span": "#2f5fbf",
-    "ruler": "#5c6370",
-}
+Spec = tuple[str, tuple[tuple[str, str], ...]]  # a card: its title, and its label / value rows
+
+
+def drawing_colors(theme: str = "dark") -> dict:
+    """The theme's colours as the drawings use them."""
+    c = colors_for(theme)
+    return {
+        "bg": c["plot_bg"], "border": c["border"], "card": c["base"], "text": c["text"], "muted": c["disabled"],
+        "tank": c["oxidizer"], "tank_empty": mix(c["plot_bg"], c["oxidizer"], 0.18).name(), "grain": c["fuel"],
+        "port": c["window"], "plate": mix(c["plot_bg"], c["plot_fg"], 0.75).name(), "outline": c["disabled"],
+        "overlay": c["text"], "limit": c["limit"],
+    }
+
+
+def body_font(widget: QWidget) -> QFont:
+    """The app's font one size smaller."""
+    font = QFont(widget.font())
+    font.setPointSizeF(font.pointSizeF() - 1)
+    return font
+
+
+def title_font(widget: QWidget) -> QFont:
+    """The pages' card title: bold, 14 px."""
+    font = QFont(widget.font())
+    font.setPixelSize(14)
+    font.setBold(True)
+    return font
 
 
 @dataclass
@@ -76,11 +75,11 @@ class MotorView:
     noz_exit: float
     fill_frac: float
     name: str = ""
-    tank_lines: tuple[str, ...] = ()
-    inj_lines: tuple[str, ...] = ()
-    grain_lines: tuple[str, ...] = ()
-    noz_lines: tuple[str, ...] = ()
-    vent_lines: tuple[str, ...] = ()
+    tank_card: Spec | None = None
+    inj_card: Spec | None = None
+    grain_card: Spec | None = None
+    noz_card: Spec | None = None
+    vent_card: Spec | None = None
     overlay_tank: tuple[str, ...] = ()
     overlay_grain: tuple[str, ...] = ()
     display_units: DisplayUnits = field(default_factory=DisplayUnits)
@@ -280,7 +279,7 @@ class MotorVizWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._colors = dict(DARK_VIZ)
+        self._colors = drawing_colors()
         self._framed = False
         self._model = MotorView(
             tnk_L=0.2,
@@ -305,7 +304,7 @@ class MotorVizWidget(QWidget):
         self.update()
 
     def set_theme(self, name: str) -> None:
-        self._colors = dict(LIGHT_VIZ if name == "light" else DARK_VIZ)
+        self._colors = drawing_colors(name)
         self.update()
 
     def set_model(self, model: MotorView) -> None:
@@ -319,20 +318,15 @@ class MotorVizWidget(QWidget):
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.fillRect(rect, _c(colors, "bg"))
         if self._framed:
-            p.setPen(QPen(_c(colors, "border"), 1.0))
+            p.setPen(QPen(_c(colors, "border"), STROKE))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(rect)
 
         m = self._model
         g = _geom(m)
         pad = 10.0
-        title_font = QFont("Segoe UI", 8, QFont.Weight.DemiBold)
-        body_font = QFont("Segoe UI", 8)
-        title_fm = QFontMetrics(title_font)
-        body_fm = QFontMetrics(body_font)
-        spec_items = [ln for ln in (m.vent_lines, m.tank_lines, m.inj_lines, m.grain_lines, m.noz_lines) if ln]
-        max_lines = max((len(ln) for ln in spec_items), default=2)
-        label_h = title_fm.height() + max(0, max_lines - 1) * body_fm.height() + 14.0
+        cards = [c for c in (m.vent_card, m.tank_card, m.inj_card, m.grain_card, m.noz_card) if c]
+        label_h = max((self._card_size(c)[1] for c in cards), default=0.0) + 10.0
         inner = rect.adjusted(pad, pad, -pad, -pad)
         motor_h = inner.height() - label_h - SPAN_H - RULER_H - TITLE_H
         if motor_h < 36 or inner.width() < 40 or g.x_span <= 0:
@@ -355,7 +349,7 @@ class MotorVizWidget(QWidget):
         def box(x0: float, x1: float, r: float) -> QRectF:
             return QRectF(X(x0), Y(r), max((x1 - x0) * scale, 1.0), 2.0 * r * scale)
 
-        outline = QPen(_c(colors, "outline"), 1.2)
+        outline = QPen(_c(colors, "outline"), STROKE)
         fill = min(max(m.fill_frac, 0.0), 1.0)
 
         tank = box(g.x_tnk0, g.x_tnk1, g.tnk_R)
@@ -385,7 +379,7 @@ class MotorVizWidget(QWidget):
             feed_r = min(g.tnk_R, g.grn_R) * 0.18
             feed = box(g.x_tnk1, g.x_cmbr0, max(feed_r, 2.0 / scale / 2.0))
             p.setPen(outline)
-            p.setBrush(_c(colors, "tank") if fill > 0 else _c(colors, "inj"))
+            p.setBrush(_c(colors, "tank") if fill > 0 else _c(colors, "tank_empty"))
             p.drawRect(feed)
 
         if g.x_case > g.x_plate1 + 1e-9:
@@ -402,7 +396,7 @@ class MotorVizWidget(QWidget):
         if g.port_R > 0:
             port = box(g.x_grn0, g.x_grn1, g.port_R)
             p.setBrush(_c(colors, "port"))
-            p.setPen(QPen(_c(colors, "outline"), 0.8))
+            p.setPen(outline)
             p.drawRect(port)
 
         plate_r = max(g.tnk_R, g.grn_R)
@@ -415,7 +409,7 @@ class MotorVizWidget(QWidget):
         hole_h = g.inj_D
         span = min(2.0 * plate_r * 0.72, max(n_draw, 1) * hole_h * 1.35)
         ys = [0.0] if n_draw == 1 else [span * (0.5 - i / (n_draw - 1)) for i in range(n_draw)]
-        p.setBrush(_c(colors, "tank") if fill > 0 else _c(colors, "inj"))
+        p.setBrush(_c(colors, "tank") if fill > 0 else _c(colors, "tank_empty"))
         p.setPen(outline)
         for y in ys:
             hr = max(hole_h * 0.5, 1.4 / scale)
@@ -436,21 +430,23 @@ class MotorVizWidget(QWidget):
         path.addPolygon(poly)
         path.closeSubpath()
         p.setBrush(_c(colors, "plate"))
-        p.setPen(QPen(_c(colors, "outline"), 1.3))
+        p.setPen(outline)
         p.drawPath(path)
 
         self._draw_state_overlay(p, colors, tank, m.overlay_tank)
         self._draw_state_overlay(p, colors, grain, m.overlay_grain)
 
-        band = QRectF(inner.left(), inner.top(), inner.width(), label_h - 4)
-        self._draw_specs(p, colors, band, g, X, m, title_font, body_font, title_fm, body_fm)
+        band = QRectF(inner.left(), inner.top(), inner.width(), label_h - 10.0)
+        self._draw_specs(p, colors, band, g, X, m)
 
         span_top = inner.top() + label_h + motor_h
         self._draw_span_labels(p, colors, g, X, m, QRectF(inner.left(), span_top, inner.width(), SPAN_H))
         ruler = QRectF(inner.left(), span_top + SPAN_H, inner.width(), RULER_H)
         self._draw_ruler(p, colors, g, X, ruler, m.display_units)
         p.setPen(_c(colors, "text"))
-        p.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        name_font = QFont(self.font())
+        name_font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(name_font)
         p.drawText(
             QRectF(inner.left(), ruler.bottom(), inner.width(), TITLE_H),
             int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
@@ -459,10 +455,10 @@ class MotorVizWidget(QWidget):
 
     def _draw_span_labels(self, p: QPainter, colors: dict, g: _Geom, X, m: MotorView, band: QRectF) -> None:
         spans = (
-            (g.x_tnk0, g.x_tnk1, "Oxidizer Tank", m.tnk_dry_kg),
-            (g.x_cmbr0, g.x_cmbr1, "Thrust Chamber Assembly", m.cmbr_dry_kg),
+            (g.x_tnk0, g.x_tnk1, "Oxidizer tank", m.tnk_dry_kg),
+            (g.x_cmbr0, g.x_cmbr1, "Thrust chamber assembly", m.cmbr_dry_kg),
         )
-        font = QFont("Segoe UI", 8, QFont.Weight.DemiBold)
+        font = body_font(self)
         p.setFont(font)
         fm = QFontMetrics(font)
         for x0, x1, title, mass_kg in spans:
@@ -470,10 +466,10 @@ class MotorVizWidget(QWidget):
             if right - left < 12:
                 continue
             y = band.top() + 2.0
-            p.setPen(QPen(_c(colors, "span"), 2.0))
+            p.setPen(QPen(_c(colors, "muted"), STROKE))
             p.drawLine(QPointF(left, y + fm.height() + 3.0), QPointF(right, y + fm.height() + 3.0))
-            p.setPen(_c(colors, "span"))
-            text = f"{title}  {m.display_units.text(mass_kg, 'mass', 3)}"
+            mass = m.display_units.text(mass_kg, "mass", 3) if mass_kg > 0 else "—"  # dry masses are optional
+            text = f"{title}  {mass}"
             p.drawText(
                 QRectF(left, y, max(right - left, 8.0), fm.height() + 2.0),
                 int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
@@ -483,13 +479,13 @@ class MotorVizWidget(QWidget):
     def _draw_ruler(self, p: QPainter, colors: dict, g: _Geom, X, band: QRectF, units: DisplayUnits) -> None:
         y = band.top() + 7.0
         x0, x1 = X(g.x_min), X(g.x_min + g.x_span)
-        p.setPen(QPen(_c(colors, "ruler"), 1.0))
+        p.setPen(QPen(_c(colors, "muted"), STROKE))
         p.drawLine(QPointF(x0, y), QPointF(x1, y))
         scale = LENGTH[units.length]
         start = g.x_min / scale
         end = (g.x_min + g.x_span) / scale
         step = _ruler_step(end - start)
-        label_font = QFont("Segoe UI", 7)
+        label_font = body_font(self)
         p.setFont(label_font)
         fm = QFontMetrics(label_font)
         half = step / 2.0
@@ -500,103 +496,101 @@ class MotorVizWidget(QWidget):
             xt = X(tick * scale)
             major = abs(tick / step - round(tick / step)) < 1e-6
             h = 6.0 if major else 3.0
-            p.setPen(QPen(_c(colors, "ruler"), 1.0))
             p.drawLine(QPointF(xt, y - h), QPointF(xt, y + h))
             if major:
                 majors.append(tick)
             tick += half
-        p.setPen(_c(colors, "muted"))
         for i, tick in enumerate(majors):
             label = _tick_label(tick, step, units.length if i == len(majors) - 1 else "")
             tw = fm.horizontalAdvance(label)
             xt = X(tick * scale)
             p.drawText(QPointF(xt - 0.5 * tw, y + 6.0 + fm.ascent() + 1.0), label)
 
-    def _draw_specs(
-        self,
-        p: QPainter,
-        colors: dict,
-        band: QRectF,
-        g: _Geom,
-        X,
-        m: MotorView,
-        title_font: QFont,
-        body_font: QFont,
-        title_fm: QFontMetrics,
-        body_fm: QFontMetrics,
-    ) -> None:
-        items: list[tuple[float, tuple[str, ...]]] = []
-        if m.vent_lines:
-            items.append((X(g.x_tnk0 + 0.05 * g.tnk_L), m.vent_lines))
-        if m.tank_lines:
-            items.append((0.5 * (X(g.x_tnk0) + X(g.x_tnk1)), m.tank_lines))
-        if m.inj_lines:
-            items.append((0.5 * (X(g.x_inj0) + X(g.x_inj1)), m.inj_lines))
-        if m.grain_lines:
-            items.append((0.5 * (X(g.x_grn0) + X(g.x_grn1)), m.grain_lines))
-        if m.noz_lines:
-            items.append((0.5 * (X(g.x_case) + X(g.x_noz)), m.noz_lines))
+    def _card_size(self, card: Spec) -> tuple[float, float]:
+        title, rows = card
+        tfm, bfm, vfm = (QFontMetrics(f) for f in self._card_fonts())
+        width = max(tfm.horizontalAdvance(title),
+                    max((bfm.horizontalAdvance(k) for k, _ in rows), default=0)
+                    + CARD_COLUMN_GAP + max((vfm.horizontalAdvance(v) for _, v in rows), default=0))
+        height = tfm.height() + len(rows) * (bfm.height() + CARD_ROW_GAP) + 3.0
+        return math.ceil(width) + 2 + 2 * CARD_PAD[0], height + 2 * CARD_PAD[1]
+
+    def _card_fonts(self) -> tuple[QFont, QFont, QFont]:
+        """A card's title, label and value fonts, as on the pages."""
+        value = body_font(self)
+        value.setWeight(QFont.Weight.DemiBold)
+        return title_font(self), body_font(self), value
+
+    def _draw_specs(self, p: QPainter, colors: dict, band: QRectF, g: _Geom, X, m: MotorView) -> None:
+        items: list[tuple[float, Spec]] = []
+        if m.vent_card:
+            items.append((X(g.x_tnk0 + 0.05 * g.tnk_L), m.vent_card))
+        if m.tank_card:
+            items.append((0.5 * (X(g.x_tnk0) + X(g.x_tnk1)), m.tank_card))
+        if m.inj_card:
+            items.append((0.5 * (X(g.x_inj0) + X(g.x_inj1)), m.inj_card))
+        if m.grain_card:
+            items.append((0.5 * (X(g.x_grn0) + X(g.x_grn1)), m.grain_card))
+        if m.noz_card:
+            items.append((0.5 * (X(g.x_case) + X(g.x_noz)), m.noz_card))
         if not items:
             return
-
-        def pref_w(lines: tuple[str, ...]) -> float:
-            w = 0.0
-            for i, line in enumerate(lines):
-                fm = title_fm if i == 0 else body_fm
-                w = max(w, fm.horizontalAdvance(line))
-            return w + 12.0
-
         centers = [cx for cx, _ in items]
-        widths = [pref_w(lines) for _, lines in items]
+        widths = [self._card_size(card)[0] for _, card in items]
+        # In a narrow window the cards' side padding gives way first, before their text is cut short.
+        over = sum(widths) + SPEC_GAP * (len(items) - 1) - band.width()
+        pad = max(6.0, CARD_PAD[0] - max(over, 0.0) / (2 * len(items)))
+        widths = [w - 2 * (CARD_PAD[0] - pad) for w in widths]
         placed = pack_hrects(centers, widths, band.left(), band.right(), gap=SPEC_GAP, min_width=SPEC_MIN_W)
-        for (left, width), (_, lines) in zip(placed, items):
-            r = QRectF(left, band.top(), width, band.height())
-            self._paint_spec(p, colors, r, lines, title_font, body_font, title_fm, body_fm)
+        for (left, width), (_, card) in zip(placed, items):
+            self._paint_card(p, colors, QRectF(left, band.top(), width, self._card_size(card)[1]), card, pad)
 
     @staticmethod
     def _draw_state_overlay(p: QPainter, colors: dict, rect: QRectF, lines: tuple[str, ...]) -> None:
         if not lines or rect.width() < 28 or rect.height() < 16:
             return
-        pt = 9 if rect.height() >= 28 else 7
-        font = QFont("Segoe UI", pt, QFont.Weight.DemiBold)
+        font = QFont(p.font())
+        font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
         text = "\n".join(lines)
-        flags = int(
-            Qt.AlignmentFlag.AlignHCenter
-            | Qt.AlignmentFlag.AlignVCenter
-            | Qt.TextFlag.TextWordWrap
-        )
-        halo = QColor(12, 14, 18, 170)
+        flags = int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap)
+        halo = QColor(colors["bg"])
+        halo.setAlpha(170)
         p.setPen(halo)
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             p.drawText(rect.adjusted(dx, dy, dx, dy), flags, text)
         p.setPen(_c(colors, "overlay"))
         p.drawText(rect, flags, text)
 
-    @staticmethod
-    def _paint_spec(
-        p: QPainter,
-        colors: dict,
-        r: QRectF,
-        lines: tuple[str, ...],
-        title_font: QFont,
-        body_font: QFont,
-        title_fm: QFontMetrics,
-        body_fm: QFontMetrics,
-    ) -> None:
+    def _paint_card(self, p: QPainter, colors: dict, r: QRectF, card: Spec, pad: float) -> None:
+        """A card as on the pages: a title, then grey labels with their values on the right."""
+        title, rows = card
         p.setBrush(_c(colors, "card"))
-        p.setPen(QPen(_c(colors, "border"), 1.0))
-        p.drawRect(r)
-        inner = r.adjusted(4, 5, -4, -5)
-        y = inner.top()
-        for i, line in enumerate(lines):
-            fm = title_fm if i == 0 else body_fm
-            p.setFont(title_font if i == 0 else body_font)
-            p.setPen(_c(colors, "text" if i == 0 else "muted"))
-            row = QRectF(inner.left(), y, inner.width(), fm.height())
-            text = fm.elidedText(line, Qt.TextElideMode.ElideRight, max(int(inner.width()), 1))
-            p.drawText(row, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), text)
-            y += fm.height()
+        p.setPen(QPen(_c(colors, "border"), STROKE))
+        p.drawRoundedRect(r, CARD_RADIUS, CARD_RADIUS)
+        tfont, bfont, vfont = self._card_fonts()
+        tfm, bfm, vfm = QFontMetrics(tfont), QFontMetrics(bfont), QFontMetrics(vfont)
+        inner = r.adjusted(pad, CARD_PAD[1], -pad, -CARD_PAD[1])
+        p.setFont(tfont)
+        p.setPen(_c(colors, "text"))
+        left = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        p.drawText(QRectF(inner.left(), inner.top(), inner.width(), tfm.height()), left,
+                   tfm.elidedText(title, Qt.TextElideMode.ElideRight, int(inner.width())))
+        y = inner.top() + tfm.height() + 3.0 + CARD_ROW_GAP
+        for label, value in rows:
+            value_w = min(vfm.horizontalAdvance(value) + 1, inner.width())
+            p.setFont(vfont)
+            p.setPen(_c(colors, "limit" if label == "Case wall exposed" else "text"))
+            p.drawText(QRectF(inner.right() - value_w, y, value_w, bfm.height()),
+                       int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                       vfm.elidedText(value, Qt.TextElideMode.ElideRight, int(value_w)))
+            room = inner.width() - value_w - CARD_COLUMN_GAP
+            if room > 8:
+                p.setFont(bfont)
+                p.setPen(_c(colors, "muted"))
+                p.drawText(QRectF(inner.left(), y, room, bfm.height()), left,
+                           bfm.elidedText(label, Qt.TextElideMode.ElideRight, int(room)))
+            y += bfm.height() + CARD_ROW_GAP
 
 
 class MotorPanel(QFrame):

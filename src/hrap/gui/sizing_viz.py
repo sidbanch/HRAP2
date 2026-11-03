@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
-from hrap.gui.viz import DARK_VIZ, LIGHT_VIZ
+from hrap.gui.viz import drawing_colors
 
 SIZE = 104  # px, square drawing area of each sketch
 CAPTION_H = 30
@@ -18,11 +18,11 @@ class Sketch(QWidget):
     def __init__(self, width: int = int(SIZE * 1.3)):
         super().__init__()
         self.setFixedSize(width, SIZE + CAPTION_H)
-        self._colors = dict(DARK_VIZ)
+        self._colors = drawing_colors()
         self._data: dict | None = None
 
     def set_theme(self, name: str):
-        self._colors = dict(LIGHT_VIZ if name == "light" else DARK_VIZ)
+        self._colors = drawing_colors(name)
         self.update()
 
     def show_data(self, data: dict | None):
