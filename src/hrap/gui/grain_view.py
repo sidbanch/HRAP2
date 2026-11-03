@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hrap.gui.sizing import Card
+from hrap.gui.theme import colors_for
+from hrap.gui.widgets import CARD_GAP, COLUMN_GAP, Card, page_layout
 from hrap.units import DisplayUnits
 
 STEPS = 1000  # slider positions
@@ -32,14 +33,14 @@ PREVIEW_CELLS = 5e5  # grid cells in the quick surface shown while the burned di
 FOV = 30  # degrees across the 3D view
 TAB_CAMERA = (20, -68)  # the Grain tab's camera elevation and azimuth, degrees
 SIDE_CAMERA = (12, -80)  # the Simulation tab's wide, short panel: nearly side on
-THEMES = {
-    "dark": {"bg": "#1a1d23", "fg": "#e6e8ee", "muted": "#9aa3b0", "fuel": (0.82, 0.86, 0.93, 0.16),
-             "preview": (0.82, 0.86, 0.93, 0.5),
-             "burned": "#f08a3c", "case": "#e06c75", "port_area": "#5b8def"},
-    "light": {"bg": "#ffffff", "fg": "#1b1d21", "muted": "#5c6370", "fuel": (0.25, 0.30, 0.38, 0.16),
-              "preview": (0.25, 0.30, 0.38, 0.5),
-              "burned": "#e07020", "case": "#c8414c", "port_area": "#2f5fbf"},
-}
+
+
+def _scene_colors(theme: str) -> dict:
+    """The app theme's colours as the 3D view and the Grain tab's plots use them."""
+    c = colors_for(theme)
+    glass = pg.mkColor(c["glass"]).getRgbF()[:3]
+    return {"bg": c["plot_bg"], "fg": c["plot_fg"], "fuel": (*glass, 0.16), "preview": (*glass, 0.5),
+            "burned": c["fuel"], "case": c["limit"], "port_area": c["purple"]}
 
 _VERTEX = """
     uniform mat4 u_mvp;
@@ -144,7 +145,7 @@ class GrainScene(QObject):
 
     def __init__(self):
         super().__init__()
-        self.colors = THEMES["dark"]
+        self.colors = _scene_colors("dark")
         self._view = None  # made when the first grain loads, so the app starts without OpenGL
         self._geom = None
         self._size = (1.0, 1.0)  # length and diameter of the grain on screen, to frame it
@@ -233,7 +234,7 @@ class GrainScene(QObject):
             self._settle_timer.start()
 
     def set_theme(self, name: str):
-        self.colors = THEMES["light" if name == "light" else "dark"]
+        self.colors = _scene_colors(name)
         if self._view is not None:
             self._view.setBackgroundColor(self.colors["bg"])
             self._fuel.setColor(self.colors["fuel" if self._geom is not None else "preview"])
@@ -406,7 +407,7 @@ class GrainView(QWidget):
         self.now = Card("At the slider", ["Burned distance", "Burning area", "Exposed case wall", "Port area",
                                           "Fuel left"])
         self.plots = pg.GraphicsLayoutWidget()
-        self.plots.setMinimumHeight(300)
+        self.plots.setMinimumHeight(180)  # the page fits the app's default 860 px window
         self._area_plots = (self.plots.addPlot(row=0, col=0), self.plots.addPlot(row=1, col=0))
         self._markers = []
         self._case_lines = []
@@ -434,7 +435,7 @@ class GrainView(QWidget):
         right_column.setFixedWidth(370)
         right = QVBoxLayout(right_column)
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(12)
+        right.setSpacing(CARD_GAP)
         right.addWidget(self.grain)
         self.grain_warning = QLabel("")  # the cubes are too coarse for the grain's thinnest walls
         self.grain_warning.setObjectName("notApplied")
@@ -444,9 +445,8 @@ class GrainView(QWidget):
         right.addWidget(self.now)
         right.addWidget(self.plots, 1)
 
-        page = QHBoxLayout(self)
-        page.setContentsMargins(16, 16, 16, 16)
-        page.setSpacing(16)
+        page = page_layout(QHBoxLayout(self))
+        page.setSpacing(COLUMN_GAP)
         page.addLayout(left, 1)
         page.addWidget(right_column)
 

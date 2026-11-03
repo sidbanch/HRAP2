@@ -53,12 +53,23 @@ from hrap.engine.study import (
     uses_spi,
 )
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
-from hrap.gui.sizing import LoadStopped, card_frame
-from hrap.gui.widgets import UnitRow
+from hrap.gui.sizing import LoadStopped
+from hrap.gui.theme import colors_for
+from hrap.gui.widgets import (
+    CARD_GAP,
+    COLUMN_GAP,
+    FIELD_GAP,
+    LABEL_W,
+    ROW_GAP,
+    FieldGrid,
+    UnitRow,
+    card_frame,
+    page_layout,
+)
 from hrap.io.config import chamber_limit, clone_cfg
 from hrap.units import AREA_ITEMS, LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, DisplayUnits, from_si, to_si
 
-OK, WARN, BAD = QColor("#2f7d4f"), QColor("#a87a22"), QColor("#a8413b")
+OK, WARN, BAD = (QColor(colors_for()[k]) for k in ("tile_ok", "tile_warn", "tile_bad"))
 
 
 def _small(text: str) -> QLabel:
@@ -436,13 +447,14 @@ class StudyPage(QWidget):
         self.size_throat.toggled.connect(lambda *_: self._update_source())
         self.size_throat.hide()
         self.source = _small("")
-        self.source.setStyleSheet(f"color: {WARN.lighter(150).name()};")
+        self.source.setObjectName("notApplied")
         self.source.hide()
 
         self.setup, setup = card_frame("Sweep")
-        fields = QGridLayout()
-        fields.setHorizontalSpacing(10)
-        fields.setVerticalSpacing(8)
+        fields = QGridLayout()  # laid out like a FieldGrid, as an axis takes two rows
+        fields.setHorizontalSpacing(FIELD_GAP)
+        fields.setVerticalSpacing(ROW_GAP)
+        fields.setColumnMinimumWidth(0, LABEL_W)
         fields.setColumnStretch(1, 1)
         fields.addWidget(QLabel("Fuel model"), 0, 0)
         fields.addWidget(self.models, 0, 1)
@@ -481,14 +493,10 @@ class StudyPage(QWidget):
             "300 psi of pressure drop, real nitrous starts boiling in the hole and flows less, so SPI\n"
             "overpredicts the flow, and with it the thrust and chamber pressure. Cells whose burn-average\n"
             "injector ΔP is over this are marked. It only applies to motors using SPI.")
-        grid_l = QGridLayout()
-        grid_l.setHorizontalSpacing(10)
-        grid_l.setVerticalSpacing(8)
-        grid_l.setColumnStretch(1, 1)
-        for r, (label, control) in enumerate((("Max peak Pc", self.max_pressure), ("Min peak Pc", self.min_pressure),
-                                               ("Injector ΔP warning", self.max_dp))):
-            grid_l.addWidget(QLabel(label), r, 0)
-            grid_l.addWidget(control, r, 1)
+        grid_l = FieldGrid()
+        for label, control in (("Max peak Pc", self.max_pressure), ("Min peak Pc", self.min_pressure),
+                               ("Injector ΔP warning", self.max_dp)):
+            grid_l.add(label, control, span=True)
         limits_l.addLayout(grid_l)
         for control in (self.min_pressure, self.max_dp):
             control.spin.valueChanged.connect(self.refresh)
@@ -521,7 +529,7 @@ class StudyPage(QWidget):
         left.setFixedWidth(400)
         left_l = QVBoxLayout(left)
         left_l.setContentsMargins(0, 0, 0, 0)
-        left_l.setSpacing(12)
+        left_l.setSpacing(CARD_GAP)
         left_l.addWidget(self.setup)
         left_l.addWidget(limits)
         left_l.addWidget(runs, 1)
@@ -597,7 +605,7 @@ class StudyPage(QWidget):
         compare_l.addLayout(line)
         self.warnings = QLabel("")
         self.warnings.setWordWrap(True)
-        self.warnings.setStyleSheet(f"color: {WARN.lighter(150).name()}; font-weight: 600;")
+        self.warnings.setObjectName("notApplied")
         self.warnings.hide()
         compare_l.addWidget(self.warnings)
         self.details = _small("Click cells to plot them, ⌘/Ctrl-click to add more. Double-click a cell to open it as a motor in a new tab.")
@@ -617,9 +625,8 @@ class StudyPage(QWidget):
         split.addWidget(compare)
         split.setSizes([520, 360])
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root = page_layout(QHBoxLayout(self))
+        root.setSpacing(COLUMN_GAP)
         root.addWidget(left)
         root.addWidget(split, 1)
         self.export_btn.setEnabled(False)

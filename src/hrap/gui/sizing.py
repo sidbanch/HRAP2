@@ -30,9 +30,22 @@ from PySide6.QtWidgets import (
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.engine.swirl import swirl_A, swirl_cd, swirl_exit_D, swirl_fill, swirl_sensitivity, swirl_xi
-from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch, Sketch
+from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
-from hrap.gui.widgets import PlainComboBox, PlainDoubleSpinBox, PlainSpinBox, UnitRow
+from hrap.gui.widgets import (
+    CARD_GAP,
+    COLUMN_GAP,
+    PAGE_MARGIN,
+    Card,
+    FieldGrid,
+    PlainComboBox,
+    PlainDoubleSpinBox,
+    PlainSpinBox,
+    UnitRow,
+    beside,
+    card_frame,
+    page_layout,
+)
 from hrap.io.config import chamber_limit, injector_cd
 from hrap.io.propellant import list_propellants, load_propellant
 from hrap.units import (
@@ -53,71 +66,6 @@ from hrap.units import (
 # the tube's measured 3.655 in bore over 45 in (0.118 in with Dyer κ 1). One video timing, so a cold flow of a bare
 # stock PTC should replace it.
 STOCK_PTC_D = 0.097 * 0.0254
-LABEL_W = 150  # one label column width, so the Targets and Motor fields line up
-UNIT_W = 72    # UnitRow's unit dropdown
-
-
-def _beside(field: QWidget, box: QWidget) -> QWidget:
-    """A field with a checkbox or button after it, on one row."""
-    row = QWidget()
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-    layout.addWidget(field, 1)
-    layout.addWidget(box)
-    return row
-
-
-def card_frame(title: str) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("sizingCard")
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(14, 12, 14, 12)
-    layout.setSpacing(10)
-    heading = QLabel(title)
-    heading.setObjectName("cardTitle")
-    layout.addWidget(heading)
-    return frame, layout
-
-
-class FieldGrid(QGridLayout):
-    """Label / field / unit rows with the same column widths in every card."""
-
-    def __init__(self):
-        super().__init__()
-        self.setHorizontalSpacing(6)
-        self.setVerticalSpacing(8)
-        self.setColumnMinimumWidth(0, LABEL_W)
-        self.setColumnMinimumWidth(2, UNIT_W)
-        self.setColumnStretch(1, 1)
-        self._rows = 0
-
-    def add(self, label: str, field: QWidget, unit: str = "", muted: bool = False, span: bool = False) -> list[QWidget]:
-        """Add a row and return its widgets, so the row can be hidden."""
-        name = QLabel(label)
-        if muted:
-            name.setObjectName("cardLabel")
-        self.addWidget(name, self._rows, 0)
-        row: list[QWidget] = [name, field]
-        if span or isinstance(field, (UnitRow, PlainComboBox)):
-            self.addWidget(field, self._rows, 1, 1, 2)
-        else:
-            self.addWidget(field, self._rows, 1)
-            if unit:
-                row.append(QLabel(unit))
-                self.addWidget(row[-1], self._rows, 2)
-        self._rows += 1
-        return row
-
-    def add_below(self, widget: QWidget):
-        """A line under the last row's field."""
-        self.addWidget(widget, self._rows, 1, 1, 2, Qt.AlignmentFlag.AlignLeft)
-        self._rows += 1
-
-    def add_line(self, widget: QWidget):
-        """A line across the whole grid."""
-        self.addWidget(widget, self._rows, 0, 1, 3)
-        self._rows += 1
 
 
 class LoadStopped(Exception):
@@ -224,81 +172,6 @@ def mid_section(geom) -> np.ndarray:
     """The grain's cross-section halfway along: 0 outside it, 1 fuel, 2 port."""
     d = geom.distance[:, :, geom.distance.shape[2] // 2].T
     return np.ascontiguousarray(np.where(np.isinf(d), 0, np.where(d > 0, 1, 2)), dtype=np.uint8)
-
-
-class Card(QFrame):
-    """A titled block of label / value rows."""
-
-    def __init__(self, title: str, rows: list[str], sketch: Sketch | None = None, inputs: QGridLayout | None = None,
-                 sketch_over_results: bool = False):
-        super().__init__()
-        self.setObjectName("sizingCard")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-        heading = QLabel(title)
-        heading.setObjectName("cardTitle")
-        layout.addWidget(heading)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(6)
-        self.values: dict[str, QLabel] = {}
-        self.labels: dict[str, QLabel] = {}
-        for r, name in enumerate(rows):
-            label = QLabel(name)
-            label.setObjectName("cardLabel")
-            value = QLabel("—")
-            value.setObjectName("cardValue")
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            grid.addWidget(label, r, 0)
-            grid.addWidget(value, r, 1)
-            self.values[name], self.labels[name] = value, label
-        grid.setColumnStretch(0, 1)
-        self.sketch = sketch
-        if sketch is None:
-            layout.addLayout(grid)
-        else:
-            row = QHBoxLayout()
-            row.setSpacing(12)
-            if not sketch_over_results:  # otherwise it tops the results column, keeping a wide sketch from widening the card
-                row.addWidget(sketch, 0, Qt.AlignmentFlag.AlignTop)
-            if inputs is not None:  # editable settings between the drawing and the results they give
-                row.addLayout(inputs, 1)
-                divider = QFrame()
-                divider.setFrameShape(QFrame.Shape.VLine)
-                divider.setObjectName("cardDivider")
-                row.addSpacing(8)
-                row.addWidget(divider)
-                row.addSpacing(8)
-                grid.setAlignment(Qt.AlignmentFlag.AlignTop)
-            if sketch_over_results:
-                column = QVBoxLayout()
-                column.setSpacing(10)
-                column.addWidget(sketch, 0, Qt.AlignmentFlag.AlignHCenter)
-                column.addLayout(grid)
-                column.addStretch(1)
-                row.addLayout(column, 1)
-            else:
-                row.addLayout(grid, 1)
-            layout.addLayout(row)
-        layout.addStretch(1)
-
-    def set(self, name: str, text: str, tip: str = ""):
-        """Show a value; the tooltip says how it was worked out."""
-        self.values[name].setText(text)
-        self.labels[name].setToolTip(tip)
-        self.values[name].setToolTip(tip)
-
-    def show_row(self, name: str, visible: bool):
-        self.labels[name].setVisible(visible)
-        self.values[name].setVisible(visible)
-
-    def clear(self):
-        for value in self.values.values():
-            value.setText("—")
-        if self.sketch is not None:
-            self.sketch.show_data(None)
 
 
 class SizingPage(QWidget):
@@ -532,14 +405,14 @@ class SizingPage(QWidget):
         inj_form.add("Sizing", self.size_from)
         inj_form.add("Type", self.inj_type)
         self._holes_row = inj_form.add("Hole count", self.holes)
-        self._hole_D_row = inj_form.add("Hole diameter", _beside(self.hole_D, self.ptc_stock), span=True)
+        self._hole_D_row = inj_form.add("Hole diameter", beside(self.hole_D, self.ptc_stock), span=True)
         ports_row = inj_form.add("Swirler holes", self.sw_ports)
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
         self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi),
-                              *inj_form.add("Measured CdA", _beside(self.sw_CdA_meas, fit), span=True)]
-        self._cd_row = inj_form.add("CdA per hole", _beside(self.inj_CdA, self.sw_cd_geom), span=True)
+                              *inj_form.add("Measured CdA", beside(self.sw_CdA_meas, fit), span=True)]
+        self._cd_row = inj_form.add("CdA per hole", beside(self.inj_CdA, self.sw_cd_geom), span=True)
         inj_form.add("Flow model", self.inj_model)
-        self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
+        self._hem_row = inj_form.add("HEM Cd", beside(self.inj_Cd_HEM, self.hem_same), span=True)
         self._dyer_row = inj_form.add("Dyer κ", self.dyer_kappa)
         self.show_layouts = QPushButton("Show")
         self.show_layouts.setCheckable(True)
@@ -621,11 +494,11 @@ class SizingPage(QWidget):
         self._grain_action.clicked.connect(self._on_grain_action)
         grain_form = FieldGrid()
         grain_form.add("Shape", self.grain_shape)
-        self._stl_rows = [*grain_form.add("STL file", _beside(self.stl_file, load_stl), span=True),
+        self._stl_rows = [*grain_form.add("STL file", beside(self.stl_file, load_stl), span=True),
                           *grain_form.add("STL units", self.stl_unit)]
         voxel_row = grain_form.add("Cube size", self.stl_voxel, "in")
         self._voxel_unit = voxel_row[2]
-        status = _beside(self.stl_status, _beside(self.stl_progress, self._grain_action))
+        status = beside(self.stl_status, beside(self.stl_progress, self._grain_action))
         self._stl_rows += [*voxel_row, *grain_form.add("", self.ends_burn), status]
         grain_form.add_line(status)
         self._grain_from_row = grain_form.add("Sizing", self.grain_from)
@@ -658,7 +531,7 @@ class SizingPage(QWidget):
         bar = self._apply_bar = QFrame()
         bar.setObjectName("applyBar")
         buttons = QHBoxLayout(bar)
-        buttons.setContentsMargins(16, 10, 16, 10)
+        buttons.setContentsMargins(PAGE_MARGIN, 10, PAGE_MARGIN, 10)
         buttons.addWidget(self.apply_summary, 1)
         buttons.addWidget(self.revert_btn)
         buttons.addWidget(self.apply_btn)
@@ -673,18 +546,18 @@ class SizingPage(QWidget):
         left_column.setFixedWidth(380)
         left = QVBoxLayout(left_column)
         left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(12)
+        left.setSpacing(CARD_GAP)
         for card in (targets, tank, fuel):
             left.addWidget(card)
         left.addWidget(self.performance, 1)
         right = QVBoxLayout()
-        right.setSpacing(12)
+        right.setSpacing(CARD_GAP)
         right.addWidget(self.injector)
         right.addWidget(self.grain)
         right.addWidget(self.nozzle, 1)
         body = QGridLayout()
-        body.setHorizontalSpacing(16)
-        body.setVerticalSpacing(12)
+        body.setHorizontalSpacing(COLUMN_GAP)
+        body.setVerticalSpacing(CARD_GAP)
         body.addWidget(self.limit_warning, 0, 0, 1, 2)
         body.addWidget(self.error, 1, 0, 1, 2)
         body.addWidget(left_column, 2, 0)
@@ -692,9 +565,7 @@ class SizingPage(QWidget):
         body.setColumnStretch(1, 1)
 
         inner = QWidget()
-        page = QVBoxLayout(inner)
-        page.setContentsMargins(16, 16, 16, 16)
-        page.setSpacing(12)
+        page = page_layout(QVBoxLayout(inner))
         page.addLayout(body, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

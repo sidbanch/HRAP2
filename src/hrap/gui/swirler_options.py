@@ -18,11 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from hrap.engine.swirl import nearest_drill, swirl_A, swirl_cd, swirl_port_D
+from hrap.gui.theme import colors_for
 from hrap.gui.widgets import PlainDoubleSpinBox, PlainSpinBox
 
 IN = 0.0254
 COLUMNS = ["Holes", "Drill", "Start O/F", "Flow vs target", "Liquid lasts"]
-ON_TARGET = QColor("#3f9e62")  # flow within 3% of the target
 
 
 @dataclass(frozen=True)
@@ -165,7 +165,7 @@ class SwirlerOptions(QFrame):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setToolTip(tip)
                 if col == 3 and abs(ratio - 1) <= 0.03:
-                    item.setForeground(ON_TARGET)
+                    item.setForeground(QColor(colors_for()["green"]))  # flow within 3% of the target
                 self.table.setItem(row, col, item)
             if lay.ports == t.ports:
                 selected = row

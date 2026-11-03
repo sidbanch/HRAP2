@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -61,9 +60,19 @@ from hrap.gui.grain_view import GrainScene, GrainView, RunGrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
-from hrap.gui.theme import apply_theme
+from hrap.gui.theme import apply_theme, colors_for
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
-from hrap.gui.widgets import CollapsibleBox, PlainComboBox, PlainDoubleSpinBox, UnitRow
+from hrap.gui.widgets import (
+    CARD_GAP,
+    PAGE_MARGIN,
+    FieldGrid,
+    PlainComboBox,
+    PlainDoubleSpinBox,
+    UnitRow,
+    card_frame,
+    line_up,
+    page_layout,
+)
 from hrap.io.config import (
     bundled_motor,
     chamber_limit,
@@ -116,8 +125,12 @@ PLOT_LABELS = {
 DEFAULT_TRACES = {"Thrust", "Tank pressure", "Chamber pressure", "Injector ΔP", "Oxidizer flow", "Fuel flow",
                   "Burning area", "Exposed case wall"}
 STL_TRACES = {"grn_web", "burn_area", "case_area"}  # only an STL grain has these
-CASE_COLOR = "#e06c75"
-TRACE_COLORS = {"burn_area": "#f08a3c", "case_area": CASE_COLOR}  # as on the Grain tab
+# Each trace's theme colour: oxidizer blue, fuel orange, the case wall red; traces sharing a plot differ.
+TRACE_COLORS = {
+    "F_thr": "green", "P_tnk": "oxidizer", "P_cmbr": "purple", "inj_dP": "teal", "T_tnk": "oxidizer", "OF": "teal",
+    "mdot_o": "oxidizer", "mdot_f": "fuel", "mdot_n": "grey", "rdot": "fuel", "grn_ID": "purple", "grn_web": "fuel",
+    "burn_area": "fuel", "case_area": "limit", "m_o": "oxidizer", "m_f": "fuel", "m_t": "grey", "cg": "grey",
+}
 DISPLAY_UNIT_OPTIONS = {
     "pressure": ["psi", "bar", "kPa", "MPa", "Pa", "atm"],
     "length": LENGTH_ITEMS,
@@ -497,9 +510,8 @@ class MainWindow(QMainWindow):
 
     def _make_form(self) -> QWidget:
         wrap = QWidget()
-        wl = QVBoxLayout(wrap)
-        wl.setContentsMargins(8, 8, 8, 8)
-        wl.setSpacing(8)
+        wl = page_layout(QVBoxLayout(wrap))
+        wl.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
 
         self.run_btn = QPushButton("Run")
         self.run_btn.setObjectName("runButton")
@@ -507,14 +519,10 @@ class MainWindow(QMainWindow):
         wl.addWidget(self.run_btn)
 
         # The motor is set on the Motor tab; this only says which one runs.
-        motor = QFrame()
-        motor.setObjectName("sizingCard")
-        ml = QVBoxLayout(motor)
-        ml.setContentsMargins(12, 8, 12, 8)
-        ml.setSpacing(4)
+        motor, ml = card_frame("Motor")
+        title = ml.itemAt(0).widget()
+        ml.removeWidget(title)
         head = QHBoxLayout()
-        title = QLabel("Motor")
-        title.setObjectName("cardTitle")
         edit = QPushButton("Edit on Motor tab")
         edit.clicked.connect(lambda: self.tabs.setCurrentWidget(self.sizing_page))
         head.addWidget(title)
@@ -537,14 +545,16 @@ class MainWindow(QMainWindow):
         ul.addWidget(self.unapplied_text, 1)
         ul.addWidget(apply_btn, 0, Qt.AlignmentFlag.AlignTop)
         ml.addWidget(self.unapplied)
-        wl.addWidget(motor)
 
+        # The cards scroll under the Run button, keeping their edges in line when the scrollbar shows.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         root = QVBoxLayout(inner)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(CARD_GAP)
+        root.addWidget(motor)
 
         # Run
         self.solve_tank_cooling = QCheckBox("Solve tank cooling each step")
@@ -566,32 +576,17 @@ class MainWindow(QMainWindow):
         self.dt.setToolTip("1 ms is usually accurate to about 0.1%. To check a new motor, rerun at 0.2 ms and compare.")
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
         self.P_cmbr.setToolTip("Chamber pressure before ignition. Leave it at 1 atm.")
-        sim = CollapsibleBox("Run")
-        sf = sim.form()
-        sf.addRow("Max run time [s]", self.tmax)
-        sf.addRow("Close valve at [s]", self.tburn)
-        sf.addRow("Timestep [ms]", self.dt)
-        sf.addRow("Chamber start pressure", self.P_cmbr)
+        sim, sim_l = card_frame("Run")
+        sf = FieldGrid()
+        sf.add("Max run time", self.tmax, "s")
+        sf.add("Close valve at", self.tburn, "s")
+        sf.add("Timestep", self.dt, "ms")
+        sf.add("Chamber start pressure", self.P_cmbr)
+        sim_l.addLayout(sf)
         root.addWidget(sim)
 
-        # Advanced
-        adv = CollapsibleBox("Advanced (not necessarily MATLAB-identical)")
-        af = adv.form()
-        self.adv_on = QCheckBox("Enable advanced options")
-        self.live_chem = QCheckBox("Live chemistry (WIP)")
-        self.ox_fluid = PlainComboBox()
-        self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
-        self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
-                                 "HEM and Dyer always use CoolProp.")
-        af.addRow(self.solve_tank_cooling)
-        af.addRow(self.adv_on)
-        af.addRow(self.live_chem)
-        af.addRow("Oxidizer fluid", self.ox_fluid)
-        self.adv_on.toggled.connect(self._sync_advanced)
-        root.addWidget(adv)
-
         # Runs: every finished simulation, to draw under the current one
-        runs = CollapsibleBox("Runs")
+        runs, runs_l = card_frame("Runs")
         self.run_list = QListWidget()
         self.run_list.setToolTip("Every simulation of this motor lands here, with what changed from its previous run.\n"
                                  "Click a run to load its settings and results; tick runs to draw them dashed under it.\n"
@@ -605,16 +600,27 @@ class MainWindow(QMainWindow):
         self.run_list.customContextMenuRequested.connect(self._run_menu)
         clear_runs = QPushButton("Clear runs")
         clear_runs.clicked.connect(self._clear_runs)
-        runs.form().addRow(self.run_list)
-        runs.form().addRow(clear_runs)
-        root.insertWidget(root.indexOf(adv), runs)  # above Advanced, where it's in view
+        runs_l.addWidget(self.run_list)
+        runs_l.addWidget(clear_runs)
+        root.addWidget(runs)
 
-        # One label column width for every section, so the fields line up down the panel.
-        labels = [item.widget() for box in inner.findChildren(CollapsibleBox) for r in range(box.form().rowCount())
-                  if (item := box.form().itemAt(r, QFormLayout.ItemRole.LabelRole)) is not None]
-        width = max(label.sizeHint().width() for label in labels)
-        for label in labels:
-            label.setMinimumWidth(width)
+        # Advanced
+        adv, adv_l = card_frame("Advanced (not necessarily MATLAB-identical)")
+        af = FieldGrid()
+        self.adv_on = QCheckBox("Enable advanced options")
+        self.live_chem = QCheckBox("Live chemistry (WIP)")
+        self.ox_fluid = PlainComboBox()
+        self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
+        self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
+                                 "HEM and Dyer always use CoolProp.")
+        for box in (self.solve_tank_cooling, self.adv_on, self.live_chem):
+            af.add_line(box)
+        af.add("Oxidizer fluid", self.ox_fluid)
+        self.adv_on.toggled.connect(self._sync_advanced)
+        adv_l.addLayout(af)
+        root.addWidget(adv)
+        line_up(sf, af)
+
         # Never let the splitter squeeze the panel narrower than its fields; there's no horizontal scrollbar.
         scroll.setMinimumWidth(inner.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width() + 4)
         root.addStretch(1)
@@ -626,13 +632,11 @@ class MainWindow(QMainWindow):
         page = QScrollArea()
         page.setWidgetResizable(True)
         inner = QWidget()
-        outer = QHBoxLayout(inner)
-        outer.setContentsMargins(16, 16, 16, 16)
+        outer = page_layout(QHBoxLayout(inner))
         column = QVBoxLayout()
-        column.setSpacing(12)
+        column.setSpacing(CARD_GAP)
         outer.addLayout(column)
         outer.addStretch(1)
-        inner.setMaximumWidth(1100)
 
         self.mp_on = QCheckBox("Calculate mass properties (ENG / RSE CG)")
         self.tnk_start = UnitRow(LENGTH_ITEMS, "in")
@@ -648,33 +652,35 @@ class MainWindow(QMainWindow):
         self._legacy_mtr_cg = 0.0
         self._legacy_mtr_cg_unit = "in"
 
-        mass = CollapsibleBox("Mass properties")
-        mf = mass.form()
-        mf.addRow(self.mp_on)
-        mf.addRow("Tank front, from datum", self.tnk_start)
-        mf.addRow("Tank dry mass", self.tnk_m)
-        mf.addRow("Chamber front, from datum", self.cmbr_start)
-        mf.addRow("Chamber dry mass (no grain)", self.cmbr_m)
-        mf.addRow(self.mass_info)
+        mass, mass_l = card_frame("Mass properties")
+        mf = FieldGrid()
+        mf.add_line(self.mp_on)
+        mf.add("Tank front, from datum", self.tnk_start)
+        mf.add("Tank dry mass", self.tnk_m)
+        mf.add("Chamber front, from datum", self.cmbr_start)
+        mf.add("Chamber dry mass (no grain)", self.cmbr_m)
+        mf.add_line(self.mass_info)
+        mass_l.addLayout(mf)
         mass_fields = (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m)
         self.mp_on.toggled.connect(lambda on: [w.setEnabled(on) for w in mass_fields])
         for w in mass_fields:
             w.setEnabled(False)
         column.addWidget(mass)
 
-        export = CollapsibleBox("Export")
-        ef = export.form()
-        ef.addRow("Motor OD", self.dry_OD)
-        ef.addRow("Motor length", self.dry_L)
+        export, export_l = card_frame("Export")
+        ef = FieldGrid()
+        ef.add("Motor OD", self.dry_OD)
+        ef.add("Motor length", self.dry_L)
+        export_l.addLayout(ef)
         buttons = QHBoxLayout()
         for label, kind in (("Export .RSE", "rse"), ("Export .ENG", "eng"), ("Export CSV", "csv")):
             btn = QPushButton(label)
             btn.clicked.connect(lambda _=False, k=kind: self._export(k))
             buttons.addWidget(btn)
-        self.rse_btn = cast(QPushButton, buttons.itemAt(0).widget())
-        ef.addRow(buttons)
+        export_l.addLayout(buttons)
         column.addWidget(export)
         column.addStretch(1)
+        line_up(mf, ef)
         for box in (mass, export):
             box.setMinimumWidth(520)
         page.setWidget(inner)
@@ -682,7 +688,7 @@ class MainWindow(QMainWindow):
 
     def _make_results(self) -> QWidget:
         box = QWidget()
-        layout = QVBoxLayout(box)
+        layout = page_layout(QVBoxLayout(box))
         mid = QSplitter(Qt.Orientation.Horizontal)
         self.plot = QTabWidget()
         self._plots: dict[str, pg.PlotItem] = {}
@@ -1197,7 +1203,7 @@ class MainWindow(QMainWindow):
         self._progress.show()
         self.statusBar().showMessage("Running simulation…")
         self._thread = QThread()
-        self._set_running(True)
+        self._sync_busy()
         self._worker = SimWorker(self._running_cfg, self.sizing_page.grain_tables())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -1209,11 +1215,6 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread_finished)
         self._thread.start()
-
-    def _set_running(self, running: bool):
-        for page in (self._form, self.sizing_page, self.mass_page):
-            page.setEnabled(not running)
-        self._sync_busy()
 
     def _sync_busy(self):
         """Motors can't be switched or opened while a simulation or study is running."""
@@ -1232,7 +1233,7 @@ class MainWindow(QMainWindow):
         thread.deleteLater()
         self._thread = None
         self._worker = None
-        self._set_running(False)
+        self._sync_busy()
         if self._close_when_finished:
             self.close()
 
@@ -1497,9 +1498,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Simulation failed")
         QMessageBox.critical(self, "Simulation error", msg)
 
+    def _colors(self) -> dict:
+        return colors_for(getattr(self, "_theme", "dark"))
+
     def _hover_line_pen(self):
-        accent = "#5b8def" if getattr(self, "_theme", "dark") != "light" else "#2f5fbf"
-        return pg.mkPen(accent, width=1, style=Qt.PenStyle.DashLine)
+        return pg.mkPen(self._colors()["accent"], width=1, style=Qt.PenStyle.DashLine)
 
     def _clear_plot(self):
         self._plots.clear()
@@ -1535,7 +1538,7 @@ class MainWindow(QMainWindow):
             shown = ([o] if o is not None else []) + [r.output for r in overlays]
             self._time_range = (0.0, max(float(x.t[-1]) for x in shown))
         self._clear_plot()
-        palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
+        colors = self._colors()
         runs = [self._settings, *(r.settings for r in overlays)]
         stl = any(getattr(settings, "grain_geometry", None) is not None for settings in runs)
         self.trace_list.blockSignals(True)  # renaming an item would redraw the plots midway through this
@@ -1576,7 +1579,7 @@ class MainWindow(QMainWindow):
                 line.setVisible(False)
                 plot.addItem(line, ignoreBounds=True)
                 self._hover_lines.append(line)
-            color = TRACE_COLORS.get(key, palette[i % len(palette)])
+            color = colors[TRACE_COLORS[key]]
             if o is not None and (values := _curve(o, self._settings, key)) is not None:
                 self._plots[quantity].plot(o.t, self.display_units.value(values, quantity), pen=pg.mkPen(color, width=2),
                                           name=label)
@@ -1590,19 +1593,19 @@ class MainWindow(QMainWindow):
         if "pressure" in self._plots:
             limit = self.display_units.value(chamber_limit(cfg), "pressure")
             self._plots["pressure"].addItem(pg.InfiniteLine(
-                pos=limit, angle=0, movable=False, pen=pg.mkPen("#e06c75", width=1, style=Qt.PenStyle.DashLine),
-                label="Chamber limit", labelOpts={"position": 0.05, "color": "#e06c75", "anchors": [(0, 1), (0, 1)]}))
+                pos=limit, angle=0, movable=False, pen=pg.mkPen(colors["limit"], width=1, style=Qt.PenStyle.DashLine),
+                label="Chamber limit", labelOpts={"position": 0.05, "color": colors["limit"], "anchors": [(0, 1), (0, 1)]}))
             if self.spi_dp_line.isChecked() and uses_spi(cfg):
                 dp = self.display_units.value(to_si(300.0, "psi", "pressure"), "pressure")
                 self._plots["pressure"].addItem(pg.InfiniteLine(
-                    pos=dp, angle=0, movable=False, pen=pg.mkPen("#e5c07b", width=1, style=Qt.PenStyle.DashLine),
-                    label="300 psi ΔP (SPI)", labelOpts={"position": 0.05, "color": "#e5c07b", "anchors": [(0, 1), (0, 1)]}))
+                    pos=dp, angle=0, movable=False, pen=pg.mkPen(colors["warn"], width=1, style=Qt.PenStyle.DashLine),
+                    label="300 psi ΔP (SPI)", labelOpts={"position": 0.05, "color": colors["warn"], "anchors": [(0, 1), (0, 1)]}))
         contact = _case_contact(o, self._settings) if o is not None else None
         for plot in self._plots.values() if contact is not None else ():
             plot.addItem(pg.InfiniteLine(
-                pos=contact, angle=90, movable=False, pen=pg.mkPen(CASE_COLOR, width=1.5, style=Qt.PenStyle.DashLine),
+                pos=contact, angle=90, movable=False, pen=pg.mkPen(colors["limit"], width=1.5, style=Qt.PenStyle.DashLine),
                 label=f"Case wall exposed, {contact:.2f} s",
-                labelOpts={"position": 0.96, "color": CASE_COLOR, "anchors": [(-0.03, 0), (-0.03, 0)]}), ignoreBounds=True)
+                labelOpts={"position": 0.96, "color": colors["limit"], "anchors": [(-0.03, 0), (-0.03, 0)]}), ignoreBounds=True)
         for plot in self._plots.values():
             vb = cast(pg.ViewBox, plot.vb)
             vb.setXRange(*self._time_range, padding=0)
@@ -1615,10 +1618,10 @@ class MainWindow(QMainWindow):
         self._style_plots()
 
     def _style_plots(self):
-        dark = getattr(self, "_theme", "dark") == "dark"
-        fg = "#e6e8ee" if dark else "#1b1d21"
+        colors = self._colors()
+        fg = colors["plot_fg"]
         for widget in self._plot_widgets.values():
-            widget.setBackground("#1a1d23" if dark else "#ffffff")
+            widget.setBackground(colors["plot_bg"])
         for plot in self._plots.values():
             for side in ("left", "bottom"):
                 axis = plot.getAxis(side)
@@ -2088,7 +2091,7 @@ def main():
         app.setApplicationVersion(__version__)
         app.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / "resources" / "icon.ico")))
         apply_theme(app, "dark")
-        pg.setConfigOptions(antialias=True, background="#1a1d23", foreground="#e6e8ee")
+        pg.setConfigOptions(antialias=True, background=colors_for()["plot_bg"], foreground=colors_for()["plot_fg"])
         # Loading CoolProp and building its nitrous tables takes ~0.8 s and blocks Qt even from a
         # background thread, so do it before the window is up instead of on the first sizing or run.
         _warm_coolprop_tables()

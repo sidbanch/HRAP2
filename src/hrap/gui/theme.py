@@ -15,6 +15,20 @@ DARK = {
     "border": "#3a404c",
     "plot_bg": "#1a1d23",
     "plot_fg": "#e6e8ee",
+    # What things are, the same everywhere: oxidizer blue, fuel orange, red only for limits and the case wall.
+    "oxidizer": "#5b8def",
+    "fuel": "#f08a3c",
+    "limit": "#e06c75",
+    "warn": "#e5c07b",
+    "green": "#98c379",
+    "purple": "#c678dd",
+    "teal": "#56b6c2",
+    "grey": "#abb2bf",
+    "glass": "#d1dbed",  # the unburned fuel, see-through, in the 3D grain
+    # Sweep result tiles, under white text.
+    "tile_ok": "#2f7d4f",
+    "tile_warn": "#a87a22",
+    "tile_bad": "#a8413b",
 }
 
 LIGHT = {
@@ -28,7 +42,29 @@ LIGHT = {
     "border": "#c5c9d1",
     "plot_bg": "#ffffff",
     "plot_fg": "#1b1d21",
+    "oxidizer": "#2f5fbf",
+    "fuel": "#e07020",
+    "limit": "#c8414c",
+    "warn": "#b07d12",
+    "green": "#3f8a2e",
+    "purple": "#9a3fb5",
+    "teal": "#1f8a99",
+    "grey": "#5c6370",
+    "glass": "#404d61",
+    "tile_ok": "#2f7d4f",
+    "tile_warn": "#a87a22",
+    "tile_bad": "#a8413b",
 }
+
+
+def colors_for(name: str = "dark") -> dict:
+    return LIGHT if name == "light" else DARK
+
+
+def mix(a: str, b: str, share: float) -> QColor:
+    """Colour a, with `share` of colour b mixed in."""
+    ca, cb = QColor(a), QColor(b)
+    return QColor.fromRgbF(*((1 - share) * x + share * y for x, y in zip(ca.getRgbF()[:3], cb.getRgbF()[:3])))
 
 
 def _palette(colors: dict) -> QPalette:
@@ -58,21 +94,13 @@ def _palette(colors: dict) -> QPalette:
 
 
 def apply_theme(app: QApplication, name: str = "dark") -> dict:
-    colors = DARK if name != "light" else LIGHT
+    colors = colors_for(name)
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(_palette(colors))
     accent = colors["accent"]
     app.setStyleSheet(
         f"""
         QMainWindow, QDialog {{ background: {colors['window']}; }}
-        QGroupBox {{
-            font-weight: 600;
-            border: 1px solid {colors['border']};
-            border-radius: 0px;
-            margin-top: 12px;
-            padding: 10px 8px 8px 8px;
-        }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {{
             background: {colors['base']};
             border: 1px solid {colors['border']};
@@ -110,31 +138,9 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border: 1px solid {colors['border']};
             border-radius: 0px;
         }}
-        QWidget#collapsibleBox {{
-            background: {colors['base']};
-            border: 1px solid {colors['border']};
-        }}
-        QPushButton#collapseHeader {{
-            color: {colors['text']};
-            font-weight: 600;
-            padding: 8px 10px;
-            background: {colors['alt']};
-            border: none;
-            text-align: left;
-            border-radius: 0px;
-        }}
-        QPushButton#collapseHeader:hover {{ background: {colors['base']}; }}
-        QPushButton#collapseHeader:checked {{ background: {colors['alt']}; }}
-        QWidget#collapseBody {{ background: {colors['base']}; }}
         QFrame#motorPanel {{
             background: {colors['plot_bg']};
             border: 1px solid {colors['border']};
-        }}
-        QLabel#motorStatsStrip {{
-            color: {colors['text']};
-            padding: 8px 12px;
-            background: {colors['base']};
-            border-top: 1px solid {colors['border']};
         }}
         QSplitter::handle {{ background: {colors['border']}; }}
         QFrame#sizingCard {{
@@ -150,14 +156,14 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
         QLabel#cardTitle {{ font-weight: 700; font-size: 14px; }}
         QLabel#cardLabel {{ color: {colors['disabled']}; }}
         QLabel#cardValue {{ font-weight: 600; }}
-        QLabel#notApplied {{ color: #e5c07b; }}
+        QLabel#notApplied {{ color: {colors['warn']}; }}
         QToolButton#builtBadge {{ background: transparent; border: none; padding: 0; color: {colors['disabled']}; }}
         QToolButton#builtBadge:hover {{ color: {colors['text']}; text-decoration: underline; }}
-        QAbstractSpinBox[changed="true"] {{ border-left: 3px solid #e5c07b; }}
+        QAbstractSpinBox[changed="true"] {{ border-left: 3px solid {colors['warn']}; }}
         QLabel#sizingError {{
-            color: #e06c75;
+            color: {colors['limit']};
             padding: 8px 12px;
-            border: 1px solid #e06c75;
+            border: 1px solid {colors['limit']};
             border-radius: 6px;
         }}
         QTabWidget#pageTabs::pane {{ border: none; }}
