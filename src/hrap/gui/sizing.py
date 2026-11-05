@@ -198,6 +198,7 @@ class SizingPage(QWidget):
         self._port_error = ""
         self._loading = False
         self._swirler = False
+        self._tank_sync = False
 
         self.P_cmbr = UnitRow(PRESSURE_ITEMS, "psi", 1)
         self.burn_time = PlainDoubleSpinBox()
@@ -254,18 +255,21 @@ class SizingPage(QWidget):
         tl.addLayout(form)
 
         # The motor's physical settings live on this page; the Simulation tab only picks models and run settings.
+        self.tank_L = UnitRow(LENGTH_ITEMS, "in", 3)
         self.tank_V = UnitRow(VOLUME_ITEMS, "cm^3", 3)
         self.tank_D = UnitRow(LENGTH_ITEMS, "in", 4)
         self.tank_T = UnitRow(TEMP_ITEMS, "C", 3)
         self.fill = PlainDoubleSpinBox()
         self.fill.setRange(0, 100)
         self.fill.setDecimals(3)
-        self.tank_D.setToolTip("Inside diameter. It only sets the tank's length in the drawings and mass properties.")
+        self.tank_L.setToolTip("Inside length of the tank. With an inside diameter, volume is π/4 × diameter² × this length.")
+        self.tank_D.setToolTip("Inside diameter. With the internal length, it sets the tank volume.")
+        self.tank_V.setToolTip("Tank volume. With an inside diameter it follows the internal length.\n"
+                               "Type a volume to set the length from it instead.")
         self.tank_T.setToolTip("Starting tank temperature. It sets the tank pressure.")
         self.fill.setToolTip("Share of the tank volume that starts as liquid. The dip tube's length sets it.")
         self.tank_P = QLabel("—")
         self.ox_liquid = QLabel("—")
-        self.tank_L = QLabel("—")
         self.vent = PlainComboBox()
         self.vent.addItems(["None", "External", "Internal"])
         self.vent.setToolTip("External: an orifice at the top of the tank vents vapor overboard.\n"
@@ -276,13 +280,13 @@ class SizingPage(QWidget):
         self.vent_Cd.setDecimals(3)
         tank, tank_layout = card_frame("Tank")
         tank_form = FieldGrid()
-        tank_form.add("Volume", self.tank_V)
+        tank_form.add("Internal length", self.tank_L)
         tank_form.add("Diameter", self.tank_D)
+        tank_form.add("Volume", self.tank_V)
         tank_form.add("Temperature", self.tank_T)
         tank_form.add("Fill", self.fill, "%")
         tank_form.add("Tank pressure", self.tank_P, muted=True)
         tank_form.add("Liquid oxidizer", self.ox_liquid, muted=True)
-        tank_form.add("Length", self.tank_L, muted=True)
         tank_form.add("Vent", self.vent)
         self._vent_rows = [*tank_form.add("Vent diameter", self.vent_D), *tank_form.add("Vent Cd", self.vent_Cd)]
         tank_layout.addLayout(tank_form)
@@ -333,6 +337,14 @@ class SizingPage(QWidget):
 
         self.hole_D = UnitRow(LENGTH_ITEMS, "in", 5)
         self.inj_CdA = UnitRow(AREA_ITEMS, "in^2", 6)
+        self.inj_Cd = PlainDoubleSpinBox()
+        self.inj_Cd.setRange(0, 5)
+        self.inj_Cd.setDecimals(4)
+        self.cd_as = PlainComboBox()
+        self.cd_as.addItems(["CdA", "Cd"])
+        self.cd_as.setFixedWidth(72)
+        self.cd_as.setToolTip("CdA is the discharge coefficient times the hole area.\n"
+                              "Cd is the coefficient alone, on that same area. CdA = Cd × area.")
         self.inj_model = PlainComboBox()
         self.inj_model.addItems(["SPI", "HEM", "Dyer"])
         self.inj_model.setToolTip("SPI: treats the nitrous as liquid all the way through the hole (original HRAP).\n"
@@ -396,7 +408,16 @@ class SizingPage(QWidget):
         self._sw_D_port_row = inj_form.add("Hole diameter", self.sw_D_port)
         self._swirler_rows = [*ports_row, *inj_form.add("Hole offset", self.sw_R_in), *inj_form.add("Inlet loss (ξ)", self.sw_xi),
                               *inj_form.add("Measured CdA", _beside(self.sw_CdA_meas, fit), span=True)]
-        self._cd_row = inj_form.add("CdA per hole", _beside(self.inj_CdA, self.sw_cd_geom), span=True)
+        cd_entry = QWidget()
+        cd_lay = QHBoxLayout(cd_entry)
+        cd_lay.setContentsMargins(0, 0, 0, 0)
+        cd_lay.setSpacing(6)
+        cd_lay.addWidget(self.inj_CdA, 1)
+        cd_lay.addWidget(self.inj_Cd, 1)
+        cd_lay.addWidget(self.cd_as)
+        cd_lay.addWidget(self.sw_cd_geom)
+        self.inj_Cd.hide()
+        self._cd_row = inj_form.add("CdA per hole", cd_entry, span=True)
         inj_form.add("Flow model", self.inj_model)
         self._hem_row = inj_form.add("HEM Cd", _beside(self.inj_Cd_HEM, self.hem_same), span=True)
         self._dyer_row = inj_form.add("Dyer κ", self.dyer_kappa)
@@ -526,14 +547,21 @@ class SizingPage(QWidget):
         for spin in (self.P_cmbr.spin, self.burn_time, self.OF):
             spin.valueChanged.connect(self.refresh)
         self.P_cmbr.unit.currentTextChanged.connect(self.refresh)
-        for w in (self.P_limit, self.tank_V, self.tank_D, self.tank_T, self.vent_D, self.rho, self.hole_D, self.inj_CdA,
+        for w in (self.P_limit, self.tank_T, self.vent_D, self.rho, self.hole_D, self.inj_CdA,
                   self.sw_D_port, self.sw_R_in,
                   self.port_D, self.grain_OD, self.grain_L, self.pre_L, self.post_L, self.Pa, self.throat_D):
             w.spin.valueChanged.connect(self._on_motor_edited)
             w.unit.currentTextChanged.connect(self._on_motor_edited)
         for spin in (self.fill, self.vent_Cd, self.prop_a, self.prop_n, self.prop_m, self.const_OF, self.cstar, self.sw_xi,
-                     self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
+                     self.inj_Cd, self.inj_Cd_HEM, self.dyer_kappa, self.holes, self.sw_ports, self.noz_Cd, self.noz_eff, self.noz_ER):
             spin.valueChanged.connect(self._on_motor_edited)
+        self.tank_L.spin.valueChanged.connect(self._on_tank_length)
+        self.tank_L.unit.currentTextChanged.connect(self._on_tank_length)
+        self.tank_D.spin.valueChanged.connect(self._on_tank_diameter)
+        self.tank_D.unit.currentTextChanged.connect(self._on_tank_diameter)
+        self.tank_V.spin.valueChanged.connect(self._on_tank_volume)
+        self.tank_V.unit.currentTextChanged.connect(self._on_tank_volume)
+        self.cd_as.currentIndexChanged.connect(self._on_cd_mode)
         for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model):
             combo.currentIndexChanged.connect(self._on_motor_edited)
         for box in (self.sw_cd_geom, self.hem_same):
@@ -666,17 +694,30 @@ class SizingPage(QWidget):
         self.injector.labels["Flow per hole"].setText("Flow per swirler" if swirler else "Flow per hole")
         self.injector.labels["Holes"].setText("Swirlers" if swirler else "Holes")
         self.sw_cd_geom.setVisible(swirler)
-        self._cd_row[0].setText("CdA per swirler" if swirler else "CdA per hole")
+        as_cd = self.cd_as.currentText() == "Cd"
+        noun = "swirler" if swirler else "hole"
+        self._cd_row[0].setText(f"Cd per {noun}" if as_cd else f"CdA per {noun}")
+        self.inj_Cd.setVisible(as_cd)
+        self.inj_CdA.setVisible(not as_cd)
         geometry = swirler and self.sw_cd_geom.isChecked()
         self.inj_CdA.setEnabled(not geometry)
+        self.inj_Cd.setEnabled(not geometry)
         bore = self.hole_D.si("length")
-        self.inj_CdA.setToolTip(
+        cd_tip = (
             "Worked out from the swirler geometry." if geometry else
+            "Discharge coefficient on the hole or PTC bore. The motor stores this. CdA = Cd × that area." if as_cd else
             f"The flow area after losses: a cold flow's water flow ÷ √(2 × 998 kg/m³ × ΔP). Divided by the\n"
-            f"{'PTC bore' if swirler else 'hole'} area it's a Cd of {self.cd():.4f}, which is what the motor file stores.")
+            f"{'PTC bore' if swirler else 'hole'} area it's a Cd of {self.cd():.4f}, which is what the motor file stores."
+        )
+        self.inj_CdA.setToolTip(cd_tip)
+        self.inj_Cd.setToolTip(cd_tip)
         if geometry and self.sw_D_port.si("length") > 0:
+            cd = self.cd()
+            self.inj_Cd.blockSignals(True)
+            self.inj_Cd.setValue(cd)
+            self.inj_Cd.blockSignals(False)
             self.inj_CdA.spin.blockSignals(True)
-            self.inj_CdA.set_si(self.cd() * 0.25 * math.pi * bore ** 2, "area")
+            self.inj_CdA.set_si(cd * 0.25 * math.pi * bore ** 2, "area")
             self.inj_CdA.spin.blockSignals(False)
         model = self.inj_model.currentText()
         for w in self._hem_row:
@@ -726,10 +767,17 @@ class SizingPage(QWidget):
 
         self._loading = True
         show(self.tank_D, "tnk_D")
-        if int(cfg.get("tnk_V_state", 0)):
-            self.tank_V.set_si(si("tnk_L") * 0.25 * math.pi * si("tnk_D") ** 2, "volume")
+        D = si("tnk_D")
+        if int(cfg.get("tnk_V_state", 0)) and D > 0:
+            L = si("tnk_L")
+            self.tank_L.set_display(float(cfg.get("tnk_L") or 0.0), cfg.get("tnk_L_unit") or "in")
+            self.tank_V.set_si(L * 0.25 * math.pi * D ** 2, "volume")
         else:
             show(self.tank_V, "tnk_V")
+            if D > 0:
+                self.tank_L.set_si(self.tank_V.si("volume") / (0.25 * math.pi * D ** 2), "length")
+            elif float(cfg.get("tnk_L") or 0.0) > 0:
+                self.tank_L.set_display(float(cfg.get("tnk_L") or 0.0), cfg.get("tnk_L_unit") or "in")
         if cfg.get("tnk_dd") == "Starting Tank Pressure":
             P = to_si(float(cfg["tnk_cond"]), cfg["T_tnk_unit"], "pressure")
             self.tank_T.set_si(saturation_temperature(P) or 293.15, "temperature")
@@ -767,6 +815,8 @@ class SizingPage(QWidget):
         show(self.sw_D_port, "sw_D_port")
         show(self.sw_R_in, "sw_R_in")
         self.sw_cd_geom.setChecked(bool(cfg["sw_cd_from_geometry"]))
+        self.cd_as.setCurrentText("Cd" if cfg.get("inj_cd_as") == "Cd" else "CdA")
+        self.inj_Cd.setValue(float(cfg.get("inj_Cd") or 0.0))
         self.inj_CdA.set_si(float(cfg.get("inj_Cd") or 1.0) * 0.25 * math.pi * self.hole_D.si("length") ** 2, "area")
         self.inj_model.setCurrentText(str(cfg.get("inj_model") or "SPI"))
         hem_cd = float(cfg.get("inj_Cd_HEM") or 0.0)
@@ -799,10 +849,13 @@ class SizingPage(QWidget):
         def field(name: str, row: UnitRow) -> dict:
             return {name: row.spin.value(), f"{name}_unit": row.unit.currentText()}
 
-        L, _D, _V = self.tank_geometry()
+        L, _D, V = self.tank_geometry()
+        vol_unit = self.tank_V.unit.currentText()
+        len_unit = self.tank_L.unit.currentText()
         return {
-            **field("tnk_V", self.tank_V), "tnk_V_state": 0, **field("tnk_D", self.tank_D),
-            "tnk_L": from_si(L, self.tank_D.unit.currentText(), "length"), "tnk_L_unit": self.tank_D.unit.currentText(),
+            "tnk_V": from_si(V, vol_unit, "volume"), "tnk_V_unit": vol_unit, "tnk_V_state": 0,
+            **field("tnk_D", self.tank_D),
+            "tnk_L": from_si(L, len_unit, "length"), "tnk_L_unit": len_unit,
             "tnk_dd": "Starting Tank Temperature", "tnk_cond": self.tank_T.spin.value(),
             "T_tnk_unit": self.tank_T.unit.currentText(),
             "fill_dd": "Tank Fill Percentage", "fill": self.fill.value(), "fill_unit": "%",
@@ -813,7 +866,7 @@ class SizingPage(QWidget):
             "prop_m": self.prop_m.value(), "reg_model": self.reg_model.currentData(), "const_OF": self.const_OF.value(),
             "cstar_eff": self.cstar.value(),
             "inj_type": self.inj_type.currentText(), **field("inj_D", self.hole_D), "inj_N": self.holes.value(),
-            "inj_Cd": self.cd(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
+            "inj_Cd": self.cd(), "inj_cd_as": self.cd_as.currentText(), "sw_ports": self.sw_ports.value(), **field("sw_D_port", self.sw_D_port),
             **field("sw_R_in", self.sw_R_in), "sw_xi": self.sw_xi.value(), "sw_cd_from_geometry": self.sw_cd_geom.isChecked(),
             "ptc_stock": self.inj_type.currentText() == "Swirler" and self.ptc_stock.isChecked(),
             "inj_model": self.inj_model.currentText(),
@@ -828,8 +881,12 @@ class SizingPage(QWidget):
         }
 
     def tank_geometry(self) -> tuple[float, float, float]:
-        """Tank length, diameter and volume in SI. The length follows from the volume and diameter."""
-        D = self.tank_D.si("length") or self.grain_OD.si("length") or 0.05
+        """Tank length, diameter and volume in SI. With an inside diameter, volume follows the internal length."""
+        D = self.tank_D.si("length")
+        L = self.tank_L.si("length")
+        if D > 1e-9 and L > 1e-9:
+            return L, D, L * 0.25 * math.pi * D ** 2
+        D = D or self.grain_OD.si("length") or 0.05
         V = self.tank_V.si("volume")
         return max(V / (0.25 * math.pi * D ** 2), 1e-4), D, V
 
@@ -853,7 +910,6 @@ class SizingPage(QWidget):
             return
         u = self._get_units()
         cfg = self._get_cfg()
-        self.tank_L.setText(u.text(self.tank_geometry()[0], "length"))
         limit = chamber_limit(cfg)
         self.limit_warning.hide()
         try:
@@ -1129,12 +1185,51 @@ class SizingPage(QWidget):
         self.sw_ports.setValue(ports)
 
     def cd(self) -> float:
-        """The Cd on the hole or PTC bore: from the swirler geometry, or the typed CdA ÷ that area."""
+        """The Cd on the hole or PTC bore: from the swirler geometry, a typed Cd, or the typed CdA ÷ that area."""
         bore, D_port = self.hole_D.si("length"), self.sw_D_port.si("length")
         if self._swirler and self.sw_cd_geom.isChecked() and D_port > 0:
             return swirl_cd(bore, self.sw_ports.value(), D_port, self.sw_R_in.si("length"), self.sw_xi.value())
+        if self.cd_as.currentText() == "Cd":
+            return self.inj_Cd.value()
         area = 0.25 * math.pi * bore ** 2
         return self.inj_CdA.si("area") / area if area > 0 else 0.0
+
+    def _on_tank_length(self, *_):
+        """Internal length is the tank size. Volume follows when an inside diameter is already set."""
+        if self._loading or self._tank_sync:
+            return
+        D = self.tank_D.si("length")
+        if D > 1e-9:
+            self._tank_sync = True
+            self.tank_V.set_si(self.tank_L.si("length") * 0.25 * math.pi * D ** 2, "volume")
+            self._tank_sync = False
+        self._on_motor_edited()
+
+    def _on_tank_diameter(self, *_):
+        self._on_tank_length()
+
+    def _on_tank_volume(self, *_):
+        """A typed volume sets the internal length when the diameter is known."""
+        if self._loading or self._tank_sync:
+            return
+        D = self.tank_D.si("length")
+        if D > 1e-9:
+            self._tank_sync = True
+            self.tank_L.set_si(self.tank_V.si("volume") / (0.25 * math.pi * D ** 2), "length")
+            self._tank_sync = False
+        self._on_motor_edited()
+
+    def _on_cd_mode(self, *_):
+        """Switch the injector entry between CdA and Cd without changing the flow."""
+        if not self._loading and not (self._swirler and self.sw_cd_geom.isChecked()):
+            area = 0.25 * math.pi * self.hole_D.si("length") ** 2
+            if self.cd_as.currentText() == "Cd" and area > 0:
+                self.inj_Cd.blockSignals(True)
+                self.inj_Cd.setValue(self.inj_CdA.si("area") / area)
+                self.inj_Cd.blockSignals(False)
+            elif area > 0:
+                self.inj_CdA.set_si(self.inj_Cd.value() * area, "area")
+        self._on_motor_edited()
 
     def _on_ptc_stock(self, stock: bool):
         if stock:

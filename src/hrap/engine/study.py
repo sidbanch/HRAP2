@@ -93,6 +93,7 @@ def _current_temperature(cfg: dict) -> float:
 INPUTS: dict[str, Input] = {
     "throat": Input("Throat", "length", lambda c, v: c.update(noz_thrt=v, noz_thrt_unit="m"), _current_length("noz_thrt")),
     "inj_CdA": Input("Injector CdA (total)", "area", _set_cda, total_cda),
+    "inj_Cd": Input("Injector Cd", None, _set_cd, injector_cd),
     "grain_L": Input("Grain length", "length", _set_length("grn_L"), _current_length("grn_L"),
                      fixed_OF_note="With a fixed O/F the fuel flow is forced, so this only changes the end port and burnout."),
     "port_D": Input("Starting port", "length", _set_length("grn_ID"), _current_length("grn_ID"),
@@ -239,7 +240,11 @@ def grid(axes: Sequence[tuple[str, Sequence[float]]]) -> list[tuple[tuple[str, f
     return [tuple(zip(keys, combo)) for combo in itertools.product(*(values for _, values in axes))]
 
 
-CONFLICTS = [frozenset({"start_OF", "inj_CdA"})]  # inputs that set the same part of the motor
+CONFLICTS = [  # inputs that set the same part of the motor
+    frozenset({"start_OF", "inj_CdA"}),
+    frozenset({"start_OF", "inj_Cd"}),
+    frozenset({"inj_Cd", "inj_CdA"}),
+]
 
 
 def allowed_inputs(models: Sequence[str], other: str | None = None) -> list[str]:

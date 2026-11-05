@@ -73,6 +73,7 @@ from hrap.io.config import (
     save_json,
 )
 from hrap.io.export import export_csv, export_eng, export_rse
+from hrap.io.measured import MeasuredCurve, load_measured_csv
 from hrap.layout import motor_layout
 from hrap.units import (
     LENGTH_ITEMS,
@@ -181,6 +182,7 @@ _SETTING_NAMES = {
     "reg_model": "fuel flow", "inj_model": "flow model", "grain_shape": "grain shape", "star_tips": "star tips",
     "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
     "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
+    "cmbr_L": "TCA length", "tnk_L": "tank length",
     "sw_cd_from_geometry": "Cd from geometry", "ptc_stock": "stock PTC", "ox_fluid": "oxidizer fluid",
     "enabled": "advanced options", "live_chem": "live chemistry", "dt": "timestep", "t_max": "max run time",
 }
@@ -269,6 +271,8 @@ class MainWindow(QMainWindow):
         self._close_when_finished = False
         self._result_cfg = None
         self._sim_runs: list[SimRun] = []
+        self._measured: MeasuredCurve | None = None
+        self._plotted_measured = None
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
         # The session (open motors, unsaved edits, runs of motors without a file) is kept beside the settings a test
@@ -298,6 +302,7 @@ class MainWindow(QMainWindow):
         self.name.textChanged.connect(self._update_tab_marker)
         self.sizing_page.sized.connect(self._update_tab_marker)
         self._restore_session()
+        self._reload_measured(str(self._prefs.value("measuredOverlay") or ""), quiet=True)
         self._session_timer = QTimer(self)
         self._session_timer.timeout.connect(self._save_session)
         self._session_timer.start(2000)
@@ -321,6 +326,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Export CSV…", lambda: self._export("csv"))
         file_menu.addAction("Export RSE…", lambda: self._export("rse"))
         file_menu.addAction("Export ENG…", lambda: self._export("eng"))
+        file_menu.addSeparator()
+        file_menu.addAction("Overlay measured curve…", self._load_measured)
+        file_menu.addAction("Clear measured overlay", self._clear_measured)
         file_menu.addSeparator()
         file_menu.addAction("Quit", self.close)
 
@@ -562,21 +570,24 @@ class MainWindow(QMainWindow):
         return wrap
 
     def _make_mass_page(self) -> QWidget:
-        page = QScrollArea()
-        page.setWidgetResizable(True)
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         inner = QWidget()
-        outer = QHBoxLayout(inner)
-        outer.setContentsMargins(16, 16, 16, 16)
-        column = QVBoxLayout()
+        column = QVBoxLayout(inner)
+        column.setContentsMargins(16, 16, 16, 16)
         column.setSpacing(12)
-        outer.addLayout(column)
-        outer.addStretch(1)
-        inner.setMaximumWidth(1100)
 
+        self._tank_len_custom = False
+        self._tca_len_custom = False
         self.mp_on = QCheckBox("Calculate mass properties (ENG / RSE CG)")
         self.tnk_start = UnitRow(LENGTH_ITEMS, "in")
+        self.tnk_L = UnitRow(LENGTH_ITEMS, "in")
         self.tnk_m = UnitRow(MASS_ITEMS, "kg")
         self.cmbr_start = UnitRow(LENGTH_ITEMS, "in")
+        self.cmbr_L = UnitRow(LENGTH_ITEMS, "in")
         self.cmbr_m = UnitRow(MASS_ITEMS, "kg")
         self.dry_OD = UnitRow(LENGTH_ITEMS, "in")
         self.dry_L = UnitRow(LENGTH_ITEMS, "in")
@@ -586,13 +597,27 @@ class MainWindow(QMainWindow):
         self._legacy_mtr_m_unit = "kg"
         self._legacy_mtr_cg = 0.0
         self._legacy_mtr_cg_unit = "in"
+        self.tnk_L.setToolTip(
+            "Length of the oxidizer tank in the drawing, and where its dry mass sits.\n"
+            "It follows the internal length on the Motor tab until you type a length."
+        )
+        self.cmbr_L.setToolTip(
+            "Length of the thrust chamber from the injector face through the nozzle.\n"
+            "It starts from the grain, the pre- and post-combustion chambers, and the nozzle.\n"
+            "A longer length adds empty chamber, with the grain kept in the middle.\n"
+            "A shorter length is kept too. The drawing overlaps where the parts no longer fit."
+        )
+        self.tnk_start.setToolTip("Distance from the datum to the front of the tank.")
+        self.cmbr_start.setToolTip("Distance from the datum to the injector face.")
 
         mass = CollapsibleBox("Mass properties")
         mf = mass.form()
         mf.addRow(self.mp_on)
         mf.addRow("Tank front, from datum", self.tnk_start)
+        mf.addRow("Tank length", self.tnk_L)
         mf.addRow("Tank dry mass", self.tnk_m)
-        mf.addRow("Chamber front, from datum", self.cmbr_start)
+        mf.addRow("TCA front, from datum", self.cmbr_start)
+        mf.addRow("TCA length", self.cmbr_L)
         mf.addRow("Chamber dry mass (no grain)", self.cmbr_m)
         mf.addRow(self.mass_info)
         mass_fields = (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m)
@@ -616,7 +641,15 @@ class MainWindow(QMainWindow):
         column.addStretch(1)
         for box in (mass, export):
             box.setMinimumWidth(520)
-        page.setWidget(inner)
+        scroll.setWidget(inner)
+
+        self.mass_preview = MotorPanel()
+        self.mass_preview.viz.set_framed(True)
+        self.mass_preview.viz.setMinimumHeight(360)
+        self.mass_preview.viz.setMaximumHeight(16777215)
+        row.addWidget(scroll, 0)
+        row.addWidget(self.mass_preview, 1)
+        self._sync_length_fields()
         return page
 
     def _make_results(self) -> QWidget:
@@ -646,11 +679,25 @@ class MainWindow(QMainWindow):
         self.spi_dp_line.setToolTip("Mark 300 psi on the pressure plot. Above about 300 psi of injector ΔP, real nitrous\n"
                                     "boils in the hole and flows less than SPI predicts. Only shown for SPI motors.")
         self.spi_dp_line.toggled.connect(lambda *_: self._refresh_plot())
+        self.overlay_btn = QPushButton("Overlay CSV…")
+        self.overlay_btn.setToolTip("Plot a measured thrust curve on the simulation. Also draws tank pressure\n"
+                                    "if the file has it (Weight_Lbs / F_thr, Tplus_ms / t, PT1_PSI / P_tnk).")
+        self.overlay_btn.clicked.connect(self._load_measured)
+        self.overlay_clear = QPushButton("Clear")
+        self.overlay_clear.clicked.connect(self._clear_measured)
+        self.overlay_label = QLabel("No measured curve")
+        self.overlay_label.setWordWrap(True)
+        overlay_row = QHBoxLayout()
+        overlay_row.setContentsMargins(0, 0, 0, 0)
+        overlay_row.addWidget(self.overlay_btn, 1)
+        overlay_row.addWidget(self.overlay_clear)
         traces = QWidget()
         traces_l = QVBoxLayout(traces)
         traces_l.setContentsMargins(0, 0, 0, 0)
         traces_l.addWidget(self.trace_list, 1)
         traces_l.addWidget(self.spi_dp_line)
+        traces_l.addLayout(overlay_row)
+        traces_l.addWidget(self.overlay_label)
         mid.addWidget(traces)
         mid.addWidget(self.plot)
         mid.setSizes([160, 600])
@@ -722,6 +769,12 @@ class MainWindow(QMainWindow):
             "export_L": self.dry_L.si("length"),
             "sizing": self.sizing_page.targets_cfg(),
         })
+        if getattr(self, "_tank_len_custom", False):
+            cfg["tnk_L"] = self.tnk_L.spin.value()
+            cfg["tnk_L_unit"] = self.tnk_L.unit.currentText()
+        if getattr(self, "_tca_len_custom", False):
+            cfg["cmbr_L"] = self.cmbr_L.spin.value()
+            cfg["cmbr_L_unit"] = self.cmbr_L.unit.currentText()
         return cfg
 
     def _cfg_to_form(self, cfg: dict):
@@ -755,7 +808,11 @@ class MainWindow(QMainWindow):
         self.live_chem.setChecked(bool(adv.get("live_chem")))
         self.sizing_page.load_motor(cfg)
         self.sizing_page.set_targets(cfg.get("sizing") or {}, cfg)
+        self._tank_len_custom = False
+        self._tca_len_custom = False
+        self._sync_length_fields()
         self.sizing_page.refresh()
+        self._apply_saved_lengths(cfg)
         self._on_motor_edited()
 
     def _on_motor_edited(self):
@@ -787,16 +844,69 @@ class MainWindow(QMainWindow):
         for row in (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m, self.P_cmbr):
             row.spin.valueChanged.connect(self._update_derived_labels)
             row.unit.currentTextChanged.connect(self._update_derived_labels)
+        for row in (self.tnk_L, self.cmbr_L):
+            row.spin.valueChanged.connect(self._on_length_edited)
+            row.unit.currentTextChanged.connect(self._on_length_edited)
         self.name.textChanged.connect(self._update_derived_labels)
+
+    def _design_lengths(self) -> tuple[float, float]:
+        """Tank length from volume and diameter, and TCA length from the sized parts, both in meters."""
+        sp = self.sizing_page
+        tnk_L, _tnk_D, _V = sp.tank_geometry()
+        throat, exit_D, _er = sp.nozzle_size()
+        lay = motor_layout(
+            tnk_start=0.0,
+            tnk_L=tnk_L,
+            cmbr_start=0.0,
+            pre_L=sp.pre_L.si("length"),
+            post_L=sp.post_L.si("length"),
+            grn_L=sp.grain_L.si("length"),
+            grn_OD=sp.grain_OD.si("length"),
+            noz_thrt=throat,
+            noz_exit=exit_D,
+        )
+        return tnk_L, lay.cmbr_L
+
+    def _sync_length_fields(self):
+        """Keep the length fields on the sized motor until someone types a different length."""
+        if not hasattr(self, "tnk_L"):
+            return
+        design_tank, design_tca = self._design_lengths()
+        if not self._tank_len_custom:
+            self.tnk_L.set_si(design_tank, "length")
+        if not self._tca_len_custom:
+            self.cmbr_L.set_si(design_tca, "length")
+
+    def _apply_saved_lengths(self, cfg: dict):
+        design_tank, design_tca = self._design_lengths()
+        stored_tank = to_si(float(cfg.get("tnk_L") or 0.0), cfg.get("tnk_L_unit") or "m", "length")
+        self._tank_len_custom = stored_tank > 1e-6 and abs(stored_tank - design_tank) > 1e-4
+        if self._tank_len_custom:
+            self.tnk_L.set_display(float(cfg.get("tnk_L") or 0.0), cfg.get("tnk_L_unit") or "in")
+        stored_tca = 0.0 if cfg.get("cmbr_L") in (None, "") else to_si(
+            float(cfg.get("cmbr_L") or 0.0), cfg.get("cmbr_L_unit") or "m", "length")
+        self._tca_len_custom = stored_tca > 1e-6 and abs(stored_tca - design_tca) > 1e-4
+        if self._tca_len_custom:
+            self.cmbr_L.set_display(float(cfg["cmbr_L"]), cfg.get("cmbr_L_unit") or "in")
+        else:
+            self.cmbr_L.set_si(design_tca, "length")
+
+    def _on_length_edited(self):
+        design_tank, design_tca = self._design_lengths()
+        self._tank_len_custom = abs(self.tnk_L.si("length") - design_tank) > 1e-4
+        self._tca_len_custom = abs(self.cmbr_L.si("length") - design_tca) > 1e-4
+        self._update_derived_labels()
 
     def _update_derived_labels(self):
         try:
+            self._sync_length_fields()
             lay = self._form_layout()
             empty_m, empty_cg = self._empty_mass_si(lay)
+            u = self.display_units
             self.mass_info.setText(
-                f"Empty mass {self.display_units.text(empty_m, 'mass')} at CG {self.display_units.text(empty_cg, 'length')}. "
-                f"Overall length {self.display_units.text(lay.overall_L, 'length')} "
-                f"(tank L {self.display_units.text(lay.tnk_L, 'length')})."
+                f"Empty mass {u.text(empty_m, 'mass')} at CG {u.text(empty_cg, 'length')}. "
+                f"Tank {u.text(lay.tnk_L, 'length')}, TCA {u.text(lay.cmbr_L, 'length')}, "
+                f"overall {u.text(lay.overall_L, 'length')}."
             )
             if not self.dry_OD.spin.hasFocus():
                 self.dry_OD.set_si(lay.overall_OD, "length")
@@ -808,8 +918,10 @@ class MainWindow(QMainWindow):
 
     def _form_layout(self):
         sp = self.sizing_page
-        tnk_L, tnk_D, _V = sp.tank_geometry()
+        design_tank, _design_tca = self._design_lengths()
+        tnk_D = sp.tank_geometry()[1]
         throat, exit_D, _er = sp.nozzle_size()
+        tnk_L = self.tnk_L.si("length") if self._tank_len_custom else design_tank
         return motor_layout(
             tnk_start=self.tnk_start.si("length"),
             tnk_L=tnk_L,
@@ -818,6 +930,7 @@ class MainWindow(QMainWindow):
             cmbr_start=self.cmbr_start.si("length"),
             pre_L=sp.pre_L.si("length"),
             post_L=sp.post_L.si("length"),
+            cmbr_L=self.cmbr_L.si("length") if self._tca_len_custom else 0.0,
             cmbr_m=self.cmbr_m.si("mass"),
             grn_L=sp.grain_L.si("length"),
             grn_OD=sp.grain_OD.si("length"),
@@ -887,6 +1000,7 @@ class MainWindow(QMainWindow):
             P_cmbr = float(o.P_cmbr[i])
 
         u = self.display_units
+        lay = self._form_layout()
         def size(diameter: float, length: float) -> str:
             return f"Ø{u.value(diameter, 'length'):.3g} × {u.text(length, 'length', 3)}"
 
@@ -897,7 +1011,7 @@ class MainWindow(QMainWindow):
         vent_lines = ("Orifice Vent", f"Ø{u.text(vnt_D, 'length', 3)}") if vnt_on else ()
         tank_lines = (
             "Oxidizer Tank",
-            f"size: {size(tnk_D, tnk_L)}",
+            f"size: {size(tnk_D, lay.tnk_L)}",
             f"volume: {u.text(tnk_V, 'volume')}",
             f"mass = {u.text(m_o, 'mass')} ({100.0 * fill:.0f}%)",
             f"T = {u.text(T, 'temperature')}",
@@ -929,9 +1043,9 @@ class MainWindow(QMainWindow):
             f"thrust = {u.text(thrust, 'force')}",
         )
 
-        lay = self._form_layout()
+        drawn_fill = fill * (tnk_L / lay.tnk_L) if lay.tnk_L > 1e-9 else fill
         return MotorView(
-            tnk_L=tnk_L,
+            tnk_L=lay.tnk_L,
             tnk_D=tnk_D,
             grn_L=grn_L,
             grn_OD=grn_OD,
@@ -942,12 +1056,13 @@ class MainWindow(QMainWindow):
             vnt_D=vnt_D,
             noz_thrt=th,
             noz_exit=exit_d,
-            fill_frac=fill,
+            fill_frac=min(max(drawn_fill, 0.0), 1.0),
             name=self.name.text().strip() or "motor",
             tnk_start=lay.tnk0,
             cmbr_start=lay.cmbr0,
-            pre_L=lay.grn0 - lay.plate1,
-            post_L=lay.x_case - lay.grn1,
+            pre_L=sp.pre_L.si("length"),
+            post_L=sp.post_L.si("length"),
+            cmbr_L=lay.cmbr_L,
             tnk_dry_kg=lay.tnk_m,
             cmbr_dry_kg=lay.cmbr_m,
             tank_lines=tank_lines,
@@ -970,6 +1085,8 @@ class MainWindow(QMainWindow):
     def _refresh_viz(self):
         if not hasattr(self, "motor_panel"):
             return
+        if hasattr(self, "mass_preview"):
+            self.mass_preview.set_model(self._motor_view(None))
         self.motor_panel.set_model(self._motor_view(self._hover_index))
 
     def _reset_viz_to_start(self):
@@ -987,7 +1104,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _mouse_moved(self, quantity: str, pos):
-        if self._output is None:
+        if self._output is None and self._measured is None:
             return
         plot = self._plots[quantity]
         vb = cast(pg.ViewBox, plot.vb)
@@ -995,21 +1112,33 @@ class MainWindow(QMainWindow):
             self._reset_viz_to_start()
             return
         x = vb.mapSceneToView(pos).x()
-        t = np.asarray(self._output.t)
-        if t.size == 0:
-            return
-        i = int(np.clip(np.searchsorted(t, x), 0, t.size - 1))
+        t_show = x
+        if self._output is not None:
+            t = np.asarray(self._output.t)
+            if t.size == 0:
+                return
+            i = int(np.clip(np.searchsorted(t, x), 0, t.size - 1))
+            t_show = float(t[i])
+            self._refresh_viz_at(i)
         for line in self._hover_lines:
-            line.setValue(t[i])
+            line.setValue(t_show)
             line.setVisible(True)
-        bits = [f"Time: {t[i]:.3f} s"]
-        for k, (label, key, trace_quantity) in enumerate(TRACES):
-            if self.trace_list.item(k).checkState() != Qt.CheckState.Checked:
-                continue
-            value = float(getattr(self._output, key)[i])
-            bits.append(f"{label}: {self.display_units.text(value, trace_quantity)}")
+        bits = [f"Time: {t_show:.3f} s"]
+        if self._output is not None:
+            for k, (label, key, trace_quantity) in enumerate(TRACES):
+                if self.trace_list.item(k).checkState() != Qt.CheckState.Checked:
+                    continue
+                value = float(getattr(self._output, key)[i])
+                bits.append(f"{label}: {self.display_units.text(value, trace_quantity)}")
+        if self._measured is not None:
+            for label, key, trace_quantity in TRACES:
+                series = self._measured.series(key)
+                if series is None:
+                    continue
+                value = float(np.interp(t_show, self._measured.t, series, left=np.nan, right=np.nan))
+                if np.isfinite(value):
+                    bits.append(f"{self._measured.label} {label}: {self.display_units.text(value, trace_quantity)}")
         self.plot_readout.setText("   ·   ".join(bits))
-        self._refresh_viz_at(i)
 
     def _refresh_viz_at(self, index: int | None):
         self._hover_index = index
@@ -1299,6 +1428,59 @@ class MainWindow(QMainWindow):
         ticked = self._ticked()
         return [r for r in self._sim_runs if str(r.file) in ticked and self._simulate(r) and r.output is not self._output]
 
+    def _sync_overlay_ui(self):
+        loaded = self._measured is not None
+        if hasattr(self, "overlay_clear"):
+            self.overlay_clear.setEnabled(loaded)
+            self.overlay_label.setText(self._measured.label if loaded else "No measured curve")
+        for action in self._file_menu.actions():
+            if action.text() == "Clear measured overlay":
+                action.setEnabled(loaded)
+
+    def _reload_measured(self, path: str, *, quiet: bool = False) -> bool:
+        if not path:
+            self._measured = None
+            self._prefs.setValue("measuredOverlay", "")
+            self._sync_overlay_ui()
+            return False
+        try:
+            self._measured = load_measured_csv(path)
+        except (OSError, ValueError) as exc:
+            self._measured = None
+            if not quiet:
+                QMessageBox.warning(self, "Overlay CSV", str(exc))
+            self._sync_overlay_ui()
+            return False
+        self._prefs.setValue("measuredOverlay", path)
+        self._remember_file_dir(path)
+        self._sync_overlay_ui()
+        self._refresh_plot()
+        bits = []
+        if self._measured.F_thr is not None:
+            bits.append("thrust")
+        if self._measured.P_tnk is not None:
+            bits.append("tank pressure")
+        if self._measured.P_cmbr is not None:
+            bits.append("chamber pressure")
+        self.statusBar().showMessage(f"Overlaying {self._measured.label} ({', '.join(bits)}).")
+        return True
+
+    def _load_measured(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Overlay measured curve", self._dialog_path(),
+            "CSV (*.csv);;All files (*.*)")
+        if path:
+            self._reload_measured(path)
+
+    def _clear_measured(self):
+        if self._measured is None:
+            return
+        self._measured = None
+        self._prefs.setValue("measuredOverlay", "")
+        self._sync_overlay_ui()
+        self._refresh_plot()
+        self.statusBar().showMessage("Cleared measured overlay.")
+
     def _show_results(self):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
         self._hover_index = None
@@ -1347,31 +1529,48 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_time = False
 
+    def _measured_pen(self):
+        color = "#f8f8f2" if getattr(self, "_theme", "dark") != "light" else "#111111"
+        return pg.mkPen(color, width=2.5)
+
     def _refresh_plot(self):
         o = self._output
         overlays = self._overlay_runs()
-        if o is None and not overlays:
+        measured = self._measured
+        if o is None and not overlays and measured is None:
             self._clear_plot()
             return
         current = self.plot.currentWidget()
         active_quantity = next((q for q, widget in self._plot_widgets.items() if widget is current), None)
-        if self._plotted_output is not o or o is None:
-            shown = ([o] if o is not None else []) + [r.output for r in overlays]
-            self._time_range = (0.0, max(float(x.t[-1]) for x in shown))
+        if self._plotted_output is not o or o is None or self._plotted_measured is not measured:
+            shown_t = []
+            if o is not None:
+                shown_t.append(o.t)
+            shown_t.extend(r.output.t for r in overlays)
+            if measured is not None:
+                shown_t.append(measured.t)
+            self._time_range = (min(float(a[0]) for a in shown_t), max(float(a[-1]) for a in shown_t))
         self._clear_plot()
         palette = ["#5b8def", "#f0c14b", "#e06c75", "#98c379", "#c678dd", "#56b6c2", "#d19a66", "#abb2bf"]
         checked = [i for i in range(len(TRACES)) if self.trace_list.item(i).checkState() == Qt.CheckState.Checked]
         per_plot: dict[str, int] = {}
+        measured_on: set[str] = set()
         for i in checked:
             per_plot[TRACES[i][2]] = per_plot.get(TRACES[i][2], 0) + 1
+            if measured is not None and measured.series(TRACES[i][1]) is not None:
+                measured_on.add(TRACES[i][2])
         for i in checked:
             label, key, quantity = TRACES[i]
+            has_sim = o is not None or bool(overlays)
+            has_meas = measured is not None and measured.series(key) is not None
+            if not has_sim and not has_meas:
+                continue
             unit = self.display_units.unit(quantity)
             if quantity not in self._plots:
                 widget = pg.PlotWidget()
                 plot = cast(pg.PlotItem, widget.getPlotItem())
                 plot.showGrid(x=True, y=True, alpha=0.25)
-                if per_plot[quantity] > 1 or overlays:
+                if per_plot[quantity] > 1 or overlays or quantity in measured_on:
                     plot.addLegend(offset=(-10, 5))
                 plot.setLabel("left", PLOT_LABELS[quantity], units=unit)
                 plot.getAxis("left").enableAutoSIPrefix(False)
@@ -1400,8 +1599,13 @@ class MainWindow(QMainWindow):
                     ro.t, self.display_units.value(np.asarray(getattr(ro, key), dtype=float), quantity),
                     pen=pg.mkPen(palette[i % len(palette)], width=1.5, style=dashes[j % len(dashes)]),
                     name=f"{label} ({overlay.label})")
-        cfg = self._result_cfg if self._result_cfg is not None else overlays[0].cfg
-        if "pressure" in self._plots:
+            series = measured.series(key) if measured is not None else None
+            if series is not None:
+                self._plots[quantity].plot(
+                    measured.t, self.display_units.value(np.asarray(series, dtype=float), quantity),
+                    pen=self._measured_pen(), name=f"{measured.label} {label}")
+        cfg = self._result_cfg if self._result_cfg is not None else (overlays[0].cfg if overlays else None)
+        if "pressure" in self._plots and cfg is not None:
             limit = self.display_units.value(chamber_limit(cfg), "pressure")
             self._plots["pressure"].addItem(pg.InfiniteLine(
                 pos=limit, angle=0, movable=False, pen=pg.mkPen("#e06c75", width=1, style=Qt.PenStyle.DashLine),
@@ -1418,6 +1622,7 @@ class MainWindow(QMainWindow):
         if active_quantity in self._plot_widgets:
             self.plot.setCurrentWidget(self._plot_widgets[active_quantity])
         self._plotted_output = o
+        self._plotted_measured = measured
         self.plot_readout.setText("Hover over a plot to inspect a time." if self._plots
                                  else "Select a quantity from the list to display its plot.")
         self._style_plots()
@@ -1582,15 +1787,25 @@ class MainWindow(QMainWindow):
         self._sync_runs()
 
     def _save_motor(self, motor: OpenMotor | None, choose_path: bool = False) -> bool:
-        """Save a motor to its file, asking for one if it has none. Returns whether it was saved."""
+        """Save a motor to its file. A new name opens Save As with that name. Returns whether it was saved."""
         if motor is None:
             return False
         if motor is self._shown:
             motor.cfg = self._form_to_cfg()
         path = motor.path
-        if choose_path or not path:
-            path, _ = QFileDialog.getSaveFileName(self, "Save motor", path or self._dialog_path(f"{motor.title}.json"),
-                                                  "HRAP JSON (*.json)")
+        name = str(motor.cfg.get("mtr_nm") or "").strip()
+        saved_name = str((motor.saved or {}).get("mtr_nm") or "").strip()
+        renamed = bool(path) and name not in ("", "mtr_cfg") and name != saved_name
+        if choose_path or not path or renamed:
+            if renamed:
+                stem = "".join("_" if c in '<>:"/\\|?*' else c for c in name).strip().rstrip(". ") or "motor"
+                start = str(Path(path).with_name(f"{stem}.json"))
+            elif path:
+                start = path
+            else:
+                start = self._dialog_path(f"{motor.title}.json")
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save As" if choose_path or renamed else "Save motor", start, "HRAP JSON (*.json)")
             if not path:
                 return False
             self._remember_file_dir(path)
@@ -1836,6 +2051,8 @@ class MainWindow(QMainWindow):
         self._style_plots()
         if hasattr(self, "motor_panel"):
             self.motor_panel.set_theme(name)
+        if hasattr(self, "mass_preview"):
+            self.mass_preview.set_theme(name)
         if hasattr(self, "sizing_page"):
             self.sizing_page.set_theme(name)
 

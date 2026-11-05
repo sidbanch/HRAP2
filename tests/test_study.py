@@ -16,6 +16,17 @@ def test_case_changes_are_isolated_and_cda_is_total():
     assert cfg == original
 
 
+def test_injector_cd_is_a_study_input():
+    from hrap.engine.study import allowed_inputs
+    from hrap.io.config import injector_cd
+
+    cfg = bundled_motor("Rattworks_K240")
+    c = case_cfg(cfg, [("inj_Cd", 0.42)], None)
+    assert injector_cd(c) == pytest.approx(0.42)
+    assert "inj_Cd" in allowed_inputs(["Shifting OF"], "throat")
+    assert "inj_Cd" not in allowed_inputs(["Shifting OF"], "inj_CdA")
+
+
 def test_liquid_phase_metrics_do_not_confuse_early_stop_with_runout():
     cfg = bundled_motor("Rattworks_K240")
     full = run_case(cfg, [], "Constant OF")

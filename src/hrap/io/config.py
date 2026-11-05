@@ -232,6 +232,7 @@ def resolve_layout(cfg: dict[str, Any]) -> MotorLayout:
         cmbr_start=cmbr_start,
         pre_L=pre_L,
         post_L=_len(cfg, "cmbr_post_L"),
+        cmbr_L=_len(cfg, "cmbr_L"),
         cmbr_m=_mass(cfg, "cmbr_m"),
         grn_L=grn_L,
         grn_OD=grn_OD,

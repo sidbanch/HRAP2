@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import pytest
 
@@ -253,3 +254,14 @@ def test_close_waits_for_study_and_stops_queue(window):
     assert not window.isVisible()
     assert page.result.stopped
     assert len(page.result.cases) <= 8
+
+
+def test_overlay_csv_loads_irl_thrust_and_tank_pressure(window):
+    path = Path(__file__).resolve().parent / "fixtures" / "hps01_irl_sample.csv"
+    assert window._reload_measured(str(path))
+    assert window._measured is not None
+    assert window._measured.F_thr is not None
+    assert window._measured.P_tnk is not None
+    assert window.overlay_label.text() == "hps01_irl_sample"
+    window._clear_measured()
+    assert window._measured is None
