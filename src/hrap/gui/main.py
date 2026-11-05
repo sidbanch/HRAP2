@@ -489,6 +489,9 @@ class MainWindow(QMainWindow):
         self.cmbr_m = UnitRow(MASS_ITEMS, "kg")
         self.dry_OD = UnitRow(LENGTH_ITEMS, "in")
         self.dry_L = UnitRow(LENGTH_ITEMS, "in")
+        for size in (self.dry_OD, self.dry_L):  # they follow the tank and TCA sizes
+            size.spin.setReadOnly(True)
+            size.setToolTip("Worked out from the tank and TCA sizes above.")
         self.mass_info = QLabel("Empty mass / CG: —")
         self.mass_info.setWordWrap(True)
         self._legacy_mtr_m = 0.0
@@ -561,13 +564,13 @@ class MainWindow(QMainWindow):
             "mtr_nm": self.name.text() or "mtr_cfg",
             "solve_tank_cooling": self.sim.solve_tank_cooling.isChecked(),
             "mp_state": int(self.mp_on.isChecked()),
-            "tnk_start": self.tnk_start.spin.value(),
+            "tnk_start": self.tnk_start.value(),
             "tnk_start_unit": self.tnk_start.unit.currentText(),
-            "cmbr_start": self.cmbr_start.spin.value(),
+            "cmbr_start": self.cmbr_start.value(),
             "cmbr_start_unit": self.cmbr_start.unit.currentText(),
-            "tnk_m": self.tnk_m.spin.value(),
+            "tnk_m": self.tnk_m.value(),
             "tnk_m_unit": self.tnk_m.unit.currentText(),
-            "cmbr_m": self.cmbr_m.spin.value(),
+            "cmbr_m": self.cmbr_m.value(),
             "cmbr_m_unit": self.cmbr_m.unit.currentText(),
             "tnk_X": from_si(lay.tnk_aft, self.tnk_start.unit.currentText(), "length"),
             "tnk_X_unit": self.tnk_start.unit.currentText(),
@@ -577,7 +580,7 @@ class MainWindow(QMainWindow):
             "mtr_cg_unit": self.tnk_start.unit.currentText(),
             "mtr_m": from_si(empty_m, self.tnk_m.unit.currentText(), "mass"),
             "mtr_m_unit": self.tnk_m.unit.currentText(),
-            "P_cmbr": self.sim.P_cmbr.spin.value(),
+            "P_cmbr": self.sim.P_cmbr.value(),
             "P_cmbr_unit": self.sim.P_cmbr.unit.currentText(),
             "t_max": self.sim.tmax.value(),
             "t_burn": self.sim.tburn.value(),
@@ -592,10 +595,10 @@ class MainWindow(QMainWindow):
             "sizing": self.sizing_page.targets_cfg(),
         })
         if getattr(self, "_tank_len_custom", False):
-            cfg["tnk_L"] = self.tnk_L.spin.value()
+            cfg["tnk_L"] = self.tnk_L.value()
             cfg["tnk_L_unit"] = self.tnk_L.unit.currentText()
         if getattr(self, "_tca_len_custom", False):
-            cfg["cmbr_L"] = self.cmbr_L.spin.value()
+            cfg["cmbr_L"] = self.cmbr_L.value()
             cfg["cmbr_L_unit"] = self.cmbr_L.unit.currentText()
         return cfg
 
@@ -770,10 +773,8 @@ class MainWindow(QMainWindow):
                 f"{empty} Tank {u.text(lay.tnk_L, 'length')}, TCA {u.text(lay.cmbr_L, 'length')}, "
                 f"overall {u.text(lay.overall_L, 'length')}."
             )
-            if not self.dry_OD.spin.hasFocus():
-                self.dry_OD.set_si(lay.overall_OD, "length")
-            if not self.dry_L.spin.hasFocus():
-                self.dry_L.set_si(lay.overall_L, "length")
+            self.dry_OD.set_si(lay.overall_OD, "length")
+            self.dry_L.set_si(lay.overall_L, "length")
         except Exception:
             self.mass_info.setText("Empty mass / CG: —")
         self._refresh_viz()

@@ -531,7 +531,7 @@ class PlotPanel(QWidget):
         i = None
         time = x
         values: dict[str, str] = {}
-        if shown.output is not None and len(shown.output.t):
+        if shown.output is not None and len(shown.output.t) and shown.output.t[0] <= x <= shown.output.t[-1]:
             t = np.asarray(shown.output.t)
             i = int(np.clip(np.searchsorted(t, x), 0, t.size - 1))
             time = float(t[i])

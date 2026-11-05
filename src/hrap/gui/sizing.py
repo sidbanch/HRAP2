@@ -1118,7 +1118,7 @@ class SizingPage(QWidget):
     def motor_cfg(self) -> dict:
         """The motor's settings as config fields."""
         def field(name: str, row: UnitRow) -> dict:
-            return {name: row.spin.value(), f"{name}_unit": row.unit.currentText()}
+            return {name: row.value(), f"{name}_unit": row.unit.currentText()}
 
         L, _D, V = self.tank_geometry()
         vol_unit = self.tank_V.unit.currentText()
@@ -1127,7 +1127,7 @@ class SizingPage(QWidget):
             "tnk_V": from_si(V, vol_unit, "volume"), "tnk_V_unit": vol_unit, "tnk_V_state": 0,
             **field("tnk_D", self.tank_D),
             "tnk_L": from_si(L, len_unit, "length"), "tnk_L_unit": len_unit,
-            "tnk_dd": "Starting Tank Temperature", "tnk_cond": self.tank_T.spin.value(),
+            "tnk_dd": "Starting Tank Temperature", "tnk_cond": self.tank_T.value(),
             "T_tnk_unit": self.tank_T.unit.currentText(),
             "fill_dd": "Tank Fill Percentage", "fill": self.fill.value(), "fill_unit": "%",
             "vnt_state": self.vent.currentText(), **field("vnt_D", self.vent_D), "vnt_Cd": self.vent_Cd.value(),

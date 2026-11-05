@@ -132,6 +132,10 @@ class UnitRow(QWidget):
         self.spin.setDecimals(decimals)
         self.spin.setRange(0.0, maximum)
         self.spin.setKeyboardTracking(False)
+        # A value the app filled in (loaded, worked out, or converted to another unit) stays exact behind its
+        # rounded display, so reading it back doesn't drift. Typing replaces it.
+        self._exact: float | None = None
+        self.spin.valueChanged.connect(self._on_typed)
         self.unit = UnitCombo()
         self.unit.addItems(items)
         if unit in items:
@@ -148,12 +152,20 @@ class UnitRow(QWidget):
         if not old or old == new_unit:
             return
         try:
-            new_val = convert(self.spin.value(), old, new_unit)
+            new_val = convert(self.value(), old, new_unit)
         except Exception:
             return
         self.spin.blockSignals(True)
         self.spin.setValue(new_val)
         self.spin.blockSignals(False)
+        self._exact = new_val
+
+    def _on_typed(self, _value: float):
+        self._exact = None
+
+    def value(self) -> float:
+        """The value in the row's unit."""
+        return self.spin.value() if self._exact is None else self._exact
 
     def set_display(self, value: float, unit: str | None = None):
         if unit:
@@ -164,9 +176,10 @@ class UnitRow(QWidget):
         self.spin.blockSignals(True)
         self.spin.setValue(float(value or 0.0))
         self.spin.blockSignals(False)
+        self._exact = float(value or 0.0)
 
     def si(self, quantity: str) -> float:
-        return to_si(self.spin.value(), self.unit.currentText(), quantity)
+        return to_si(self.value(), self.unit.currentText(), quantity)
 
     def set_si(self, value: float, quantity: str):
         """Show an SI value in the row's current unit, without emitting a change."""
