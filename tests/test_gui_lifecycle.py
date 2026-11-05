@@ -24,7 +24,7 @@ def window(app, tmp_path, monkeypatch):
     # Closing a tab with unsaved edits asks first; don't let the question block the tests.
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Discard)
     win = MainWindow(QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
-    win.tmax.setValue(.02)
+    win.sim.tmax.setValue(.02)
     win.show()
     yield win
     wait_for_run(win)
@@ -48,7 +48,7 @@ def wait_for_run(window):
 
 def test_close_waits_for_worker(window):
     window._run()
-    assert not window._form.isEnabled()
+    assert not window.sim.form.isEnabled()
     assert not window._file_menu.isEnabled()
     assert not window._examples_menu.isEnabled()
     assert not window.close()
@@ -97,13 +97,13 @@ def test_editing_inputs_invalidates_completed_results(window):
     window._run()
     wait_for_run(window)
     assert window._output is not None
-    assert window._form.isEnabled()
+    assert window.sim.form.isEnabled()
     assert window._result_cfg["mtr_nm"] == window._settings.mtr_nm
     grain_L = window.sizing_page.grain_L.spin
     grain_L.setValue(grain_L.value() + 1)
     assert window._output is None
     assert window._result_cfg is None
-    assert not window.summary.toPlainText()
+    assert not window.sim.summary.toPlainText()
 
 
 def test_missing_coolprop_reports_error_and_reenables_run(window, monkeypatch):
@@ -115,18 +115,18 @@ def test_missing_coolprop_reports_error_and_reenables_run(window, monkeypatch):
     messages = []
     monkeypatch.setattr("hrap.advanced.fluid.coolprop_sat", unavailable)
     monkeypatch.setattr(QMessageBox, "critical", lambda *args: messages.append(args[-1]))
-    window.adv_on.setChecked(True)
-    window.ox_fluid.setCurrentText("NitrousOxide (CoolProp)")
+    window.sim.adv_on.setChecked(True)
+    window.sim.ox_fluid.setCurrentText("NitrousOxide (CoolProp)")
     window._run()
     wait_for_run(window)
-    assert window.run_btn.isEnabled()
+    assert window.sim.run_btn.isEnabled()
     assert window._output is None
     assert len(messages) == 1 and "CoolProp missing" in messages[0]
 
 
 def test_display_units_update_results_without_changing_simulation(window, tmp_path):
     import numpy as np
-    from PySide6.QtCore import QPointF, QSettings, Qt
+    from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
 
     from hrap.units import DisplayUnits
@@ -146,39 +146,39 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
         assert window._output is output
         assert window._form_to_cfg() == config
         np.testing.assert_array_equal(output.P_tnk, pressure)
-        plots = window._plots
-        assert list(plots) == ["force", "pressure", "mass_flow"]
-        np.testing.assert_allclose(plots["pressure"].listDataItems()[0].yData, pressure * pressure_scale)
-        np.testing.assert_allclose(plots["mass_flow"].listDataItems()[0].yData,
+        panel = window.sim.plots
+        plots = panel.plots
+        assert {("Thrust", "force"), ("Pressure", "pressure"), ("Flow", "mass_flow")} <= set(plots)
+        np.testing.assert_allclose(plots["Pressure", "pressure"].listDataItems()[0].yData, pressure * pressure_scale)
+        np.testing.assert_allclose(plots["Flow", "mass_flow"].listDataItems()[0].yData,
                                    output.mdot_o * units.value(1, "mass_flow"))
-        assert plots["pressure"].getAxis("left").labelUnits == units.pressure
-        assert units.pressure in window.summary.toPlainText()
-        assert units.force in window.summary.toPlainText()
+        assert plots["Pressure", "pressure"].getAxis("left").labelUnits == units.pressure
+        assert units.pressure in window.sim.summary.toPlainText()
+        assert units.force in window.sim.summary.toPlainText()
         view = window._motor_view(1)
         assert view.overlay_tank[1] == units.text(pressure[1], "pressure", 3)
         assert units.unit("mass_flow") in dict(view.inj_card[1])["Oxidizer flow"]
         assert view.display_units.length == units.length
-        window.plot.setCurrentWidget(window._plot_widgets["pressure"])
+        panel.tabs.setCurrentWidget(panel.pages["Pressure"])
         QApplication.processEvents()
-        point = plots["pressure"].vb.mapViewToScene(QPointF(output.t[1], pressure[1] * pressure_scale))
-        window._mouse_moved("pressure", point)
-        assert units.pressure in window.plot_readout.text()
+        panel.hover(float(output.t[1]))
+        assert units.pressure in panel.pages["Pressure"].rows["P_tnk"].value.text()
         assert window._hover_index is not None
         assert window._prefs.value("displayUnits/pressure") == units.pressure
-    plots["force"].setXRange(.002, .008, padding=0)
+    panel.plots["Thrust", "force"].setXRange(.002, .008, padding=0)
     QApplication.processEvents()
-    np.testing.assert_allclose(plots["pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
+    np.testing.assert_allclose(panel.plots["Pressure", "pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
     window._set_display_units(DisplayUnits(pressure="bar"))
     QApplication.processEvents()
-    assert window.plot.currentWidget() is window._plot_widgets["pressure"]
-    np.testing.assert_allclose(window._plots["pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
-    window.trace_list.findItems("O/F", Qt.MatchFlag.MatchExactly)[0].setCheckState(Qt.CheckState.Checked)
-    np.testing.assert_allclose(window._plots["ratio"].vb.viewRange()[0], [.002, .008], atol=1e-6)
-    for i in range(window.trace_list.count()):
-        window.trace_list.item(i).setCheckState(Qt.CheckState.Unchecked)
-    assert not window._plots
-    window.trace_list.item(1).setCheckState(Qt.CheckState.Checked)
-    assert list(window._plots) == ["pressure"]
+    assert panel.tabs.currentWidget() is panel.pages["Pressure"]
+    np.testing.assert_allclose(panel.plots["Pressure", "pressure"].vb.viewRange()[0], [.002, .008], atol=1e-6)
+    np.testing.assert_allclose(panel.plots["Flow", "ratio"].vb.viewRange()[0], [.002, .008], atol=1e-6)
+    # A unit's plot shows while one of its lines is on.
+    for key in ("P_tnk", "P_cmbr", "inj_dP"):
+        panel.pages["Pressure"].rows[key].clicked.emit()
+    assert not [q for tab, q in panel.plots if tab == "Pressure"]
+    panel.pages["Pressure"].rows["T_tnk"].clicked.emit()
+    assert [q for tab, q in panel.plots if tab == "Pressure"] == ["temperature"]
 
 
 def test_small_metric_ruler_ticks_are_distinct():
@@ -269,6 +269,6 @@ def test_overlay_csv_loads_irl_thrust_and_tank_pressure(window):
     assert window._measured is not None
     assert window._measured.F_thr is not None
     assert window._measured.P_tnk is not None
-    assert window.overlay_label.text() == "hps01_irl_sample"
+    assert "measured:F_thr" in window.sim.plots.pages["Thrust"].rows
     window._clear_measured()
     assert window._measured is None

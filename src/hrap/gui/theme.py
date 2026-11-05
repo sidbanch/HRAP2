@@ -120,8 +120,8 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
             border-radius: 2px;
             padding: 6px 14px;
         }}
-        QPushButton#switch {{ padding: 4px 12px; }}
-        QPushButton#switch:checked {{ background: {accent}; border-color: {accent}; color: white; }}
+        QPushButton#flat {{ background: transparent; border: none; padding: 2px 0px; color: {accent}; text-align: left; }}
+        QPushButton#flat:hover {{ text-decoration: underline; }}
         QPushButton#runButton {{
             background: {accent};
             color: white;
@@ -177,6 +177,19 @@ def apply_theme(app: QApplication, name: str = "dark") -> dict:
         }}
         QTabWidget#pageTabs > QTabBar::tab:selected {{ color: {colors['text']}; border-top: 2px solid {accent}; }}
         QTabWidget#pageTabs > QTabBar::tab:hover {{ color: {colors['text']}; }}
+        QTabWidget#subTabs::pane {{ border: none; }}
+        QTabWidget#subTabs > QTabBar::tab {{
+            padding: 6px 14px;
+            font-weight: 600;
+            color: {colors['disabled']};
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+        }}
+        QTabWidget#subTabs > QTabBar::tab:selected {{ color: {colors['text']}; border-bottom: 2px solid {accent}; }}
+        QTabWidget#subTabs > QTabBar::tab:hover {{ color: {colors['text']}; }}
+        QSplitter#plainSplitter::handle {{ background: transparent; }}
+        QFrame#legendDivider {{ color: {colors['border']}; }}
         QStatusBar {{ background: {colors['alt']}; }}
         QProgressBar {{
             background: {colors['base']};

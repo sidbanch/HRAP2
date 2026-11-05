@@ -15,11 +15,10 @@ from typing import Callable, cast
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QByteArray, QEvent, QObject, QProcess, QSettings, QStandardPaths, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QByteArray, QObject, QProcess, QSettings, QStandardPaths, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -31,18 +30,14 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QSplitter,
-    QStackedWidget,
     QStatusBar,
     QTabBar,
     QTabWidget,
@@ -56,18 +51,15 @@ from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
 from hrap.engine.summary import format_summary, summarize
 from hrap.engine.types import Settings, State
-from hrap.gui.grain_view import GrainScene, GrainView, RunGrainView
+from hrap.gui.grain_view import GrainScene, GrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
+from hrap.gui.simulation import DASHES, Shown, SimulationPage, dash_icon
 from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme, colors_for
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import (
-    CARD_GAP,
-    PAGE_MARGIN,
     FieldGrid,
-    PlainComboBox,
-    PlainDoubleSpinBox,
     UnitRow,
     card_frame,
     line_up,
@@ -89,7 +81,6 @@ from hrap.layout import motor_layout
 from hrap.units import (
     LENGTH_ITEMS,
     MASS_ITEMS,
-    PRESSURE_ITEMS,
     TEMP_ITEMS,
     VOLUME_ITEMS,
     DisplayUnits,
@@ -97,41 +88,6 @@ from hrap.units import (
     to_si,
 )
 
-# Label, output field, physical quantity. Engine arrays remain in SI units.
-TRACES = [
-    ("Thrust", "F_thr", "force"),
-    ("Tank pressure", "P_tnk", "pressure"),
-    ("Chamber pressure", "P_cmbr", "pressure"),
-    ("Injector ΔP", "inj_dP", "pressure"),
-    ("Tank temperature", "T_tnk", "temperature"),
-    ("O/F", "OF", "ratio"),
-    ("Oxidizer flow", "mdot_o", "mass_flow"),
-    ("Fuel flow", "mdot_f", "mass_flow"),
-    ("Nozzle flow", "mdot_n", "mass_flow"),
-    ("Regression rate", "rdot", "speed"),
-    ("Port ID", "grn_ID", "length"),
-    ("Burned distance", "grn_web", "length"),
-    ("Burning area", "burn_area", "area"),
-    ("Exposed case wall", "case_area", "area"),
-    ("Oxidizer mass", "m_o", "mass"),
-    ("Fuel mass", "m_f", "mass"),
-    ("Total mass", "m_t", "mass"),
-    ("CG", "cg", "length"),
-]
-PLOT_LABELS = {
-    "force": "Thrust", "pressure": "Pressure", "ratio": "O/F",
-    "mass_flow": "Mass flow", "speed": "Regression rate", "length": "Length", "mass": "Mass",
-    "temperature": "Temperature", "area": "Area",
-}
-DEFAULT_TRACES = {"Thrust", "Tank pressure", "Chamber pressure", "Injector ΔP", "Oxidizer flow", "Fuel flow",
-                  "Burning area", "Exposed case wall"}
-STL_TRACES = {"grn_web", "burn_area", "case_area"}  # only an STL grain has these
-# Each trace's theme colour: oxidizer blue, fuel orange, the case wall red; traces sharing a plot differ.
-TRACE_COLORS = {
-    "F_thr": "green", "P_tnk": "oxidizer", "P_cmbr": "purple", "inj_dP": "teal", "T_tnk": "oxidizer", "OF": "teal",
-    "mdot_o": "oxidizer", "mdot_f": "fuel", "mdot_n": "grey", "rdot": "fuel", "grn_ID": "purple", "grn_web": "fuel",
-    "burn_area": "fuel", "case_area": "limit", "m_o": "oxidizer", "m_f": "fuel", "m_t": "grey", "cg": "grey",
-}
 DISPLAY_UNIT_OPTIONS = {
     "pressure": ["psi", "bar", "kPa", "MPa", "Pa", "atm"],
     "length": LENGTH_ITEMS,
@@ -141,26 +97,6 @@ DISPLAY_UNIT_OPTIONS = {
     "temperature": TEMP_ITEMS,
     "speed": ["m/s", "mm/s", "in/s", "ft/s"],
 }
-
-
-def _curve(o, settings, key: str) -> np.ndarray | None:
-    """A run's curve for a trace; None if it has none, as a round grain has no STL curves.
-    An STL grain's burning area and exposed case wall follow from its burned distance."""
-    g = getattr(settings, "grain_geometry", None)
-    if key in STL_TRACES and g is None:
-        return None
-    if key in ("burn_area", "case_area"):
-        return np.interp(o.grn_web, g.web, getattr(g, key))
-    return np.asarray(getattr(o, key), dtype=float)
-
-
-def _case_contact(o, settings) -> float | None:
-    """When an STL grain's burn first reached the case wall, if it did."""
-    g = getattr(settings, "grain_geometry", None)
-    if g is None or not math.isfinite(g.case_web):
-        return None
-    reached = np.flatnonzero(o.grn_web >= g.case_web)
-    return float(o.t[reached[0]]) if reached.size else None
 
 
 class SimWorker(QObject):
@@ -340,7 +276,7 @@ class MainWindow(QMainWindow):
         self._wanted_run: SimRun | None = None  # the run last clicked, which shows once it's simulated again
         self._grain_was_loading = False  # the grain's loading was on screen, so its end gets a status message
         self._measured: MeasuredCurve | None = None
-        self._plotted_measured = None
+        self._run_lines: dict[str, Qt.PenStyle] = {}  # how each run on the plots is drawn, by its file
         self._hover_index = None
         self._prefs = prefs or QSettings("HCAT", APP_NAME)
         # The session (open motors, unsaved edits, runs of motors without a file) is kept beside the settings a test
@@ -362,7 +298,7 @@ class MainWindow(QMainWindow):
             (QDoubleSpinBox, "valueChanged"), (QSpinBox, "valueChanged"),
             (QComboBox, "currentIndexChanged"), (QCheckBox, "toggled"),
         ):
-            for page in (self._form, self.mass_page):
+            for page in (self.sim.form, self.mass_page):
                 for control in page.findChildren(control_type):
                     getattr(control, signal).connect(self._invalidate_results)
                     getattr(control, signal).connect(self._update_tab_marker)
@@ -450,13 +386,20 @@ class MainWindow(QMainWindow):
         top_l.addWidget(save_btn)
 
         self.grain_scene = GrainScene()  # the STL grain in 3D, shared by the Grain tab and the Simulation tab
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._form = self._make_form()
-        splitter.addWidget(self._form)
-        splitter.addWidget(self._make_results())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([500, 900])
+        self.sim = SimulationPage(self._prefs, lambda: self.display_units, self.grain_scene)
+        self.sim.run_btn.clicked.connect(self._run)
+        self.sim.edit_btn.clicked.connect(lambda: self.tabs.setCurrentWidget(self.sizing_page))
+        self.sim.apply_btn.clicked.connect(lambda: self.sizing_page.apply())
+        self.sim.adv_on.toggled.connect(self._sync_advanced)
+        run_list = self.sim.run_list
+        run_list.itemChanged.connect(self._on_run_item_changed)
+        run_list.itemPressed.connect(lambda item: setattr(self, "_pressed_check", item.checkState()))
+        run_list.itemClicked.connect(self._on_run_clicked)
+        run_list.customContextMenuRequested.connect(self._run_menu)
+        self.sim.clear_runs.clicked.connect(self._clear_runs)
+        self.sim.plots.hovered.connect(self._on_hover)
+        self.sim.plots.load_measured.connect(self._load_measured)
+        self.sim.plots.clear_measured.connect(self._clear_measured)
         self.sizing_page = SizingPage(self._form_to_cfg, lambda: self.display_units)
         self.sizing_page.motor_edited.connect(self._on_motor_edited)
         self.sizing_page.sized.connect(self._update_motor_summary)
@@ -482,11 +425,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.sizing_page, "Motor")
         self.tabs.addTab(self.grain_view, "Grain")
         self.tabs.setTabVisible(self.tabs.indexOf(self.grain_view), False)
-        self.tabs.addTab(splitter, "Simulation")
-        self._sim_page = splitter
+        self.tabs.addTab(self.sim, "Simulation")
         self.tabs.addTab(self.study_page, "Sweep")
         self.tabs.addTab(self.mass_page, "Mass && export")
-        self.tabs.setCurrentWidget(splitter)
+        self.tabs.setCurrentWidget(self.sim)
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -515,126 +457,6 @@ class MainWindow(QMainWindow):
         self._updater.failed.connect(self._update_failed)
         self._pending = None  # the commit an update would install
         self.statusBar().showMessage("Ready")
-
-    def _make_form(self) -> QWidget:
-        wrap = QWidget()
-        wl = page_layout(QVBoxLayout(wrap))
-        wl.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
-
-        self.run_btn = QPushButton("Run")
-        self.run_btn.setObjectName("runButton")
-        self.run_btn.clicked.connect(self._run)
-        wl.addWidget(self.run_btn)
-
-        # The motor is set on the Motor tab; this only says which one runs.
-        motor, ml = card_frame("Motor")
-        title = ml.itemAt(0).widget()
-        ml.removeWidget(title)
-        head = QHBoxLayout()
-        edit = QPushButton("Edit on Motor tab")
-        edit.clicked.connect(lambda: self.tabs.setCurrentWidget(self.sizing_page))
-        head.addWidget(title)
-        head.addStretch(1)
-        head.addWidget(edit)
-        ml.addLayout(head)
-        self.motor_summary = QLabel("—")
-        self.motor_summary.setObjectName("cardLabel")
-        self.motor_summary.setWordWrap(True)
-        ml.addWidget(self.motor_summary)
-        self.unapplied = QWidget()
-        ul = QHBoxLayout(self.unapplied)
-        ul.setContentsMargins(0, 0, 0, 0)
-        self.unapplied_text = QLabel("")
-        self.unapplied_text.setObjectName("notApplied")
-        self.unapplied_text.setWordWrap(True)
-        apply_btn = QPushButton("Apply")
-        apply_btn.setToolTip("Copy the Motor tab's sized parts into the motor.")
-        apply_btn.clicked.connect(lambda: self.sizing_page.apply())
-        ul.addWidget(self.unapplied_text, 1)
-        ul.addWidget(apply_btn, 0, Qt.AlignmentFlag.AlignTop)
-        ml.addWidget(self.unapplied)
-
-        # The cards scroll under the Run button, keeping their edges in line when the scrollbar shows.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        inner = QWidget()
-        root = QVBoxLayout(inner)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(CARD_GAP)
-        root.addWidget(motor)
-
-        # Run
-        self.solve_tank_cooling = QCheckBox("Solve tank cooling each step")
-        self.solve_tank_cooling.setToolTip(
-            "Near the end of the liquid, HRAP's tank model runs into a numerical problem and switches to an\n"
-            "averaged pressure drop. This works out the tank cooling properly instead.\n"
-            "Total impulse usually changes by under 1%. Works without Enable advanced options."
-        )
-        self.tmax = PlainDoubleSpinBox()
-        self.tmax.setRange(0.01, 120)
-        self.tmax.setValue(10)
-        self.tburn = PlainDoubleSpinBox()
-        self.tburn.setRange(0.0, 120)
-        self.tburn.setToolTip("Closes the oxidizer valve at this time. 0 = never.")
-        self.dt = PlainDoubleSpinBox()
-        self.dt.setDecimals(3)
-        self.dt.setRange(0.01, 100)
-        self.dt.setValue(1.0)
-        self.dt.setToolTip("1 ms is usually accurate to about 0.1%. To check a new motor, rerun at 0.2 ms and compare.")
-        self.P_cmbr = UnitRow(PRESSURE_ITEMS, "atm")
-        self.P_cmbr.setToolTip("Chamber pressure before ignition. Leave it at 1 atm.")
-        sim, sim_l = card_frame("Run")
-        sf = FieldGrid()
-        sf.add("Max run time", self.tmax, "s")
-        sf.add("Close valve at", self.tburn, "s")
-        sf.add("Timestep", self.dt, "ms")
-        sf.add("Chamber start pressure", self.P_cmbr)
-        sim_l.addLayout(sf)
-        root.addWidget(sim)
-
-        # Runs: every finished simulation, to draw under the current one
-        runs, runs_l = card_frame("Runs")
-        self.run_list = QListWidget()
-        self.run_list.setToolTip("Every simulation of this motor lands here, with what changed from its previous run.\n"
-                                 "Click a run to load its settings and results; tick runs to draw them dashed under it.\n"
-                                 "Right-click to rename, export or delete.")
-        self.run_list.setMinimumHeight(120)
-        self.run_list.setStyleSheet("QListView::item { padding: 3px 4px; }")  # room around each checkbox
-        self.run_list.itemChanged.connect(self._on_run_item_changed)
-        self.run_list.itemPressed.connect(lambda item: setattr(self, "_pressed_check", item.checkState()))
-        self.run_list.itemClicked.connect(self._on_run_clicked)
-        self.run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.run_list.customContextMenuRequested.connect(self._run_menu)
-        clear_runs = QPushButton("Clear runs")
-        clear_runs.clicked.connect(self._clear_runs)
-        runs_l.addWidget(self.run_list)
-        runs_l.addWidget(clear_runs)
-        root.addWidget(runs)
-
-        # Advanced
-        adv, adv_l = card_frame("Advanced (not necessarily MATLAB-identical)")
-        af = FieldGrid()
-        self.adv_on = QCheckBox("Enable advanced options")
-        self.live_chem = QCheckBox("Live chemistry (WIP)")
-        self.ox_fluid = PlainComboBox()
-        self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
-        self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
-                                 "HEM and Dyer always use CoolProp.")
-        for box in (self.solve_tank_cooling, self.adv_on, self.live_chem):
-            af.add_line(box)
-        af.add("Oxidizer fluid", self.ox_fluid)
-        self.adv_on.toggled.connect(self._sync_advanced)
-        adv_l.addLayout(af)
-        root.addWidget(adv)
-        line_up(sf, af)
-
-        # Never let the splitter squeeze the panel narrower than its fields; there's no horizontal scrollbar.
-        scroll.setMinimumWidth(inner.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width() + 4)
-        root.addStretch(1)
-        scroll.setWidget(inner)
-        wl.addWidget(scroll, 1)
-        return wrap
 
     def _make_mass_page(self) -> QWidget:
         page = QWidget()
@@ -719,104 +541,6 @@ class MainWindow(QMainWindow):
         self._sync_length_fields()
         return page
 
-    def _make_results(self) -> QWidget:
-        box = QWidget()
-        layout = page_layout(QVBoxLayout(box))
-        mid = QSplitter(Qt.Orientation.Horizontal)
-        self.plot = QTabWidget()
-        self._plots: dict[str, pg.PlotItem] = {}
-        self._plot_widgets: dict[str, pg.PlotWidget] = {}
-        self._hover_lines: list[pg.InfiniteLine] = []
-        self._plot_viewports: list[QWidget] = []
-        self._plotted_output = None
-        self._syncing_time = False
-        self._time_range = (0.0, 1.0)
-        self.plot.currentChanged.connect(lambda _: self._reset_viz_to_start())
-        self.plot_readout = QLabel("Hover a plot to read values.")
-        self.plot_readout.setWordWrap(True)
-        self.plot_readout.setMinimumHeight(36)
-        self.trace_list = QListWidget()
-        for i, (label, _key, _quantity) in enumerate(TRACES):
-            item = QListWidgetItem(label)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if label in DEFAULT_TRACES else Qt.CheckState.Unchecked)
-            self.trace_list.addItem(item)
-        self.trace_list.itemChanged.connect(lambda *_: self._refresh_plot())
-        self.spi_dp_line = QCheckBox("300 psi ΔP line (SPI)")
-        self.spi_dp_line.setToolTip("Mark 300 psi on the pressure plot. Above about 300 psi of injector ΔP, real nitrous\n"
-                                    "boils in the hole and flows less than SPI predicts. Only shown for SPI motors.")
-        self.spi_dp_line.toggled.connect(lambda *_: self._refresh_plot())
-        self.overlay_btn = QPushButton("Overlay CSV…")
-        self.overlay_btn.setToolTip("Plot a measured thrust curve on the simulation. Also draws tank pressure\n"
-                                    "if the file has it (Weight_Lbs / F_thr, Tplus_ms / t, PT1_PSI / P_tnk).")
-        self.overlay_btn.clicked.connect(self._load_measured)
-        self.overlay_clear = QPushButton("Clear")
-        self.overlay_clear.clicked.connect(self._clear_measured)
-        self.overlay_label = QLabel("No measured curve")
-        self.overlay_label.setWordWrap(True)
-        overlay_row = QHBoxLayout()
-        overlay_row.setContentsMargins(0, 0, 0, 0)
-        overlay_row.addWidget(self.overlay_btn, 1)
-        overlay_row.addWidget(self.overlay_clear)
-        traces = QWidget()
-        traces_l = QVBoxLayout(traces)
-        traces_l.setContentsMargins(0, 0, 0, 0)
-        traces_l.addWidget(self.trace_list, 1)
-        traces_l.addWidget(self.spi_dp_line)
-        traces_l.addLayout(overlay_row)
-        traces_l.addWidget(self.overlay_label)
-        mid.addWidget(traces)
-        mid.addWidget(self.plot)
-        mid.setSizes([160, 600])
-        plots = QWidget()
-        plots_l = QVBoxLayout(plots)
-        plots_l.setContentsMargins(0, 0, 0, 0)
-        # Under the plots: the motor drawing or, for an STL grain, the grain in 3D, both at the time hovered.
-        self.motor_panel = MotorPanel()
-        self.run_grain = RunGrainView(self.grain_scene, lambda: self.display_units)
-        self._panel = QStackedWidget()
-        self._panel.addWidget(self.motor_panel)
-        self._panel.addWidget(self.run_grain)
-        self._panel_switch = QWidget()
-        switch_l = QHBoxLayout(self._panel_switch)
-        switch_l.setContentsMargins(0, 0, 0, 0)
-        switch_l.setSpacing(0)
-        choice = QButtonGroup(self._panel_switch)
-        for text in ("Motor drawing", "Grain"):
-            button = QPushButton(text)
-            button.setObjectName("switch")
-            button.setCheckable(True)
-            choice.addButton(button)
-            switch_l.addWidget(button)
-        self._show_grain = cast(QPushButton, choice.buttons()[1])
-        (self._show_grain if self._prefs.value("simulationPanel") == "grain" else choice.buttons()[0]).setChecked(True)
-        self._show_grain.toggled.connect(self._on_panel_choice)
-        self._panel_switch.hide()  # until an STL grain is in
-        readout = QHBoxLayout()
-        readout.addWidget(self.plot_readout, 1)
-        readout.addWidget(self._panel_switch, 0, Qt.AlignmentFlag.AlignBottom)
-        plots_l.addWidget(mid, 1)
-        plots_l.addLayout(readout)
-        plots.setMinimumHeight(260)
-        self.summary = QPlainTextEdit()
-        self.summary.setReadOnly(True)
-        self.summary.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.summary.setMinimumHeight(60)
-        # Drag the dividers to trade plot height for the diagram or the summary.
-        column = QSplitter(Qt.Orientation.Vertical)
-        column.setChildrenCollapsible(False)
-        for part, stretch in ((plots, 5), (self._panel, 3), (self.summary, 2)):
-            column.addWidget(part)
-            column.setStretchFactor(column.indexOf(part), stretch)
-        column.setSizes([520, 300, 120])
-        self.limit_warning = QLabel("")
-        self.limit_warning.setObjectName("sizingError")
-        self.limit_warning.setWordWrap(True)
-        self.limit_warning.hide()
-        layout.addWidget(self.limit_warning)
-        layout.addWidget(column, 1)
-        return box
-
     def _form_to_cfg(self) -> dict:
         lay = self._form_layout()
         empty_m, empty_cg = self._empty_mass_si(lay)
@@ -824,7 +548,7 @@ class MainWindow(QMainWindow):
         cfg.update(self.sizing_page.motor_cfg())
         cfg.update({
             "mtr_nm": self.name.text() or "mtr_cfg",
-            "solve_tank_cooling": self.solve_tank_cooling.isChecked(),
+            "solve_tank_cooling": self.sim.solve_tank_cooling.isChecked(),
             "mp_state": int(self.mp_on.isChecked()),
             "tnk_start": self.tnk_start.spin.value(),
             "tnk_start_unit": self.tnk_start.unit.currentText(),
@@ -842,15 +566,15 @@ class MainWindow(QMainWindow):
             "mtr_cg_unit": self.tnk_start.unit.currentText(),
             "mtr_m": from_si(empty_m, self.tnk_m.unit.currentText(), "mass"),
             "mtr_m_unit": self.tnk_m.unit.currentText(),
-            "P_cmbr": self.P_cmbr.spin.value(),
-            "P_cmbr_unit": self.P_cmbr.unit.currentText(),
-            "t_max": self.tmax.value(),
-            "t_burn": self.tburn.value(),
-            "dt": self.dt.value() / 1000.0,
+            "P_cmbr": self.sim.P_cmbr.spin.value(),
+            "P_cmbr_unit": self.sim.P_cmbr.unit.currentText(),
+            "t_max": self.sim.tmax.value(),
+            "t_burn": self.sim.tburn.value(),
+            "dt": self.sim.dt.value() / 1000.0,
             "advanced": {
-                "enabled": self.adv_on.isChecked(),
-                "ox_fluid": self.ox_fluid.currentText(),
-                "live_chem": self.live_chem.isChecked(),
+                "enabled": self.sim.adv_on.isChecked(),
+                "ox_fluid": self.sim.ox_fluid.currentText(),
+                "live_chem": self.sim.live_chem.isChecked(),
             },
             "export_OD": self.dry_OD.si("length"),
             "export_L": self.dry_L.si("length"),
@@ -866,7 +590,7 @@ class MainWindow(QMainWindow):
 
     def _cfg_to_form(self, cfg: dict):
         self.name.setText(str(cfg.get("mtr_nm") or ""))
-        self.solve_tank_cooling.setChecked(bool(cfg.get("solve_tank_cooling")))
+        self.sim.solve_tank_cooling.setChecked(bool(cfg.get("solve_tank_cooling")))
         self.mp_on.setChecked(bool(cfg.get("mp_state")))
         self._legacy_mtr_m = float(cfg.get("mtr_m") or 0.0)
         self._legacy_mtr_m_unit = str(cfg.get("mtr_m_unit") or "kg")
@@ -877,18 +601,18 @@ class MainWindow(QMainWindow):
         self.cmbr_start.set_display(from_si(lay.cmbr0, cfg.get("cmbr_start_unit") or "in", "length"), cfg.get("cmbr_start_unit") or "in")
         self.tnk_m.set_display(cfg.get("tnk_m", 0), cfg.get("tnk_m_unit", "kg"))
         self.cmbr_m.set_display(cfg.get("cmbr_m", 0), cfg.get("cmbr_m_unit", "kg"))
-        self.P_cmbr.set_display(cfg.get("P_cmbr", 1), cfg.get("P_cmbr_unit", "atm"))
-        self.tmax.setValue(float(cfg.get("t_max") or 10))
-        self.tburn.setValue(float(cfg.get("t_burn") or 0))
-        self.dt.setValue(1000.0 * float(cfg.get("dt") or 0.001))
+        self.sim.P_cmbr.set_display(cfg.get("P_cmbr", 1), cfg.get("P_cmbr_unit", "atm"))
+        self.sim.tmax.setValue(float(cfg.get("t_max") or 10))
+        self.sim.tburn.setValue(float(cfg.get("t_burn") or 0))
+        self.sim.dt.setValue(1000.0 * float(cfg.get("dt") or 0.001))
         self.dry_OD.set_display(from_si(cfg.get("export_OD") or lay.overall_OD, "in", "length"), "in")
         self.dry_L.set_display(from_si(cfg.get("export_L") or lay.overall_L, "in", "length"), "in")
         adv = cfg.get("advanced") or {}
-        self.adv_on.setChecked(bool(adv.get("enabled")))
+        self.sim.adv_on.setChecked(bool(adv.get("enabled")))
         self._sync_advanced()
         if adv.get("ox_fluid"):
-            self.ox_fluid.setCurrentText(str(adv["ox_fluid"]))
-        self.live_chem.setChecked(bool(adv.get("live_chem")))
+            self.sim.ox_fluid.setCurrentText(str(adv["ox_fluid"]))
+        self.sim.live_chem.setChecked(bool(adv.get("live_chem")))
         self.sizing_page.load_motor(cfg)
         self.sizing_page.set_targets(cfg.get("sizing") or {}, cfg)
         self._tank_len_custom = False
@@ -912,42 +636,33 @@ class MainWindow(QMainWindow):
         else:
             injector = f"{n} × {u.text(sp.hole_D.si('length'), 'length')} holes"
         throat, _exit, _er = sp.nozzle_size()
-        self.motor_summary.setText(" · ".join((f"{u.text(sp.tank_geometry()[2], 'volume')} tank", injector,
+        self.sim.motor_summary.setText(" · ".join((f"{u.text(sp.tank_geometry()[2], 'volume')} tank", injector,
                                                f"{u.text(sp.grain_L.si('length'), 'length')} grain",
                                                f"{u.text(throat, 'length')} throat")))
         changes = sp.unapplied()
-        self.unapplied_text.setText("Not applied: " + ", ".join(changes) + ".")
-        self.unapplied.setVisible(bool(changes))
+        self.sim.unapplied_text.setText("Not applied: " + ", ".join(changes) + ".")
+        self.sim.unapplied.setVisible(bool(changes))
 
     def _sync_grain_view(self):
         """The Grain tab shows while the grain comes from an STL: the grain, its loading, or what's in the way.
-        The Simulation tab can show a loaded STL grain instead of the motor drawing."""
+        The Simulation tab shows a loaded STL grain under its plots."""
         sp, gv = self.sizing_page, self.grain_view
         self.tabs.setTabVisible(self.tabs.indexOf(gv), sp.grain_shape.currentData() == "stl")
         if sp.grain_geom is not None:
             gv.set_grain(sp.grain_geom)
-            self._panel_switch.show()
+            self.sim.show_grain_tab(True)
             if self._grain_was_loading:
                 self.statusBar().showMessage(f"Loaded {sp.grain_name()} in {sp.grain_load_seconds():.0f} s.")
         elif sp.grain_loading_shown():
             gv.set_loading(sp.grain_name(), sp.grain_mesh)
-            self._panel_switch.hide()
+            self.sim.show_grain_tab(False)
             self._show_grain_progress()
         elif not sp.grain_loading():  # while it loads, a grain from the cache is a moment away: leave things be
             gv.set_message(sp.grain_message(), "Load again" if sp.grain_stopped() else "Open the Motor tab")
-            self._panel_switch.hide()
+            self.sim.show_grain_tab(False)
             if self._grain_was_loading or sp.grain_failed():
                 self.statusBar().showMessage(sp.grain_message())
         self._grain_was_loading = sp.grain_loading_shown()
-        self._sync_panel()
-
-    def _on_panel_choice(self):
-        self._prefs.setValue("simulationPanel", "grain" if self._show_grain.isChecked() else "drawing")
-        self._sync_panel()
-
-    def _sync_panel(self):
-        grain = not self._panel_switch.isHidden() and self._show_grain.isChecked()
-        self._panel.setCurrentWidget(self.run_grain if grain else self.motor_panel)
 
     def _load_learned_timing(self):
         """How the last cold STL loads' time was spread over their steps, for the time left on the next."""
@@ -973,10 +688,10 @@ class MainWindow(QMainWindow):
 
     def _on_applied(self):
         self.statusBar().showMessage("Applied to motor.")
-        self.tabs.setCurrentWidget(self._sim_page)
+        self.tabs.setCurrentWidget(self.sim)
 
     def _connect_derived(self):
-        for row in (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m, self.P_cmbr):
+        for row in (self.tnk_start, self.tnk_m, self.cmbr_start, self.cmbr_m, self.sim.P_cmbr):
             row.spin.valueChanged.connect(self._update_derived_labels)
             row.unit.currentTextChanged.connect(self._update_derived_labels)
         for row in (self.tnk_L, self.cmbr_L):
@@ -1113,7 +828,7 @@ class MainWindow(QMainWindow):
             P_tnk = float(nox(T0).Pv)
         except Exception:
             pass
-        P_cmbr = self.P_cmbr.si("pressure")
+        P_cmbr = self.sim.P_cmbr.si("pressure")
         stl = sp.grain_shape.currentData() == "stl"
         web = case = 0.0
 
@@ -1217,63 +932,20 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_viz(self):
-        if not hasattr(self, "motor_panel"):
+        if not hasattr(self, "sim"):
             return
         if hasattr(self, "mass_preview"):
             self.mass_preview.set_model(self._motor_view(None))
-        self.motor_panel.set_model(self._motor_view(self._hover_index))
+        self.sim.motor_panel.set_model(self._motor_view(self._hover_index))
 
-    def _reset_viz_to_start(self):
-        for line in self._hover_lines:
-            line.setVisible(False)
-        self.plot_readout.setText("Hover a plot to read values.")
-        if self._hover_index is None:
+    def _on_hover(self, index: int | None):
+        """The drawing and the 3D grain at the time hovered on the plots; back to the start once the mouse leaves."""
+        if index is None:
+            if self._hover_index is not None:
+                self._refresh_viz_at(None)
             return
-        self._hover_index = None
-        self._refresh_viz()
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Leave and obj in self._plot_viewports:
-            self._reset_viz_to_start()
-        return super().eventFilter(obj, event)
-
-    def _mouse_moved(self, quantity: str, pos):
-        if self._output is None and self._measured is None:
-            return
-        plot = self._plots[quantity]
-        vb = cast(pg.ViewBox, plot.vb)
-        if not vb.sceneBoundingRect().contains(pos):
-            self._reset_viz_to_start()
-            return
-        x = vb.mapSceneToView(pos).x()
-        t_show = x
-        if self._output is not None:
-            t = np.asarray(self._output.t)
-            if t.size == 0:
-                return
-            i = int(np.clip(np.searchsorted(t, x), 0, t.size - 1))
-            t_show = float(t[i])
-            self._refresh_viz_at(i)
-        for line in self._hover_lines:
-            line.setValue(t_show)
-            line.setVisible(True)
-        bits = [f"Time: {t_show:.3f} s"]
-        if self._output is not None:
-            for k, (_label, key, trace_quantity) in enumerate(TRACES):
-                item = self.trace_list.item(k)
-                values = _curve(self._output, self._settings, key)
-                if item.checkState() == Qt.CheckState.Checked and not item.isHidden() and values is not None:
-                    bits.append(f"{item.text()}: {self.display_units.text(float(values[i]), trace_quantity)}")
-            self.run_grain.show_at(t_show, float(self._output.grn_web[i]))
-        if self._measured is not None:
-            for label, key, trace_quantity in TRACES:
-                series = self._measured.series(key)
-                if series is None:
-                    continue
-                value = float(np.interp(t_show, self._measured.t, series, left=np.nan, right=np.nan))
-                if np.isfinite(value):
-                    bits.append(f"{self._measured.label} {label}: {self.display_units.text(value, trace_quantity)}")
-        self.plot_readout.setText("   ·   ".join(bits))
+        self._refresh_viz_at(index)
+        self.sim.run_grain.show_at(float(self._output.t[index]), float(self._output.grn_web[index]))
 
     def _refresh_viz_at(self, index: int | None):
         self._hover_index = index
@@ -1281,34 +953,34 @@ class MainWindow(QMainWindow):
 
     def _sync_advanced(self, *_):
         """The advanced options only apply with Enable advanced options ticked, so grey them out otherwise."""
-        on = self.adv_on.isChecked()
-        controls = (self.live_chem, self.ox_fluid)
+        on = self.sim.adv_on.isChecked()
+        controls = (self.sim.live_chem, self.sim.ox_fluid)
         tips = self.__dict__.setdefault("_advanced_tips", {w: w.toolTip() for w in controls})
         for w in controls:
             w.setEnabled(on)
             w.setToolTip(tips[w] if on else "Tick Enable advanced options to use this.")
         if on and self.sizing_page.inj_model.currentText() != "SPI":  # HEM and Dyer always use CoolProp
-            self.ox_fluid.setEnabled(False)
-            self.ox_fluid.setToolTip("HEM and Dyer always use CoolProp nitrous properties.")
+            self.sim.ox_fluid.setEnabled(False)
+            self.sim.ox_fluid.setToolTip("HEM and Dyer always use CoolProp nitrous properties.")
 
     def _sync_run_button(self):
         """Grey the Run button while the results already match the inputs; it still runs if clicked."""
         fresh = self._output is not None
-        self.run_btn.setProperty("upToDate", fresh)
-        self.run_btn.setToolTip("These results match the current inputs." if fresh else "")
-        self.run_btn.style().unpolish(self.run_btn)
-        self.run_btn.style().polish(self.run_btn)
+        self.sim.run_btn.setProperty("upToDate", fresh)
+        self.sim.run_btn.setToolTip("These results match the current inputs." if fresh else "")
+        self.sim.run_btn.style().unpolish(self.sim.run_btn)
+        self.sim.run_btn.style().polish(self.sim.run_btn)
 
     def _invalidate_results(self):
         if self._output is None:
             return
         self._output = self._settings = self._state = self._result_cfg = None
         self._hover_index = None
-        self.limit_warning.hide()
-        self.summary.clear()
-        self._clear_plot()
+        self.sim.limit_warning.hide()
+        self.sim.summary.clear()
+        self._refresh_plot()
         self._refresh_viz()
-        self.run_grain.set_run(False)
+        self.sim.run_grain.set_run(False)
         self._sync_run_button()
         self.statusBar().showMessage("Inputs changed, run again to update.")
 
@@ -1340,7 +1012,7 @@ class MainWindow(QMainWindow):
     def _sync_busy(self):
         """Motors can't be switched or opened while a simulation or study is running."""
         idle = self._thread is None and not self.study_page.busy()
-        for page in (self._form, self.sizing_page, self.mass_page):
+        for page in (self.sim.form, self.sizing_page, self.mass_page):
             page.setEnabled(idle)
         self.study_page.setEnabled(self._thread is None)
         for w in (self.motor_tabs, self._open_btn, self._file_menu, self._examples_menu):
@@ -1462,7 +1134,7 @@ class MainWindow(QMainWindow):
 
     def _list_runs(self):
         """The Runs list and the Sweep tab's saved sweeps show only the shown motor's."""
-        self.run_list.clear()
+        self.sim.run_list.clear()
         for r in self._motor_runs():
             self._add_run_item(r)
         shown = next((r for r in self._motor_runs() if r.output is not None and r.output is self._output), None)
@@ -1472,11 +1144,11 @@ class MainWindow(QMainWindow):
 
     def _select_run(self, run: SimRun):
         """Highlight the run whose settings and results are shown."""
-        for i in range(self.run_list.count()):
-            if self.run_list.item(i).data(Qt.ItemDataRole.UserRole) == str(run.file):
-                self.run_list.blockSignals(True)
-                self.run_list.setCurrentRow(i)
-                self.run_list.blockSignals(False)
+        for i in range(self.sim.run_list.count()):
+            if self.sim.run_list.item(i).data(Qt.ItemDataRole.UserRole) == str(run.file):
+                self.sim.run_list.blockSignals(True)
+                self.sim.run_list.setCurrentRow(i)
+                self.sim.run_list.blockSignals(False)
 
     def _on_run_clicked(self, item: QListWidgetItem):
         if item.checkState() != getattr(self, "_pressed_check", item.checkState()):
@@ -1523,9 +1195,10 @@ class MainWindow(QMainWindow):
         item.setCheckState(Qt.CheckState.Checked if run.ticked else Qt.CheckState.Unchecked)
         item.setData(Qt.ItemDataRole.UserRole, str(run.file))
         item.setToolTip("\n".join([*run.changes, str(run.file)]))
-        self.run_list.blockSignals(True)
-        self.run_list.insertItem(0, item)  # newest first
-        self.run_list.blockSignals(False)
+        item.setIcon(dash_icon(self._colors()["plot_fg"], self._run_lines.get(str(run.file))))
+        self.sim.run_list.blockSignals(True)
+        self.sim.run_list.insertItem(0, item)  # newest first
+        self.sim.run_list.blockSignals(False)
 
     def _run_of(self, item: QListWidgetItem) -> SimRun | None:
         return next((r for r in self._sim_runs if str(r.file) == item.data(Qt.ItemDataRole.UserRole)), None)
@@ -1539,28 +1212,28 @@ class MainWindow(QMainWindow):
                 run.label = item.text().strip()
                 run.save()
             else:
-                self.run_list.blockSignals(True)
+                self.sim.run_list.blockSignals(True)
                 item.setText(run.label)  # an empty name keeps the old one
-                self.run_list.blockSignals(False)
+                self.sim.run_list.blockSignals(False)
         self._refresh_plot()
 
     def _run_menu(self, pos):
-        item = self.run_list.itemAt(pos)
+        item = self.sim.run_list.itemAt(pos)
         run = self._run_of(item) if item is not None else None
         if run is None:
             return
         menu = QMenu(self)
         rename, csv, delete = menu.addAction("Rename"), menu.addAction("Export CSV…"), menu.addAction("Delete")
-        chosen = menu.exec(self.run_list.viewport().mapToGlobal(pos))
+        chosen = menu.exec(self.sim.run_list.viewport().mapToGlobal(pos))
         if chosen is rename:
-            self.run_list.editItem(item)
+            self.sim.run_list.editItem(item)
         elif chosen is csv:
             self._with_curves(run, lambda: self._export_run(run))
         elif chosen is delete:
             shown = run.output is not None and run.output is self._output
             self._sim_runs.remove(run)
             delete_run(run.file)
-            self.run_list.takeItem(self.run_list.row(item))
+            self.sim.run_list.takeItem(self.sim.run_list.row(item))
             mine = self._motor_runs()
             if shown and mine:
                 self._load_run(mine[-1])  # the deleted run was on screen: show the newest one left
@@ -1585,7 +1258,7 @@ class MainWindow(QMainWindow):
         for r in mine:
             delete_run(r.file)
             self._sim_runs.remove(r)
-        self.run_list.clear()
+        self.sim.run_list.clear()
         self._refresh_plot()
 
     def _overlay_runs(self) -> list[SimRun]:
@@ -1598,9 +1271,6 @@ class MainWindow(QMainWindow):
 
     def _sync_overlay_ui(self):
         loaded = self._measured is not None
-        if hasattr(self, "overlay_clear"):
-            self.overlay_clear.setEnabled(loaded)
-            self.overlay_label.setText(self._measured.label if loaded else "No measured curve")
         for action in self._file_menu.actions():
             if action.text() == "Clear measured overlay":
                 action.setEnabled(loaded)
@@ -1653,16 +1323,16 @@ class MainWindow(QMainWindow):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
         self._hover_index = None
         info = summarize(s, x, o)
-        self.summary.setPlainText(format_summary(info, self.display_units))
+        self.sim.summary.setPlainText(format_summary(info, self.display_units))
         self._refresh_plot()
         self._refresh_viz()
-        self.run_grain.set_run(True)
+        self.sim.run_grain.set_run(True)
         u = self.display_units
         peak, limit = float(np.max(o.P_cmbr)), chamber_limit(cast(dict, self._result_cfg))
         over = peak > limit
-        self.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
+        self.sim.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
                                    f"{u.text(limit, 'pressure')} chamber pressure limit.")
-        self.limit_warning.setVisible(over)
+        self.sim.limit_warning.setVisible(over)
         self.statusBar().showMessage(f"Done: {o.sim_end_cond}. Total impulse {u.text(info['total_impulse'], 'impulse')}"
                                      + ("  ⚠ Over the chamber pressure limit" if over else ""))
         self._sync_run_button()
@@ -1675,159 +1345,22 @@ class MainWindow(QMainWindow):
     def _colors(self) -> dict:
         return colors_for(getattr(self, "_theme", "dark"))
 
-    def _hover_line_pen(self):
-        return pg.mkPen(self._colors()["accent"], width=1, style=Qt.PenStyle.DashLine)
-
-    def _clear_plot(self):
-        self._plots.clear()
-        self._hover_lines.clear()
-        self._plot_viewports.clear()
-        self._plotted_output = None
-        self.plot.clear()
-        for widget in self._plot_widgets.values():
-            widget.deleteLater()
-        self._plot_widgets.clear()
-        self.plot_readout.setText("Hover a plot to read values.")
-
-    def _sync_time_range(self, _view, time_range):
-        if self._syncing_time:
-            return
-        self._time_range = tuple(time_range)
-        self._syncing_time = True
-        try:
-            for plot in self._plots.values():
-                cast(pg.ViewBox, plot.vb).setXRange(*self._time_range, padding=0)
-        finally:
-            self._syncing_time = False
-
-    def _measured_pen(self):
-        return pg.mkPen(self._colors()["plot_fg"], width=2.5)
-
     def _refresh_plot(self):
-        o = self._output
         overlays = self._overlay_runs()
-        measured = self._measured
-        if o is None and not overlays and measured is None:
-            self._clear_plot()
-            return
-        current = self.plot.currentWidget()
-        active_quantity = next((q for q, widget in self._plot_widgets.items() if widget is current), None)
-        if self._plotted_output is not o or o is None or self._plotted_measured is not measured:
-            shown_t = []
-            if o is not None:
-                shown_t.append(o.t)
-            shown_t.extend(r.output.t for r in overlays)
-            if measured is not None:
-                shown_t.append(measured.t)
-            self._time_range = (min(float(a[0]) for a in shown_t), max(float(a[-1]) for a in shown_t))
-        self._clear_plot()
-        colors = self._colors()
-        runs = [self._settings, *(r.settings for r in overlays)]
-        stl = any(getattr(settings, "grain_geometry", None) is not None for settings in runs)
-        self.trace_list.blockSignals(True)  # renaming an item would redraw the plots midway through this
-        for i, (label, key, _quantity) in enumerate(TRACES):
-            item = self.trace_list.item(i)
-            item.setHidden(key in STL_TRACES and not stl)
-            if key == "grn_ID":
-                item.setText("Same-area port" if stl else label)
-        self.trace_list.blockSignals(False)
-        checked = [i for i in range(len(TRACES))
-                   if self.trace_list.item(i).checkState() == Qt.CheckState.Checked and not self.trace_list.item(i).isHidden()]
-        per_plot: dict[str, int] = {}
-        measured_on: set[str] = set()
-        for i in checked:
-            per_plot[TRACES[i][2]] = per_plot.get(TRACES[i][2], 0) + 1
-            if measured is not None and measured.series(TRACES[i][1]) is not None:
-                measured_on.add(TRACES[i][2])
-        for i in checked:
-            _label, key, quantity = TRACES[i]
-            label = self.trace_list.item(i).text()
-            has_sim = o is not None or bool(overlays)
-            has_meas = measured is not None and measured.series(key) is not None
-            if not has_sim and not has_meas:
-                continue
-            unit = self.display_units.unit(quantity)
-            if quantity not in self._plots:
-                widget = pg.PlotWidget()
-                plot = cast(pg.PlotItem, widget.getPlotItem())
-                plot.showGrid(x=True, y=True, alpha=0.25)
-                if per_plot[quantity] > 1 or overlays or quantity in measured_on:
-                    plot.addLegend(offset=(-10, 5))
-                plot.setLabel("left", PLOT_LABELS[quantity], units=unit)
-                plot.getAxis("left").enableAutoSIPrefix(False)
-                plot.getAxis("left").setWidth(100)
-                plot.setLabel("bottom", "Time", units="s")
-                self._plots[quantity] = plot
-                self._plot_widgets[quantity] = widget
-                self.plot.addTab(widget, PLOT_LABELS[quantity])
-                viewport = widget.viewport()
-                self._plot_viewports.append(viewport)
-                viewport.installEventFilter(self)
-                cast(pg.GraphicsScene, widget.scene()).sigMouseMoved.connect(
-                    lambda pos, q=quantity: self._mouse_moved(q, pos))
-                line = pg.InfiniteLine(angle=90, movable=False, pen=self._hover_line_pen())
-                line.setVisible(False)
-                plot.addItem(line, ignoreBounds=True)
-                self._hover_lines.append(line)
-            color = colors[TRACE_COLORS[key]]
-            if o is not None and (values := _curve(o, self._settings, key)) is not None:
-                self._plots[quantity].plot(o.t, self.display_units.value(values, quantity), pen=pg.mkPen(color, width=2),
-                                          name=label)
-            dashes = (Qt.PenStyle.DashLine, Qt.PenStyle.DotLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DashDotDotLine)
-            for j, overlay in enumerate(overlays):
-                if (values := _curve(overlay.output, overlay.settings, key)) is not None:
-                    self._plots[quantity].plot(
-                        overlay.output.t, self.display_units.value(values, quantity),
-                        pen=pg.mkPen(color, width=1.5, style=dashes[j % len(dashes)]), name=f"{label} ({overlay.label})")
-            series = measured.series(key) if measured is not None else None
-            if series is not None:
-                self._plots[quantity].plot(
-                    measured.t, self.display_units.value(np.asarray(series, dtype=float), quantity),
-                    pen=self._measured_pen(), name=f"{measured.label} {label}")
-        cfg = self._result_cfg if self._result_cfg is not None else (overlays[0].cfg if overlays else None)
-        if "pressure" in self._plots and cfg is not None:
-            limit = self.display_units.value(chamber_limit(cfg), "pressure")
-            self._plots["pressure"].addItem(pg.InfiniteLine(
-                pos=limit, angle=0, movable=False, pen=pg.mkPen(colors["limit"], width=1, style=Qt.PenStyle.DashLine),
-                label="Chamber limit", labelOpts={"position": 0.05, "color": colors["limit"], "anchors": [(0, 1), (0, 1)]}))
-            if self.spi_dp_line.isChecked() and uses_spi(cfg):
-                dp = self.display_units.value(to_si(300.0, "psi", "pressure"), "pressure")
-                self._plots["pressure"].addItem(pg.InfiniteLine(
-                    pos=dp, angle=0, movable=False, pen=pg.mkPen(colors["warn"], width=1, style=Qt.PenStyle.DashLine),
-                    label="300 psi ΔP (SPI)", labelOpts={"position": 0.05, "color": colors["warn"], "anchors": [(0, 1), (0, 1)]}))
-        contact = _case_contact(o, self._settings) if o is not None else None
-        for plot in self._plots.values() if contact is not None else ():
-            plot.addItem(pg.InfiniteLine(
-                pos=contact, angle=90, movable=False, pen=pg.mkPen(colors["limit"], width=1.5, style=Qt.PenStyle.DashLine),
-                label=f"Case wall exposed, {contact:.2f} s",
-                labelOpts={"position": 0.96, "color": colors["limit"], "anchors": [(-0.03, 0), (-0.03, 0)]}), ignoreBounds=True)
-        for plot in self._plots.values():
-            vb = cast(pg.ViewBox, plot.vb)
-            vb.setXRange(*self._time_range, padding=0)
-            vb.sigXRangeChanged.connect(self._sync_time_range)
-        if active_quantity in self._plot_widgets:
-            self.plot.setCurrentWidget(self._plot_widgets[active_quantity])
-        self._plotted_output = o
-        self._plotted_measured = measured
-        self.plot_readout.setText("Hover over a plot to inspect a time." if self._plots
-                                 else "Select a quantity from the list to display its plot.")
-        self._style_plots()
-
-    def _style_plots(self):
-        colors = self._colors()
-        fg = colors["plot_fg"]
-        for widget in self._plot_widgets.values():
-            widget.setBackground(colors["plot_bg"])
-        for plot in self._plots.values():
-            for side in ("left", "bottom"):
-                axis = plot.getAxis(side)
-                axis.setPen(fg)
-                axis.setTextPen(fg)
-                axis.setLabel(text=axis.labelText, units=axis.labelUnits, **{"color": fg})
-            if plot.legend is not None:
-                cast(pg.LegendItem, plot.legend).setLabelTextColor(fg)
-        for line in self._hover_lines:
-            line.setPen(self._hover_line_pen())
+        cfg = self._result_cfg if self._result_cfg is not None else overlays[0].cfg if overlays else self._form_to_cfg()
+        self.sim.plots.show_runs(Shown(self._output, self._settings, tuple((r.output, r.settings) for r in overlays),
+                                       self._measured, cfg, uses_spi(cfg)))
+        # Beside each run on the plots, the line style it's drawn in.
+        self._run_lines = {str(r.file): DASHES[j % len(DASHES)] for j, r in enumerate(overlays)}
+        shown = next((r for r in self._motor_runs() if r.output is not None and r.output is self._output), None)
+        if shown is not None:
+            self._run_lines[str(shown.file)] = Qt.PenStyle.SolidLine
+        run_list = self.sim.run_list
+        run_list.blockSignals(True)
+        for i in range(run_list.count()):
+            item = run_list.item(i)
+            item.setIcon(dash_icon(self._colors()["plot_fg"], self._run_lines.get(item.data(Qt.ItemDataRole.UserRole))))
+        run_list.blockSignals(False)
 
     def _dialog_dir(self) -> str:
         if self._last_dir and Path(self._last_dir).is_dir():
@@ -1915,11 +1448,11 @@ class MainWindow(QMainWindow):
             self._settings, self._state, self._output, self._result_cfg = motor.run
             self._show_results()
         else:
-            self.limit_warning.hide()
-            self.summary.clear()
-            self._clear_plot()
+            self.sim.limit_warning.hide()
+            self.sim.summary.clear()
+            self._refresh_plot()
             self._refresh_viz()
-            self.run_grain.set_run(False)
+            self.sim.run_grain.set_run(False)
         self._list_runs()
         self._sync_run_button()
         self._update_tab_marker()
@@ -1929,7 +1462,7 @@ class MainWindow(QMainWindow):
         self._add_motor(cfg, title=cfg["mtr_nm"])
         self._shown.saved = None
         self._update_tab_marker()
-        self.tabs.setCurrentWidget(self._sim_page)
+        self.tabs.setCurrentWidget(self.sim)
 
     def _stash(self):
         """Keep the shown motor's settings and last run, so switching back brings them back."""
@@ -2230,25 +1763,25 @@ class MainWindow(QMainWindow):
         self.sizing_page.refresh()
         self.study_page.refresh()
         self.grain_view.refresh()
-        self.run_grain.refresh()
+        self.sim.run_grain.refresh()
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
-            self.summary.setPlainText(format_summary(info, units))
+            self.sim.summary.setPlainText(format_summary(info, units))
             self.statusBar().showMessage(f"Done: {self._output.sim_end_cond}. Total impulse {units.text(info['total_impulse'], 'impulse')}")
 
     def _set_theme(self, name: str):
         self._theme = name
         apply_theme(cast(QApplication, QApplication.instance()), name)
-        self._style_plots()
-        if hasattr(self, "motor_panel"):
-            self.motor_panel.set_theme(name)
+        if hasattr(self, "sim"):
+            self.sim.motor_panel.set_theme(name)
+            self.sim.plots.set_theme(name)
         if hasattr(self, "mass_preview"):
             self.mass_preview.set_theme(name)
         if hasattr(self, "sizing_page"):
             self.sizing_page.set_theme(name)
             self.grain_scene.set_theme(name)
             self.grain_view.set_theme()
-            self.run_grain.set_theme()
+            self.sim.run_grain.set_theme()
 
     def _about(self):
         QMessageBox.about(
