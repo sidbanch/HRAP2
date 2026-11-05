@@ -135,7 +135,10 @@ class UnitRow(QWidget):
         # A value the app filled in (loaded, worked out, or converted to another unit) stays exact behind its
         # rounded display, so reading it back doesn't drift. Typing replaces it.
         self._exact: float | None = None
+        self._typed = False
         self.spin.valueChanged.connect(self._on_typed)
+        self.spin.lineEdit().textEdited.connect(self._on_text_edited)
+        self.spin.editingFinished.connect(self._on_edit_done)
         self.unit = UnitCombo()
         self.unit.addItems(items)
         if unit in items:
@@ -161,6 +164,19 @@ class UnitRow(QWidget):
         self._exact = new_val
 
     def _on_typed(self, _value: float):
+        self._exact = None
+
+    def _on_text_edited(self, _text: str):
+        self._typed = True
+
+    def _on_edit_done(self):
+        """Typing the rounded number shown still replaces the exact one behind it."""
+        if not self._typed:
+            return
+        self._typed = False
+        if self._exact is not None and self._exact != self.spin.value():
+            self._exact = None
+            self.spin.valueChanged.emit(self.spin.value())
         self._exact = None
 
     def value(self) -> float:
