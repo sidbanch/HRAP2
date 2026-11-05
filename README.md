@@ -67,11 +67,11 @@ Until a cold flow fits them, drill the listed size and open the holes up a drill
 
 ## Simulation tab
 
-Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**, and pick what to plot from the list. Hover a plot to read the motor at that time. **300 psi ΔP line** marks where SPI starts to overpredict the flow.
+Runs the motor from the Motor tab. The **Motor** line at the top says which motor that is, and lists anything the Motor tab's sizing calls for that isn't applied yet. Press **Run**. The plots are in tabs, one plot per unit on a shared time axis, with a list beside them: hover a plot to read each line's value at that time, and click a line in the list to show or hide it. Reference lines sit below the lines, including **300 psi ΔP**, which marks where SPI starts to overpredict the flow. **Overlay measured CSV…** draws a measured curve on the Thrust and Pressure tabs.
 
-Every run goes in the **Runs** list, labeled with what changed since that motor's previous run. Click a run to load its settings and results back into its motor; tick runs to draw them dashed under the shown one. Right-click to rename, export a CSV or delete.
+Every run goes in the **Runs** list, labeled with what changed since that motor's previous run. Click a run to load its settings and results back into its motor; tick runs to draw them dashed under the shown one, each in the line style beside its name. Right-click to rename, export a CSV or delete.
 
-Runs are kept as files, so they come back next time: `sim 1.json`, `sim 2.json`, … in a `runs` folder inside the motor's export folder (`HPS-mini.json` → `HPS-mini/runs/`). The list shows the runs of every open motor. A motor without a file keeps its runs in HRAP's own data folder. A run's file holds its settings and headline numbers, not its curves: HRAP simulates it again when it's shown, and says so if the result no longer matches. Runs under `HCAT motor files` aren't committed to git.
+Runs are kept as files, so they come back next time: `sim 1.json`, `sim 2.json`, … in a `runs` folder inside the motor's export folder (`HPS-mini.json` → `HPS-mini/runs/`). The list shows the selected motor's runs. A motor without a file keeps its runs in HRAP's own data folder. A run's file holds its settings and headline numbers, not its curves: HRAP simulates it again when it's shown, and says so if the result no longer matches. Runs under `HCAT motor files` aren't committed to git.
 
 The left side only holds how to run it: run time, when the valve closes, timestep, and chamber pressure before ignition.
 
