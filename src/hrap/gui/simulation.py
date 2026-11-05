@@ -60,7 +60,7 @@ TABS: dict[str, tuple[Line, ...]] = {
     "Thrust": (Line("F_thr", "Thrust", "force", "green"),),
     "Pressure": (Line("P_tnk", "Tank", "pressure", "oxidizer"), Line("P_cmbr", "Chamber", "pressure", "purple"),
                  Line("inj_dP", "Injector ΔP", "pressure", "teal"),
-                 Line("T_tnk", "Tank temperature", "temperature", "oxidizer", on=False)),
+                 Line("T_tnk", "Tank temp", "temperature", "oxidizer", on=False)),
     "Flow": (Line("mdot_o", "Oxidizer", "mass_flow", "oxidizer"), Line("mdot_f", "Fuel", "mass_flow", "fuel"),
              Line("mdot_n", "Nozzle", "mass_flow", "grey", on=False), Line("OF", "O/F", "ratio", "teal")),
     "Mass": (Line("m_o", "Oxidizer", "mass", "oxidizer"), Line("m_f", "Fuel", "mass", "fuel"),
