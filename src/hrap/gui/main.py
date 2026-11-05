@@ -127,6 +127,7 @@ class OpenMotor:
     title: str
     cfg: dict  # the settings as the pages last showed them
     saved: dict | None = None  # the settings as last loaded or saved, to tell whether it has unsaved edits
+    file: dict | None = None  # its file as read back in a session, until the pages show what that comes to
     run: tuple | None = None  # (settings, state, output, cfg) of its last run
 
 
@@ -172,6 +173,9 @@ _SETTING_NAMES = {
 }
 _SETTING_UNITS = {"tnk_cond": "T_tnk_unit", "grn_stl_voxel": "grn_stl_unit"}  # where a setting's unit lives, when not at "<key>_unit"
 
+# Settings worked out from the layout. They change when an STL grain's sizes arrive, which isn't an edit.
+_LAYOUT_KEYS = {"tnk_X", "cmbr_X", "export_OD", "export_L", "mtr_cg", "mtr_m"}
+
 # Settings that follow from other settings, so a run's "what changed" leaves them out.
 _DERIVED_KEYS = {"inj_cd_as", "tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
 
@@ -191,8 +195,7 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
     changes = []
     for k, v in b.items():
         key = k.split(".")[-1]
-        if (key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or k.startswith("sizing.round_grain.")
-                or _same_cfg(a.get(k), v)):
+        if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
             continue
         name = _SETTING_NAMES.get(key, key.replace("_", " "))
         if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
@@ -640,7 +643,7 @@ class MainWindow(QMainWindow):
             injector = f"{n} × {u.text(sp.hole_D.si('length'), 'length')} holes"
         throat, _exit, _er = sp.nozzle_size()
         self.sim.motor_summary.setText(" · ".join((f"{u.text(sp.tank_geometry()[2], 'volume')} tank", injector,
-                                               f"{u.text(sp.grain_L.si('length'), 'length')} grain",
+                                               f"{u.text(sp.grain_size()[0], 'length')} grain",
                                                f"{u.text(throat, 'length')} throat")))
         changes = sp.unapplied()
         self.sim.unapplied_text.setText("Not applied: " + ", ".join(changes) + ".")
@@ -666,6 +669,7 @@ class MainWindow(QMainWindow):
             if self._grain_was_loading or sp.grain_failed():
                 self.statusBar().showMessage(sp.grain_message())
         self._grain_was_loading = sp.grain_loading_shown()
+        self._update_derived_labels()  # the drawings and lengths follow the grain's sizes
 
     def _load_learned_timing(self):
         """How the last cold STL loads' time was spread over their steps, for the time left on the next."""
@@ -713,8 +717,8 @@ class MainWindow(QMainWindow):
             cmbr_start=0.0,
             pre_L=sp.pre_L.si("length"),
             post_L=sp.post_L.si("length"),
-            grn_L=sp.grain_L.si("length"),
-            grn_OD=sp.grain_OD.si("length"),
+            grn_L=sp.grain_size()[0],
+            grn_OD=sp.grain_size()[1],
             noz_thrt=throat,
             noz_exit=exit_D,
         )
@@ -785,8 +789,8 @@ class MainWindow(QMainWindow):
             post_L=sp.post_L.si("length"),
             cmbr_L=self.cmbr_L.si("length") if self._tca_len_custom else 0.0,
             cmbr_m=self.cmbr_m.si("mass"),
-            grn_L=sp.grain_L.si("length"),
-            grn_OD=sp.grain_OD.si("length"),
+            grn_L=sp.grain_size()[0],
+            grn_OD=sp.grain_size()[1],
             noz_thrt=throat,
             noz_exit=exit_D,
         )
@@ -803,9 +807,7 @@ class MainWindow(QMainWindow):
     def _motor_view(self, index: int | None = None) -> MotorView:
         sp = self.sizing_page
         tnk_L, tnk_D, tnk_V = sp.tank_geometry()
-        grn_L = sp.grain_L.si("length")
-        grn_OD = sp.grain_OD.si("length")
-        grn_ID = sp.port_D.si("length")
+        grn_L, grn_OD, grn_ID = sp.grain_size()
         inj_D = sp.hole_D.si("length")
         inj_N = sp.holes.value()
         inj_Cd = sp.cd()
@@ -1417,7 +1419,9 @@ class MainWindow(QMainWindow):
         return [self.motor_tabs.tabData(i) for i in range(self.motor_tabs.count())]
 
     def _edited(self, motor: OpenMotor) -> bool:
-        return not _same_cfg(motor.cfg, motor.saved)
+        def own(cfg: dict) -> dict:
+            return {k: v for k, v in cfg.items() if k not in _LAYOUT_KEYS}
+        return motor.saved is None or not _same_cfg(own(motor.cfg), own(motor.saved))
 
     def _add_motor(self, cfg: dict, path: str = "", title: str = "", show: bool = True):
         """Open a motor in a new tab, or switch to its tab if its file is already open."""
@@ -1442,6 +1446,9 @@ class MainWindow(QMainWindow):
             self._stash()
         self._shown = None  # loading the pages mustn't mark anything edited
         self._output = self._settings = self._state = self._result_cfg = None
+        if motor.file is not None:  # an older file lacks newer settings, which isn't an edit
+            self._cfg_to_form(motor.file)
+            motor.saved, motor.file = self._form_to_cfg(), None
         self._cfg_to_form(motor.cfg)
         if motor.saved is None:
             motor.saved = self._form_to_cfg()
@@ -1687,6 +1694,7 @@ class MainWindow(QMainWindow):
             self._add_motor(cfg or saved, path, m.get("title") or Path(path).stem or "Untitled", show=False)
             # A motor with no file that was edited stays marked; one with a file compares against it.
             self._motors()[-1].saved = saved if saved is not None else ({} if cfg else None)
+            self._motors()[-1].file = saved
         if self.motor_tabs.count() == 0:
             self._open_bundled("example_98mm") if _has_bundled("example_98mm") else self._new()
         else:

@@ -209,7 +209,6 @@ class SizingPage(QWidget):
         self._tick = QTimer(self, interval=1000)  # the elapsed time and time left move on between progress reports
         self._tick.timeout.connect(self._on_tick)
         self._section: np.ndarray | None = None
-        self._round_grain: dict | None = None  # the round grain's sizes, kept while the grain comes from an STL
         self._grain_loader = GrainLoader()
         self._grain_loader.done.connect(self._on_grain_loaded)
         self._grain_loader.progress.connect(self._on_grain_progress)
@@ -527,8 +526,14 @@ class SizingPage(QWidget):
         grain_form.add_line(status)
         self._grain_from_row = grain_form.add("Sizing", self.grain_from)
         self._grain_L_row = grain_form.add("Grain length", self.grain_L)
-        grain_form.add("Starting port", self.port_D)
-        grain_form.add("Outer diameter", self.grain_OD)
+        self._round_rows = [*grain_form.add("Starting port", self.port_D), *grain_form.add("Outer diameter", self.grain_OD)]
+        # An STL grain's sizes come from its file. The motor's round sizes stay as they are, for a round grain.
+        self.stl_L, self.stl_OD, self.stl_port = QLabel("—"), QLabel("—"), QLabel("—")
+        self.stl_port.setToolTip("The round port with the same area as the STL's starting port, averaged along the grain\n"
+                                 "(its volume ÷ length). The drawings use it.")
+        self._stl_size_rows = [*grain_form.add("Length", self.stl_L, muted=True),
+                               *grain_form.add("Outer diameter", self.stl_OD, muted=True),
+                               *grain_form.add("Same-area port", self.stl_port, muted=True)]
         grain_form.add("Pre-combustion", self.pre_L)
         grain_form.add("Post-combustion", self.post_L)
         self.grain = Card("Grain", ["Fuel flow", "Oxidizer flux", "Burning area", "Grain length", "O/F",
@@ -621,7 +626,7 @@ class SizingPage(QWidget):
         self.cd_as.currentIndexChanged.connect(self._on_cd_mode)
         for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model, self.stl_unit):
             combo.currentIndexChanged.connect(self._on_motor_edited)
-        self.grain_shape.currentIndexChanged.connect(self._on_grain_shape)
+        self.grain_shape.currentIndexChanged.connect(self._on_motor_edited)
         for box in (self.sw_cd_geom, self.hem_same, self.ends_burn):
             box.toggled.connect(self._on_motor_edited)
         self.size_from.currentIndexChanged.connect(self._on_size_from)
@@ -677,10 +682,12 @@ class SizingPage(QWidget):
         for w in self._OF_row:
             w.setVisible(not self._by_length() or self._by_OF())
         self.grain_from.setEnabled(not self._by_OF())  # an O/F-sized flow needs a set grain length
+        stl = self._stl()  # an STL grain has its own sizes
         for w in self._grain_L_row:
-            w.setVisible(self._by_length())
-        stl = self._stl()  # an STL grain has its own length
-        for w in self._stl_rows:
+            w.setVisible(self._by_length() and not stl)
+        for w in self._round_rows:
+            w.setVisible(not stl)
+        for w in (*self._stl_rows, *self._stl_size_rows):
             w.setVisible(stl)
         for w in self._grain_from_row:
             w.setVisible(not stl)
@@ -709,22 +716,29 @@ class SizingPage(QWidget):
         self._show_size_from_rows()
         self.refresh()
 
+    def grain_size(self) -> tuple[float, float, float]:
+        """The grain's length, outer diameter and starting port [m]: a loaded STL's own, or the motor's round sizes."""
+        g = self.grain_geom
+        if g is not None:
+            return g.length, g.outer_diameter, 2 * math.sqrt(g.port_area[0] / math.pi)
+        return self.grain_L.si("length"), self.grain_OD.si("length"), self.port_D.si("length")
+
     def targets(self) -> SizingTargets:
+        length, _outer, port = self.grain_size()
         return SizingTargets(
             P_cmbr=None if self._fixed_nozzle() else self.P_cmbr.si("pressure"),
             burn_time=self.burn_time.value() if self._by_burn_time() else None,
             OF=self.OF.value(),
-            port_D=to_si(self.port_D.spin.value(), self.port_D.unit.currentText(), "length"),
+            port_D=port,
             holes=self.holes.value() if self._by_holes() else None,
-            grain_L=to_si(self.grain_L.spin.value(), self.grain_L.unit.currentText(), "length") if self._by_length() else None,
+            grain_L=length if self._by_length() else None,
         )
 
     def targets_cfg(self) -> dict:
         return {"size_from": ("holes", "burn_time", "OF")[self.size_from.currentIndex()],
                 "grain_from": "grain_L" if self._by_length() else "OF",
                 "nozzle_from": "throat" if self._fixed_nozzle() else "P_cmbr",
-                "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value(),
-                **({"round_grain": self._round_grain} if self._stl() and self._round_grain else {})}
+                "P_cmbr": self.P_cmbr.si("pressure"), "burn_time": self.burn_time.value(), "OF": self.OF.value()}
 
     def set_targets(self, saved: dict, motor_cfg: dict):
         """Load saved targets. A motor without any opens with every part manual, so nothing is sized."""
@@ -736,7 +750,6 @@ class SizingPage(QWidget):
         self.grain_from.setCurrentIndex(1 if saved.get("grain_from") == "OF" else 0)
         self.nozzle_from.setCurrentIndex(1 if saved.get("nozzle_from", "P_cmbr" if saved else "throat") == "P_cmbr" else 0)
         self.OF.setValue(float(saved.get("OF") or motor_cfg.get("const_OF") or 6.0))
-        self._round_grain = saved.get("round_grain")
         self._loading = False
 
     def _on_motor_edited(self, *_):
@@ -818,33 +831,12 @@ class SizingPage(QWidget):
             cast(QStandardItemModel, combo.model()).item(index).setEnabled(not off)
             if off and combo.currentIndex() == index:
                 combo.setCurrentIndex(0)
-        for row in (self.grain_L, self.port_D, self.grain_OD):
-            row.setEnabled(not stl)
-        self.grain_L.setToolTip("From the STL." if stl else "Grain length. The fuel flow and starting O/F follow from it.")
-        self.grain_OD.setToolTip("From the STL. It's also the chamber bore in the drawings." if stl else
-                                 "Grain outer diameter. It's also the chamber bore in the drawings.")
-        self.port_D.setToolTip("The round port with the same area as the STL's starting port, averaged along the grain\n"
-                               "(its volume ÷ length). The drawings use it." if stl else "Starting port diameter.")
         self._voxel_unit.setText(self.stl_unit.currentText())
         self._sync_grain()
         self._show_size_from_rows()
 
     def _stl(self) -> bool:
         return self.grain_shape.currentData() == "stl"
-
-    def _on_grain_shape(self):
-        """An STL grain's sizes replace the round grain's, which come back when the grain is round again."""
-        if self._loading:
-            return
-        rows = {"grn_L": self.grain_L, "grn_OD": self.grain_OD, "grn_ID": self.port_D}
-        if self._stl():
-            self._round_grain = {k: v for name, row in rows.items()
-                                 for k, v in ((name, row.spin.value()), (f"{name}_unit", row.unit.currentText()))}
-        elif self._round_grain:
-            for name, row in rows.items():
-                row.set_display(self._round_grain[name], self._round_grain[f"{name}_unit"])
-            self._round_grain = None
-        self._on_motor_edited()
 
     def _pick_stl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load grain STL", str(Path(self._stl_path).parent) if self._stl_path else "",
@@ -917,20 +909,10 @@ class SizingPage(QWidget):
         else:
             self.grain_geom, self._section, self.grain_mesh = result, mid_section(result), None
             self._learn_load_timing()
-        changed = False
-        if self.grain_geom is not None:  # the round sizes become the STL's, for the drawings, layout and sizing
-            for row, value in ((self.grain_L, result.length), (self.grain_OD, result.outer_diameter),
-                               (self.port_D, 2 * math.sqrt(result.port_area[0] / math.pi))):
-                shown = row.spin.value()
-                row.set_si(value, "length")
-                changed |= row.spin.value() != shown
         self._show_grain_status()
         self._show_size_from_rows()  # the Grain card's results come back
         self.grain_changed.emit()
-        if changed:
-            self._on_motor_edited()
-        else:
-            self.refresh()
+        self.refresh()
 
     def _learn_load_timing(self):
         """Share the next loads' time out more like this one's, as the steps' speeds change with the engine and computer."""
@@ -1200,6 +1182,8 @@ class SizingPage(QWidget):
             return
         u = self._get_units()
         cfg = self._get_cfg()
+        for label, size in zip((self.stl_L, self.stl_OD, self.stl_port), self.grain_size()):
+            label.setText(u.text(size, "length") if self.grain_geom is not None else "—")
         limit = chamber_limit(cfg)
         self.limit_warning.hide()
         if self._stl() and self.grain_geom is None:
@@ -1227,7 +1211,7 @@ class SizingPage(QWidget):
         try:
             t = self.targets()
             self._built = size_motor(cfg, SizingTargets(P_cmbr=None, burn_time=None, OF=t.OF, port_D=t.port_D,
-                                                        holes=int(cfg["inj_N"]), grain_L=self.grain_L.si("length")),
+                                                        holes=int(cfg["inj_N"]), grain_L=self.grain_size()[0]),
                                      grain_tables=self.grain_tables())
         except Exception:
             self._built = None
@@ -1302,7 +1286,7 @@ class SizingPage(QWidget):
                               f"With {holes} {noun}s the flow is {u.text(holes * z.flow_per_hole, 'mass_flow', 3)}, so\n"
                               f"liquid oxidizer ÷ flow = {u.text(z.ox_liquid, 'mass')} ÷ {u.text(holes * z.flow_per_hole, 'mass_flow', 3)} = {lasts:.2f} s.\n"
                               "The real flow falls as the tank cools, so the full simulation runs a little longer.")
-        bore = to_si(float(cfg["grn_OD"]), cfg["grn_OD_unit"], "length")
+        bore = self.grain_size()[1]
         if self._swirler:
             D_port = to_si(float(cfg["sw_D_port"]), cfg["sw_D_port_unit"], "length")
             R_in = to_si(float(cfg["sw_R_in"]), cfg["sw_R_in_unit"], "length")
@@ -1406,7 +1390,7 @@ class SizingPage(QWidget):
                         + formula + "\nsolved for the chamber pressure. A higher chamber pressure also lets in less oxidizer.")
         self.nozzle.set("Throat diameter", u.text(throat, "length"), how)
         self.nozzle.set("Exit diameter", u.text(throat * math.sqrt(z.ER), "length"))
-        bore = to_si(float(self._cfg["grn_OD"]), self._cfg["grn_OD_unit"], "length")
+        bore = self.grain_size()[1]
         self.nozzle.sketch.show_data({"bore": bore, "throat": throat, "exit": throat * math.sqrt(z.ER),
                                       "caption": f"{u.text(throat, 'length')} throat"})
 

@@ -181,6 +181,33 @@ def test_display_units_update_results_without_changing_simulation(window, tmp_pa
     assert [q for tab, q in panel.plots if tab == "Pressure"] == ["temperature"]
 
 
+def test_loading_an_stl_grain_is_not_an_edit(window, tmp_path, monkeypatch):
+    import trimesh
+    from PySide6.QtWidgets import QApplication
+
+    from hrap.io.config import default_cfg
+
+    monkeypatch.setattr("hrap.engine.grain_stl._cache_dir", lambda: tmp_path / "cache")
+    path = tmp_path / "grain.stl"
+    trimesh.creation.annulus(r_min=1.25, r_max=1.695, height=20, sections=64).export(path)
+    cfg = default_cfg()
+    cfg.update(reg_model="Shifting OF", grn_shape="stl", grn_stl=str(path), grn_stl_voxel=0.1)
+    window._add_motor(cfg, title="STL motor")
+    sp = window.sizing_page
+    deadline = time.monotonic() + 30
+    while sp.grain_geom is None and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    QApplication.processEvents()
+    assert sp.grain_geom is not None
+    assert not window._edited(window._shown)
+    assert sp.grain_L.spin.value() == pytest.approx(cfg["grn_L"])  # the motor's round sizes stay
+    assert sp.grain_size()[0] == pytest.approx(sp.grain_geom.length)
+    assert window._form_layout().grn1 - window._form_layout().grn0 == pytest.approx(sp.grain_geom.length)
+    sp.pre_L.spin.setValue(sp.pre_L.spin.value() + 1)
+    assert window._edited(window._shown)
+
+
 def test_small_metric_ruler_ticks_are_distinct():
     from hrap.gui.viz import _tick_label
 
