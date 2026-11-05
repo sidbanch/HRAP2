@@ -178,6 +178,39 @@ def test_component_dry_mass_replaces_legacy_empty():
     assert cg > 0.0
 
 
+def test_set_tca_length_adds_equal_space_around_the_grain():
+    kwargs = dict(
+        tnk_start=0.0, tnk_L=0.20, cmbr_start=0.25, pre_L=0.10, post_L=0.20,
+        grn_L=0.20, grn_OD=0.08, noz_thrt=0.025, noz_exit=0.05,
+    )
+    base = motor_layout(**kwargs)
+    longer = motor_layout(**kwargs, cmbr_L=base.cmbr_L + 0.10)
+    assert abs(longer.cmbr_L - base.cmbr_L - 0.10) < 1e-9
+    assert abs((longer.grn0 - longer.plate1) - (0.10 + 0.05)) < 1e-9
+    assert abs((longer.x_case - longer.grn1) - (0.20 + 0.05)) < 1e-9
+    assert abs((longer.x_noz - longer.x_th) - (base.x_noz - base.x_th)) < 1e-12
+    assert abs((longer.x_noz - longer.cmbr0) - longer.cmbr_L) < 1e-12
+    short = motor_layout(**kwargs, cmbr_L=0.05)
+    assert abs(short.cmbr_L - 0.05) < 1e-12
+    assert abs((short.x_noz - short.cmbr0) - 0.05) < 1e-12
+    assert short.grn0 < short.plate1
+
+
+def test_saved_tca_length_without_pre_post_keeps_the_grain_centered():
+    cfg = default_cfg()
+    cfg["cmbr_L"] = 24.0
+    cfg["cmbr_L_unit"] = "in"
+    cfg["grn_L"] = 12.0
+    cfg["grn_L_unit"] = "in"
+    cfg["cmbr_pre_L"] = 0.0
+    cfg["cmbr_post_L"] = 0.0
+    lay = resolve_layout(cfg)
+    assert lay.cmbr_L > to_si(20.0, "in", "length")
+    assert abs(lay.cmbr_L - to_si(24.0, "in", "length")) < 1e-6
+    assert abs((lay.grn0 - lay.plate1) - (lay.x_case - lay.grn1)) < 1e-9
+    assert lay.grn0 - lay.plate1 > INCH
+
+
 def test_pre_and_post_chambers_lengthen_the_chamber():
     lay = motor_layout(
         tnk_start=0.0,

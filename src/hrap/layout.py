@@ -2,7 +2,9 @@
 
 Station 0 is the user datum. Tank and chamber starts are the forward faces.
 The chamber runs from the injector face through the nozzle: plate, pre-combustion
-chamber, grain, post-combustion chamber, nozzle.
+chamber, grain, post-combustion chamber, nozzle. A TCA length other than those
+parts keeps the grain in the middle: longer adds empty length, shorter overlaps
+the parts.
 """
 from __future__ import annotations
 
@@ -71,7 +73,7 @@ class MotorLayout:
 
     @property
     def x_min(self) -> float:
-        return min(self.tnk0, self.cmbr0)
+        return min(self.tnk0, self.cmbr0, self.grn0, self.plate0)
 
     @property
     def x_max(self) -> float:
@@ -125,6 +127,7 @@ def motor_layout(
     cmbr_start: float | None = None,
     pre_L: float = 0.0,
     post_L: float = 0.0,
+    cmbr_L: float = 0.0,
     cmbr_m: float = 0.0,
     grn_L: float,
     grn_OD: float,
@@ -140,13 +143,21 @@ def motor_layout(
         cmbr0 = float(cmbr_start)
     L_conv, L_div = nozzle_cone_lengths(grn_OD, noz_thrt, noz_exit)
     grn_L = max(float(grn_L), 1e-4)
+    pre_L = max(float(pre_L), 0.0)
+    post_L = max(float(post_L), 0.0)
+    # Zero means "use the parts." Any other length is the TCA, even when it is
+    # shorter than the plate, grain, and nozzle and the drawing overlaps.
+    auto_cmbr = PLATE_L + pre_L + grn_L + post_L + L_conv + L_div
+    mass_cmbr_L = float(cmbr_L) if float(cmbr_L) > 1e-6 else auto_cmbr
+    extra = mass_cmbr_L - auto_cmbr
+    pad = 0.5 * extra
     plate0 = cmbr0
     plate1 = cmbr0 + PLATE_L
     inj0 = plate0
     inj1 = plate0 + INJECTOR_L
-    grn0 = plate1 + max(float(pre_L), 0.0)
+    grn0 = plate1 + pre_L + pad
     grn1 = grn0 + grn_L
-    x_case = grn1 + max(float(post_L), 0.0)
+    x_case = grn1 + post_L + pad
     x_th = x_case + L_conv
     x_noz = x_th + L_div
     return MotorLayout(
@@ -166,7 +177,7 @@ def motor_layout(
         L_conv=L_conv,
         L_div=L_div,
         tnk_L=tnk_L,
-        cmbr_L=x_noz - cmbr0,
+        cmbr_L=mass_cmbr_L,
         tnk_m=max(float(tnk_m), 0.0),
         cmbr_m=max(float(cmbr_m), 0.0),
         tnk_D=max(float(tnk_D), 0.0),
