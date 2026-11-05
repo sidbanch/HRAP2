@@ -49,21 +49,23 @@ from hrap import APP_NAME, __version__, update
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
-from hrap.engine.summary import format_summary, summarize
+from hrap.engine.summary import summarize
 from hrap.engine.types import Settings, State
 from hrap.gui.grain_view import GrainScene, GrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
-from hrap.gui.simulation import DASHES, Shown, SimulationPage, dash_icon
+from hrap.gui.simulation import DASHES, Shown, SimulationPage, dash_icon, summary_text
 from hrap.gui.sizing import SizingPage
 from hrap.gui.study import StudyPage
 from hrap.gui.theme import apply_theme, colors_for
 from hrap.gui.viz import MotorPanel, MotorView, _vent_visible
 from hrap.gui.widgets import (
     FieldGrid,
+    UnitCombo,
     UnitRow,
     card_frame,
     line_up,
     page_layout,
+    sentence_case,
 )
 from hrap.io.config import (
     bundled_motor,
@@ -85,6 +87,7 @@ from hrap.units import (
     VOLUME_ITEMS,
     DisplayUnits,
     from_si,
+    pretty_unit,
     to_si,
 )
 
@@ -170,7 +173,7 @@ _SETTING_NAMES = {
 _SETTING_UNITS = {"tnk_cond": "T_tnk_unit", "grn_stl_voxel": "grn_stl_unit"}  # where a setting's unit lives, when not at "<key>_unit"
 
 # Settings that follow from other settings, so a run's "what changed" leaves them out.
-_DERIVED_KEYS = {"tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
+_DERIVED_KEYS = {"inj_cd_as", "tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
 
 
 def _changed_settings(old: dict, new: dict) -> list[str]:
@@ -198,7 +201,7 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
         elif key == "grn_stl":  # the file's name, not its whole path
             changes.append(f"{name} {Path(v).name}")
         elif isinstance(v, float):
-            unit = "%" if key == "fill" else str(b.get(_SETTING_UNITS.get(key, f"{key}_unit")) or "")
+            unit = "%" if key == "fill" else pretty_unit(str(b.get(_SETTING_UNITS.get(key, f"{key}_unit")) or ""))
             changes.append(f"{name} {v:.4g}{' ' + unit if unit else ''}")
         else:
             changes.append(f"{name} {'auto' if v is None else v}")
@@ -520,7 +523,7 @@ class MainWindow(QMainWindow):
         ef.add("Motor length", self.dry_L)
         export_l.addLayout(ef)
         buttons = QHBoxLayout()
-        for label, kind in (("Export .RSE", "rse"), ("Export .ENG", "eng"), ("Export CSV", "csv")):
+        for label, kind in (("Export RSE…", "rse"), ("Export ENG…", "eng"), ("Export CSV…", "csv")):
             btn = QPushButton(label)
             btn.clicked.connect(lambda _=False, k=kind: self._export(k))
             buttons.addWidget(btn)
@@ -753,9 +756,9 @@ class MainWindow(QMainWindow):
             lay = self._form_layout()
             empty_m, empty_cg = self._empty_mass_si(lay)
             u = self.display_units
+            empty = f"Empty mass {u.text(empty_m, 'mass')} at CG {u.text(empty_cg, 'length')}." if empty_m > 0 else "Empty mass —."
             self.mass_info.setText(
-                f"Empty mass {u.text(empty_m, 'mass')} at CG {u.text(empty_cg, 'length')}. "
-                f"Tank {u.text(lay.tnk_L, 'length')}, TCA {u.text(lay.cmbr_L, 'length')}, "
+                f"{empty} Tank {u.text(lay.tnk_L, 'length')}, TCA {u.text(lay.cmbr_L, 'length')}, "
                 f"overall {u.text(lay.overall_L, 'length')}."
             )
             if not self.dry_OD.spin.hasFocus():
@@ -1323,7 +1326,7 @@ class MainWindow(QMainWindow):
         s, x, o = cast(Settings, self._settings), cast(State, self._state), self._output
         self._hover_index = None
         info = summarize(s, x, o)
-        self.sim.summary.setPlainText(format_summary(info, self.display_units))
+        self.sim.summary.setPlainText(summary_text(info, self.display_units))
         self._refresh_plot()
         self._refresh_viz()
         self.sim.run_grain.set_run(True)
@@ -1333,7 +1336,7 @@ class MainWindow(QMainWindow):
         self.sim.limit_warning.setText(f"Peak chamber pressure {u.text(peak, 'pressure')} is above the "
                                    f"{u.text(limit, 'pressure')} chamber pressure limit.")
         self.sim.limit_warning.setVisible(over)
-        self.statusBar().showMessage(f"Done: {o.sim_end_cond}. Total impulse {u.text(info['total_impulse'], 'impulse')}"
+        self.statusBar().showMessage(f"Done: {sentence_case(o.sim_end_cond)}. Total impulse {u.text(info['total_impulse'], 'impulse')}"
                                      + ("  ⚠ Over the chamber pressure limit" if over else ""))
         self._sync_run_button()
 
@@ -1741,7 +1744,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         controls = {}
         for quantity, choices in DISPLAY_UNIT_OPTIONS.items():
-            combo = QComboBox()
+            combo = UnitCombo()
             combo.addItems(choices)
             combo.setCurrentText(getattr(self.display_units, quantity))
             controls[quantity] = combo
@@ -1766,8 +1769,8 @@ class MainWindow(QMainWindow):
         self.sim.run_grain.refresh()
         if self._output is not None:
             info = summarize(cast(Settings, self._settings), cast(State, self._state), self._output)
-            self.sim.summary.setPlainText(format_summary(info, units))
-            self.statusBar().showMessage(f"Done: {self._output.sim_end_cond}. Total impulse {units.text(info['total_impulse'], 'impulse')}")
+            self.sim.summary.setPlainText(summary_text(info, units))
+            self.statusBar().showMessage(f"Done: {sentence_case(self._output.sim_end_cond)}. Total impulse {units.text(info['total_impulse'], 'impulse')}")
 
     def _set_theme(self, name: str):
         self._theme = name

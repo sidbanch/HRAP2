@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import cast
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -13,13 +14,14 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from hrap.units import convert, from_si, to_si
+from hrap.units import convert, from_si, pretty_unit, to_si
 
 # One set of spacing for every page, in pixels.
 PAGE_MARGIN = 16  # around a page
@@ -60,11 +62,47 @@ class PlainDoubleSpinBox(_NoWheel, QDoubleSpinBox):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumWidth(64)  # Qt otherwise reserves room for the largest allowed value
 
+    def textFromValue(self, value: float) -> str:
+        """The shortest form: 750, 2, 0.198. It still holds its full number of decimals."""
+        text = super().textFromValue(value)
+        point = self.locale().decimalPoint()
+        return text.rstrip("0").rstrip(point) if point in text else text
+
 
 class PlainComboBox(_NoWheel, QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+class UnitCombo(PlainComboBox):
+    """A unit dropdown: it shows in² and holds the in^2 that motor files and conversions use."""
+
+    def addItems(self, units: list[str]):
+        for unit in units:
+            self.addItem(pretty_unit(unit), unit)
+
+    def currentText(self) -> str:
+        return self.currentData() or ""
+
+    def setCurrentText(self, unit: str):
+        if (index := self.findData(unit)) >= 0:
+            self.setCurrentIndex(index)
+
+
+class HintList(QListWidget):
+    """A list that says so in one grey line while it's empty."""
+
+    def __init__(self, hint: str):
+        super().__init__()
+        self._hint = hint
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(self.palette().color(QPalette.ColorRole.PlaceholderText))
+            painter.drawText(self.viewport().rect().adjusted(8, 6, -8, -6), int(Qt.AlignmentFlag.AlignLeft), self._hint)
 
 
 class UnitRow(QWidget):
@@ -77,13 +115,13 @@ class UnitRow(QWidget):
         self.spin.setDecimals(decimals)
         self.spin.setRange(0.0, maximum)
         self.spin.setKeyboardTracking(False)
-        self.unit = PlainComboBox()
+        self.unit = UnitCombo()
         self.unit.addItems(items)
         if unit in items:
             self.unit.setCurrentText(unit)
         self.unit.setFixedWidth(UNIT_W)
         self._unit = self.unit.currentText()
-        self.unit.currentTextChanged.connect(self._on_unit_changed)
+        self.unit.currentIndexChanged.connect(lambda _: self._on_unit_changed(self.unit.currentText()))
         layout.addWidget(self.spin, 1)
         layout.addWidget(self.unit)
 
@@ -116,6 +154,11 @@ class UnitRow(QWidget):
     def set_si(self, value: float, quantity: str):
         """Show an SI value in the row's current unit, without emitting a change."""
         self.set_display(from_si(value, self.unit.currentText(), quantity))
+
+
+def sentence_case(text: str) -> str:
+    """The engine's Title Case messages as the app writes them."""
+    return text[:1] + text[1:].lower().replace("stl", "STL")
 
 
 def beside(field: QWidget, box: QWidget) -> QWidget:

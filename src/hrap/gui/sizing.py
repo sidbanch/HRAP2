@@ -309,7 +309,8 @@ class SizingPage(QWidget):
 
         self.propellant = PlainComboBox()
         for item in list_propellants():
-            self.propellant.addItem(f"{item['name']} ({item['id']})", item["id"])
+            plain_id = item["id"].replace("_", " ")  # "ABS", but "50P (HTPB Paraffin)"
+            self.propellant.addItem(item["name"] if plain_id == item["name"] else f"{item['name']} ({plain_id})", item["id"])
         # Long propellant names would otherwise widen the whole inputs column.
         self.propellant.setSizeAdjustPolicy(PlainComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.propellant.setMinimumContentsLength(12)

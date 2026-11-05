@@ -4,6 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def pretty_unit(unit: str) -> str:
+    """A unit as people read it: in² for the in^2 that motor files and conversions use."""
+    return unit.replace("^2", "²").replace("^3", "³")
+
+
 @dataclass(frozen=True)
 class Affine:
     offset: float
@@ -184,4 +189,4 @@ class DisplayUnits:
         value = self.value(si, quantity)
         # Whole numbers once they need more digits than the precision, instead of 1.041e+04.
         number = f"{value:.0f}" if abs(value) >= 10 ** precision else f"{value:.{precision}g}"
-        return f"{number} {self.unit(quantity)}".strip()
+        return f"{number} {pretty_unit(self.unit(quantity))}".strip()

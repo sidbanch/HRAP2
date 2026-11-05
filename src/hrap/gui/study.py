@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMenu,
     QProgressBar,
@@ -62,14 +61,20 @@ from hrap.gui.widgets import (
     LABEL_W,
     ROW_GAP,
     FieldGrid,
+    HintList,
+    UnitCombo,
     UnitRow,
     card_frame,
     page_layout,
+    sentence_case,
 )
 from hrap.io.config import chamber_limit, clone_cfg
 from hrap.units import AREA_ITEMS, LENGTH_ITEMS, PRESSURE_ITEMS, TEMP_ITEMS, DisplayUnits, from_si, to_si
 
 OK, WARN, BAD = (QColor(colors_for()[k]) for k in ("tile_ok", "tile_warn", "tile_bad"))
+CASE_COLORS = ("green", "purple", "teal", "warn", "grey", "plot_fg", "accent", "fuel")  # up to 8 cases in Compare
+NO_SWEEP = "Run a sweep, then click its cells to compare them here."
+NO_SELECTION = "Click cells to plot them, ⌘/Ctrl-click to add more. Double-click a cell to open it as a motor in a new tab."
 
 
 def _small(text: str) -> QLabel:
@@ -133,7 +138,7 @@ class Axis(QWidget):
         self.values = QLineEdit()
         self.values.setPlaceholderText("12, 15, 18, 24   or   12:24:5")
         self.values.setToolTip("Comma-separated values, or start:end:count for evenly spaced values including both ends.")
-        self.unit = QComboBox()
+        self.unit = UnitCombo()
         self.files = QPushButton()  # grain files are picked, not typed
         self.files.clicked.connect(self._choose_files)
         self._files: list[str] = []
@@ -147,7 +152,7 @@ class Axis(QWidget):
         layout.addWidget(self.files, 2, 0, 1, 2)
         layout.setColumnStretch(0, 1)
         self.key.currentIndexChanged.connect(self._changed)
-        self.unit.currentTextChanged.connect(self._convert)
+        self.unit.currentIndexChanged.connect(lambda _: self._convert(self.unit.currentText()))
         self.cfg = {}
         self._unit = ""
         self._changed()
@@ -494,7 +499,7 @@ class StudyPage(QWidget):
             "overpredicts the flow, and with it the thrust and chamber pressure. Cells whose burn-average\n"
             "injector ΔP is over this are marked. It only applies to motors using SPI.")
         grid_l = FieldGrid()
-        for label, control in (("Max peak Pc", self.max_pressure), ("Min peak Pc", self.min_pressure),
+        for label, control in (("Max chamber pressure", self.max_pressure), ("Min chamber pressure", self.min_pressure),
                                ("Injector ΔP warning", self.max_dp)):
             grid_l.add(label, control, span=True)
         limits_l.addLayout(grid_l)
@@ -503,7 +508,7 @@ class StudyPage(QWidget):
             control.unit.currentTextChanged.connect(self.refresh)
 
         runs, runs_l = card_frame("Runs")
-        self.history = QListWidget()
+        self.history = HintList("No sweeps yet.")
         self.history.setMinimumHeight(90)
         self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -572,7 +577,11 @@ class StudyPage(QWidget):
             header.setMinimumSectionSize(16)
         self.table.itemSelectionChanged.connect(self._selection)
         self.table.cellDoubleClicked.connect(lambda *_: self._open())
+        self.table.hide()  # until there's a sweep to show
         results_l.addWidget(self.table, 1)
+        self.no_results = _small("Press Run sweep to fill this in.")
+        self.no_results.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        results_l.addWidget(self.no_results, 1)
         legend = QHBoxLayout()
         legend.setSpacing(16)
         for color, text in ((OK, "Within limits"), (WARN, "Warning (click a cell for why)"), (BAD, "Over the pressure limit or burned out")):
@@ -608,7 +617,7 @@ class StudyPage(QWidget):
         self.warnings.setObjectName("notApplied")
         self.warnings.hide()
         compare_l.addWidget(self.warnings)
-        self.details = _small("Click cells to plot them, ⌘/Ctrl-click to add more. Double-click a cell to open it as a motor in a new tab.")
+        self.details = _small(NO_SWEEP)
         self.details.setWordWrap(True)
         compare_l.addWidget(self.details)
         self.plot = pg.PlotWidget()
@@ -617,7 +626,9 @@ class StudyPage(QWidget):
         self.plot.addLegend(offset=(-10, 10))
         self.plot.showGrid(x=True, y=True, alpha=0.15)
         self.plot.setLabel("bottom", "Time", units="s")
+        self.plot.hide()  # until cells are picked
         compare_l.addWidget(self.plot, 1)
+        compare_l.addStretch(0)
 
         split = QSplitter(Qt.Orientation.Vertical)
         split.setChildrenCollapsible(False)
@@ -859,6 +870,9 @@ class StudyPage(QWidget):
         for label in (self.answer, self.status, self.col_caption):
             label.setText("")
         self.legend.hide()
+        self.table.hide()
+        self.no_results.show()
+        self._draw_selection()
 
     def _history_item(self, run: StudyRun) -> QListWidgetItem:
         item = QListWidgetItem(run.name)
@@ -913,6 +927,8 @@ class StudyPage(QWidget):
         if r is None:
             return
         self.legend.show()
+        self.no_results.hide()
+        self.table.show()
         selected = {(i.row(), i.column()) for i in self.table.selectedItems()}
         self.table.blockSignals(True)
         self.table.clearContents()
@@ -950,7 +966,7 @@ class StudyPage(QWidget):
             bad = case.burnout or case.peak_P_cmbr > chamber_limit(r.cfg)
             item.setBackground(BAD if bad else WARN if flags else OK)
             item.setForeground(QColor("white"))
-            item.setToolTip(self._label(case) + ("\n" + "\n".join(flags) if flags else "") + f"\nEnd: {case.end_cond}")
+            item.setToolTip(self._label(case) + ("\n" + "\n".join(flags) if flags else "") + f"\nEnd: {sentence_case(case.end_cond)}")
             self.table.setItem(row, col, item)
             item.setSelected((row, col) in selected)
         self.table.blockSignals(False)
@@ -994,6 +1010,7 @@ class StudyPage(QWidget):
         cases = self._selected()
         self.open_btn.setEnabled(len(cases) == 1 and not self.busy())
         self.plot.clear()
+        self.plot.setVisible(bool(cases))
         key, quantity = self.trace.currentData()
         u = self._get_units()
         self.plot.setLabel("left", self.trace.currentText(), units=u.unit(quantity))
@@ -1001,7 +1018,7 @@ class StudyPage(QWidget):
             if not c.traces:
                 continue
             values = np.array([u.value(v, quantity) for v in c.traces[key]])
-            self.plot.plot(c.traces["t"], values, name=" / ".join(self._value_text(k, v) for k, v in c.values) + " · " + MODELS[c.model], pen=pg.mkPen(pg.intColor(i, hues=8), width=2))
+            self.plot.plot(c.traces["t"], values, name=" / ".join(self._value_text(k, v) for k, v in c.values) + " · " + MODELS[c.model], pen=pg.mkPen(colors_for()[CASE_COLORS[i]], width=2))
         if len(cases) == 1:
             c = cases[0]
             why = self._why(c)
@@ -1012,12 +1029,13 @@ class StudyPage(QWidget):
                 sized.append(f"injector CdA {u.text(c.inj_CdA, 'area', 3)}")
             if self.result.throat_P:
                 sized.append(f"throat {u.text(c.throat, 'length', 3)}")
-            self.details.setText(f"{self._label(c)}\nPeak Pc {u.text(c.peak_P_cmbr, 'pressure')} · "
+            self.details.setText(f"{self._label(c)}\nPeak chamber pressure {u.text(c.peak_P_cmbr, 'pressure')} · "
                                  f"O/F {c.OF_liquid:.3g} · impulse {u.text(c.total_impulse, 'impulse')} · "
-                                 + "".join(f"{x} · " for x in sized) + f"end: {c.end_cond}")
+                                 + "".join(f"{x} · " for x in sized) + f"end: {sentence_case(c.end_cond)}")
         else:
             self.warnings.hide()
-            self.details.setText(f"{len(cases)} selected. Up to 8 are plotted.")
+            self.details.setText(f"{len(cases)} selected. Up to 8 are plotted." if cases else
+                                 NO_SELECTION if self.result is not None else NO_SWEEP)
 
     def _why(self, case) -> list[str]:
         """Each warning on a case, with the numbers behind it."""

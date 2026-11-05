@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -35,12 +34,14 @@ from hrap.gui.widgets import (
     CARD_GAP,
     PAGE_MARGIN,
     FieldGrid,
+    HintList,
     PlainComboBox,
     PlainDoubleSpinBox,
     UnitRow,
     card_frame,
     line_up,
     page_layout,
+    sentence_case,
 )
 from hrap.units import PRESSURE_ITEMS, DisplayUnits, to_si
 
@@ -98,6 +99,36 @@ def case_contact(o, settings) -> float | None:
         return None
     reached = np.flatnonzero(o.grn_web >= g.case_web)
     return float(o.t[reached[0]]) if reached.size else None
+
+
+def summary_text(info: dict, u: DisplayUnits) -> str:
+    """A run's headline numbers, in two columns."""
+    rows = [
+        ("Propellant", info["propellant"]),
+        ("Tank volume", u.text(info["tnk_V_cc"] * 1e-6, "volume", 6)),
+        ("Burn time", f"{info['burn_time']:.3f} s"),
+        ("Peak thrust", u.text(info["peak_thrust"], "force", 6)),
+        ("Average thrust", u.text(info["avg_thrust"], "force", 6)),
+        ("Total impulse", u.text(info["total_impulse"], "impulse", 7)),
+        ("Peak chamber pressure", f"{u.text(info['peak_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)"),
+        ("Average chamber pressure", f"{u.text(info['avg_pressure_bar'] * 1e5, 'pressure', 6)} (absolute)"),
+        ("Average injector ΔP", u.text(info["avg_inj_dP"], "pressure", 6)),
+        (sentence_case(info["port_label"]), u.text(info["port_cm"] * .01, "length", 6)),
+        ("Fuel consumed", u.text(info["fuel_consumed"], "mass", 6)),
+        ("Oxidizer consumed", u.text(info["ox_consumed"], "mass", 6)),
+        ("Average O/F", f"{info['avg_OF']:.3f}"),
+        ("Characteristic velocity", u.text(info["cstar"], "speed", 6)),
+        ("Specific impulse", f"{info['isp']:.1f} s"),
+        ("Motor classification", f"{info['impulse_percent']:.0f}% {info['impulse_class']}{info['avg_thrust']:.0f}"),
+        ("End of the run", sentence_case(info["end_cond"])),
+    ]
+    if (contact := info.get("case_contact_time")) is not None:
+        rows.append(("Case wall first exposed", f"{contact:.3f} s, {info['case_contact_fuel_percent']:.1f}% fuel left"))
+    if info.get("case_area_end") is not None:
+        rows.append(("Exposed case wall at burnout", u.text(info["case_area_end"], "area", 6)))
+    width = max(len(label) for label, _ in rows) + 3
+    lines = [info["name"], *(f"{label:<{width}}{value}" for label, value in rows)]
+    return "\n".join(lines + ([info["grain_warning"]] if info.get("grain_warning") else []))
 
 
 def line_pixmap(color: str, style: Qt.PenStyle = Qt.PenStyle.SolidLine, width: int = 16) -> QPixmap:
@@ -604,7 +635,7 @@ class SimulationPage(QSplitter):
         self.solve_tank_cooling.setToolTip(
             "Near the end of the liquid, HRAP's tank model runs into a numerical problem and switches to an\n"
             "averaged pressure drop. This works out the tank cooling properly instead.\n"
-            "Total impulse usually changes by under 1%. Works without Enable advanced options."
+            "Total impulse usually changes by under 1%."
         )
         self.tmax = PlainDoubleSpinBox()
         self.tmax.setRange(0.01, 120)
@@ -625,11 +656,12 @@ class SimulationPage(QSplitter):
         sf.add("Close valve at", self.tburn, "s")
         sf.add("Timestep", self.dt, "ms")
         sf.add("Chamber start pressure", self.P_cmbr)
+        sf.add_line(self.solve_tank_cooling)
         sim_l.addLayout(sf)
         root.addWidget(sim)
 
         runs, runs_l = card_frame("Runs")
-        self.run_list = QListWidget()
+        self.run_list = HintList("No runs yet.")
         self.run_list.setToolTip("Every simulation of this motor lands here, with what changed from its previous run.\n"
                                  "Click a run to load its settings and results; tick runs to draw them under it,\n"
                                  "each in the line style beside its name. Right-click to rename, export or delete.")
@@ -644,15 +676,16 @@ class SimulationPage(QSplitter):
         runs_l.addWidget(self.clear_runs)
         root.addWidget(runs)
 
-        adv, adv_l = card_frame("Advanced (not necessarily MATLAB-identical)")
+        adv, adv_l = card_frame("Advanced")
         af = FieldGrid()
         self.adv_on = QCheckBox("Enable advanced options")
+        self.adv_on.setToolTip("These options don't necessarily match MATLAB HRAP's results.")
         self.live_chem = QCheckBox("Live chemistry (WIP)")
         self.ox_fluid = PlainComboBox()
         self.ox_fluid.addItems(["N2O_legacy", "NitrousOxide (CoolProp)"])
         self.ox_fluid.setToolTip("Which nitrous property data the tank uses with the SPI injector model.\n"
                                  "HEM and Dyer always use CoolProp.")
-        for box in (self.solve_tank_cooling, self.adv_on, self.live_chem):
+        for box in (self.adv_on, self.live_chem):
             af.add_line(box)
         af.add("Oxidizer fluid", self.ox_fluid)
         adv_l.addLayout(af)
