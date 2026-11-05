@@ -16,7 +16,8 @@ from typing import Callable, cast
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QByteArray, QObject, QProcess, QSettings, QStandardPaths, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -266,6 +267,10 @@ class _Updater(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, prefs: QSettings | None = None):
         super().__init__()
+        # Qt makes a window again when it gets its first OpenGL view, and on a Mac the old one stays behind as a blank
+        # window. A hidden view before anything else (the menu bar makes the window) means that never happens.
+        if QGuiApplication.platformName() == "cocoa":
+            QOpenGLWidget(self).hide()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.resize(1280, 860)
         self._shown: OpenMotor | None = None  # the motor the pages show
