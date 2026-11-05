@@ -33,6 +33,7 @@ from hrap.gui.viz import MotorPanel
 from hrap.gui.widgets import (
     CARD_GAP,
     PAGE_MARGIN,
+    ElidedLabel,
     FieldGrid,
     HintList,
     PlainComboBox,
@@ -167,19 +168,6 @@ class Shown:
     spi: bool = False  # the 300 psi ΔP line only means something for the SPI injector model
 
 
-class _ElidedLabel(QLabel):
-    """A label that ends in … when it's too narrow for its text."""
-
-    def __init__(self, text: str):
-        super().__init__(text)
-        self._full = text
-        self.setMinimumWidth(10)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, self.width()))
-
-
 def _clear_layout(layout):
     while layout.count():
         item = layout.takeAt(0)
@@ -203,7 +191,7 @@ class LegendRow(QWidget):
         swatch = QLabel()
         swatch.setPixmap(pixmap)
         swatch.setFixedSize(16, 10)
-        self.name = _ElidedLabel(name)
+        self.name = ElidedLabel(name)
         self.value = QLabel("")
         self.value.setObjectName("cardLabel")
         self.value.setFixedWidth(value_w)
@@ -326,7 +314,7 @@ class PlotTab(QWidget):
                     self._add_row(f"measured:{key}", name, line_pixmap(self._measured_color(key, colors)), value_w,
                                   True, f"{shown.measured.path}\nClick to show or hide it.")
                 source = QHBoxLayout()
-                label = _ElidedLabel(shown.measured.label)
+                label = ElidedLabel(shown.measured.label)
                 label.setObjectName("cardLabel")
                 label.setToolTip(shown.measured.path)
                 clear = QPushButton("Clear")

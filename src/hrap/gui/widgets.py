@@ -90,6 +90,23 @@ class UnitCombo(PlainComboBox):
             self.setCurrentIndex(index)
 
 
+class ElidedLabel(QLabel):
+    """A label that ends in … when it's too narrow for its text."""
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self._full = text
+        self.setMinimumWidth(10)
+
+    def set_full_text(self, text: str):
+        self._full = text
+        self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, self.width()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.set_full_text(self._full)
+
+
 class HintList(QListWidget):
     """A list that says so in one grey line while it's empty."""
 

@@ -39,6 +39,7 @@ from hrap.gui.widgets import (
     PAGE_MARGIN,
     UNIT_W,
     Card,
+    ElidedLabel,
     FieldGrid,
     PlainComboBox,
     PlainDoubleSpinBox,
@@ -489,7 +490,7 @@ class SizingPage(QWidget):
                                     "From STL: any port shape, from a 3D model of the fuel. It burns back evenly from the\n"
                                     "port's whole surface at the burn-rate law's rate.")
         self._stl_path = ""
-        self.stl_file = QLabel("")
+        self.stl_file = ElidedLabel()
         self.stl_file.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # long names don't widen the card
         load_stl = QPushButton("Load STL…")
         load_stl.setToolTip("A closed (watertight) model of the fuel, with the grain's axis along the STL's X, Y or Z axis.")
@@ -987,7 +988,7 @@ class SizingPage(QWidget):
         return self.grain_loading() and self._grain_shown
 
     def _show_grain_status(self):
-        self.stl_file.setText(self.grain_name() or "none")
+        self.stl_file.set_full_text(self.grain_name() or "none")
         self.stl_file.setToolTip(self._stl_path)
         g, loading = self.grain_geom, self.grain_loading()
         if loading and not self._grain_shown:
