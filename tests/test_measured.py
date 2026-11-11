@@ -16,7 +16,7 @@ def test_irl_csv_uses_tplus_ms_and_weight_lbs():
     assert abs(curve.t[2] - 0.0) < 1e-12
     assert curve.F_thr is not None and curve.P_tnk is not None
     assert abs(curve.F_thr[2] - to_si(214.86, "lbf", "force")) < 1e-6
-    assert abs(curve.P_tnk[2] - to_si(431.973, "psi", "pressure")) < 1e-3
+    assert abs(curve.P_tnk[2] - (to_si(431.973, "psi", "pressure") + 101325.0)) < 1e-3  # gauge reading, shown absolute
     assert float(np.max(curve.F_thr)) == pytest.approx(to_si(419.411, "lbf", "force"))
 
 

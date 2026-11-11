@@ -10,6 +10,8 @@ import numpy as np
 
 from hrap.units import to_si
 
+ATMOSPHERE = 101325.0  # Pa
+
 _TIME_TPLUS_MS = {"tplusms", "tplus"}
 _TIME_S = {"t", "time", "times"}
 _TIME_MS = {"timems"}
@@ -93,6 +95,8 @@ def load_measured_csv(path: str | Path) -> MeasuredCurve:
     if tank_i is not None:
         unit = "psi" if _norm(header[tank_i]) in _TANK_PSI else "Pa"
         P_tnk = _column(body, tank_i, unit, "pressure")
+        if _norm(header[tank_i]) == "pt1psi":  # the stand's transducer reads gauge; HRAP's pressures are absolute
+            P_tnk += ATMOSPHERE
     else:
         P_tnk = None
 
