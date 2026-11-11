@@ -206,6 +206,16 @@ def injector_cd(cfg: dict[str, Any]) -> float:
     return float(cfg["inj_Cd"])
 
 
+def injector_cda_curve(cfg: dict[str, Any]) -> np.ndarray | None:
+    """The injector's total CdA over the burn as rows of times (s) and CdA (m²), or None when it's constant.
+    Motor files store it as [[time, CdA], ...] in inj_cda_curve_unit."""
+    points = np.array(cfg.get("inj_cda_curve") or [], dtype=float).reshape(-1, 2)
+    if not points.size:
+        return None
+    points = points[np.argsort(points[:, 0], kind="stable")]
+    return np.array([points[:, 0], points[:, 1] * to_si(1.0, cfg.get("inj_cda_curve_unit") or "in^2", "area")])
+
+
 def chamber_limit(cfg: dict[str, Any]) -> float:
     """Chamber design pressure limit in Pa (absolute)."""
     return float(cfg["P_cmbr_max"]) * to_si(1.0, cfg["P_cmbr_max_unit"], "pressure")
@@ -314,7 +324,9 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
 
     inj_D = cfg["inj_D"] * to_si(1.0, cfg["inj_D_unit"], "length")
     inj_Cd = injector_cd(cfg)
-    inj_CdA = 0.25 * math.pi * inj_D ** 2 * inj_Cd
+    inj_CdA_curve = injector_cda_curve(cfg)
+    inj_CdA = (0.25 * math.pi * inj_D ** 2 * inj_Cd if inj_CdA_curve is None else
+               float(np.interp(0.0, *inj_CdA_curve)) / int(cfg["inj_N"]))
     vnt_S = int(VENT_MAP.get(cfg.get("vnt_state", "None"), 0))
     vnt_D = cfg["vnt_D"] * to_si(1.0, cfg["vnt_D_unit"], "length")
     vnt_CdA = 0.25 * math.pi * vnt_D ** 2 * float(cfg.get("vnt_Cd") or 0.0)
@@ -334,6 +346,7 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
         tnk_V=tnk_V,
         tnk_D=tnk_D,
         inj_CdA=inj_CdA,
+        inj_CdA_curve=inj_CdA_curve,
         inj_N=int(cfg["inj_N"]),
         vnt_S=vnt_S,
         vnt_CdA=vnt_CdA,
@@ -441,7 +454,8 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
     if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
         s.inj_model = str(cfg["inj_model"])
-        s.inj_CdA_HEM = 0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or inj_Cd)
+        s.inj_CdA_HEM = (0.25 * math.pi * inj_D ** 2 * float(cfg.get("inj_Cd_HEM") or inj_Cd) if inj_CdA_curve is None
+                         else inj_CdA)  # the curve sets the whole injector's flow
         s.dyer_kappa = float(cfg.get("dyer_kappa") or 1.0)
         s.hem_flux = hem_flux_table(cp_fluid)
     return s, x

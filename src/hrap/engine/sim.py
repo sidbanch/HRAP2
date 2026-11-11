@@ -132,6 +132,8 @@ def sim_loop(
     ):
         setattr(o, name, getattr(o, name)[:last])
     o.inj_dP = o.P_tnk - o.P_cmbr
+    o.inj_CdA = (np.full(o.t.size, s.inj_CdA * s.inj_N) if s.inj_CdA_curve is None
+                 else np.interp(o.t, *s.inj_CdA_curve))
     return s, x, o, t
 
 

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from hrap.engine.nox import nox, saturation_temperature
 from hrap.engine.sizing import Sizing, SizingTargets, size_motor
 from hrap.engine.swirl import swirl_A, swirl_cd, swirl_exit_D, swirl_fill, swirl_sensitivity, swirl_xi
+from hrap.gui.cda_curve import CdaCurve
 from hrap.gui.sizing_viz import GrainSketch, InjectorSketch, NozzleSketch
 from hrap.gui.swirler_options import Layout, SwirlerOptions, Target, drilled_layout
 from hrap.gui.widgets import (
@@ -379,6 +380,12 @@ class SizingPage(QWidget):
         self.dyer_kappa.setDecimals(2)
         self.dyer_kappa.setToolTip("How the Dyer model weights SPI against HEM. 1 is an even blend, the formula's value for a tank\n"
                                    "at its own vapor pressure. Higher leans toward SPI.")
+        self.inj_flow = PlainComboBox()
+        self.inj_flow.addItems(["Constant", "Changes over the burn"])
+        self.inj_flow.setToolTip("Constant: the holes and their Cd set the injector's flow for the whole burn.\n"
+                                 "Changes over the burn: a table of total CdA against time sets it instead, to reproduce a\n"
+                                 "fire whose injector flow fell (or rose) as it burned.")
+        self.cda_curve = CdaCurve()
         self.inj_type = PlainComboBox()
         self.inj_type.addItems(["Holes", "Swirler"])
         self.inj_type.setToolTip("Holes: straight drilled holes.\n"
@@ -434,7 +441,10 @@ class SizingPage(QWidget):
         cd_lay.addWidget(self.cd_as)
         cd_lay.addWidget(self.sw_cd_geom)
         self.inj_Cd.hide()
+        inj_form.add("Injector flow", self.inj_flow)
         self._cd_row = inj_form.add("CdA per hole", cd_entry, span=True)
+        self._curve_row = inj_form.add("Total CdA", self.cda_curve, span=True)
+        self._curve_row[0].setAlignment(Qt.AlignmentFlag.AlignTop)
         inj_form.add("Flow model", self.inj_model)
         self._hem_row = inj_form.add("HEM Cd", beside(self.inj_Cd_HEM, self.hem_same), span=True)
         self._dyer_row = inj_form.add("Dyer κ", self.dyer_kappa)
@@ -625,6 +635,8 @@ class SizingPage(QWidget):
         self.tank_V.spin.valueChanged.connect(self._on_tank_volume)
         self.tank_V.unit.currentTextChanged.connect(self._on_tank_volume)
         self.cd_as.currentIndexChanged.connect(self._on_cd_mode)
+        self.inj_flow.currentIndexChanged.connect(self._on_inj_flow)
+        self.cda_curve.edited.connect(self._on_motor_edited)
         for combo in (self.vent, self.inj_type, self.inj_model, self.reg_model, self.stl_unit):
             combo.currentIndexChanged.connect(self._on_motor_edited)
         self.grain_shape.currentIndexChanged.connect(self._on_motor_edited)
@@ -669,9 +681,12 @@ class SizingPage(QWidget):
             w.setVisible(self._swirler)
         for w in self._sw_D_port_row:
             w.setVisible(self._swirler and not solve)
+        curve = self._curve()
         for w in self._cd_row:
-            w.setVisible(not solve)
-        self.injector.show_row("Flow per hole", not solve)
+            w.setVisible(not solve and not curve)
+        for w in self._curve_row:
+            w.setVisible(curve)
+        self.injector.show_row("Flow per hole", not solve and not curve)
         self.injector.show_row("Holes", not solve and not self._by_holes())  # with a chosen count it's an input
         self.injector.show_row("Hole drill", solve)
         self.injector.show_row("Swirler Cd", solve)
@@ -808,7 +823,13 @@ class SizingPage(QWidget):
             w.setVisible(model != "SPI")
         for w in self._dyer_row:
             w.setVisible(model == "Dyer")
-        self.inj_Cd_HEM.setEnabled(not self.hem_same.isChecked())
+        # With a CdA curve, the holes' sizes and Cds don't set the flow; the count and sizes still draw the injector.
+        curve = self._curve()
+        for w in (self.holes, self.hole_D, self.ptc_stock, self.sw_ports, self.sw_D_port, self.sw_R_in, self.sw_xi,
+                  self.sw_CdA_meas, self.hem_same):
+            w.setEnabled(not curve)
+        self._fit_btn.setEnabled(not curve and self.sw_CdA_meas.si("area") > 0)
+        self.inj_Cd_HEM.setEnabled(not curve and not self.hem_same.isChecked())
         if self.hem_same.isChecked():
             self.inj_Cd_HEM.blockSignals(True)
             self.inj_Cd_HEM.setValue(self.cd())
@@ -827,8 +848,9 @@ class SizingPage(QWidget):
         for w in self._const_OF_row:
             w.setVisible(fixed)
         # With a fixed O/F, neither the flow nor the grain length changes the O/F, so neither can be sized for one.
-        # An STL grain has its own length.
-        for combo, index, off in ((self.size_from, 2, fixed), (self.grain_from, 1, fixed or stl)):
+        # An STL grain has its own length, and a CdA curve sets the injector.
+        for combo, index, off in ((self.size_from, 1, curve), (self.size_from, 2, fixed or curve),
+                                  (self.grain_from, 1, fixed or stl)):
             cast(QStandardItemModel, combo.model()).item(index).setEnabled(not off)
             if off and combo.currentIndex() == index:
                 combo.setCurrentIndex(0)
@@ -838,6 +860,22 @@ class SizingPage(QWidget):
 
     def _stl(self) -> bool:
         return self.grain_shape.currentData() == "stl"
+
+    def _curve(self) -> bool:
+        """A table of CdA against time sets the injector's flow."""
+        return self.inj_flow.currentIndex() == 1
+
+    def injector_curve(self) -> list[list[float]]:
+        """The injector's [time, total CdA] points in the table's unit, when they set its flow."""
+        return self.cda_curve.points() if self._curve() else []
+
+    def _on_inj_flow(self, *_):
+        """Start a new curve from the injector's current total CdA, so switching doesn't change the flow at first."""
+        if not self._loading and self._curve() and not self.cda_curve.points():
+            unit = self.cda_curve.unit.currentText()
+            total = self.cd() * 0.25 * math.pi * self.hole_D.si("length") ** 2 * self.holes.value()
+            self.cda_curve.set_points([[0.0, from_si(total, unit, "area")]], unit)
+        self._on_motor_edited()
 
     def _pick_stl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load grain STL", str(Path(self._stl_path).parent) if self._stl_path else "",
@@ -1089,6 +1127,9 @@ class SizingPage(QWidget):
         self.hem_same.setChecked(not hem_cd)
         if hem_cd:
             self.inj_Cd_HEM.setValue(hem_cd)
+        curve = cfg.get("inj_cda_curve") or []
+        self.cda_curve.set_points(curve, cfg.get("inj_cda_curve_unit") or "in^2")
+        self.inj_flow.setCurrentIndex(1 if curve else 0)
         self.dyer_kappa.setValue(float(cfg.get("dyer_kappa") or 1.0))
 
         self.grain_shape.setCurrentIndex(max(self.grain_shape.findData(cfg.get("grn_shape") or "round"), 0))
@@ -1123,6 +1164,7 @@ class SizingPage(QWidget):
         L, _D, V = self.tank_geometry()
         vol_unit = self.tank_V.unit.currentText()
         len_unit = self.tank_L.unit.currentText()
+        curve = self.injector_curve()
         return {
             "tnk_V": from_si(V, vol_unit, "volume"), "tnk_V_unit": vol_unit, "tnk_V_state": 0,
             **field("tnk_D", self.tank_D),
@@ -1143,6 +1185,7 @@ class SizingPage(QWidget):
             "inj_model": self.inj_model.currentText(),
             "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
+            **({"inj_cda_curve": curve, "inj_cda_curve_unit": self.cda_curve.unit.currentText()} if curve else {}),
             **field("P_cmbr_max", self.P_limit),
             "grn_shape": self.grain_shape.currentData(), "grn_stl": self._stl_path, "grn_stl_unit": self.stl_unit.currentText(),
             "grn_stl_voxel": self.stl_voxel.value() or None, "grn_ends_burn": self.ends_burn.isChecked(),
@@ -1243,7 +1286,11 @@ class SizingPage(QWidget):
         dP, P_cmbr = u.text(z.inj_dP, "pressure"), u.text(z.P_cmbr, "pressure")
         hole, inj_Cd, model = u.text(self._hole_D(cfg), "length"), injector_cd(cfg), cfg.get("inj_model") or "SPI"
         noun = "swirler" if self._swirler else "hole"
-        if t.holes:
+        curve = self._curve()
+        if curve:
+            self.injector.set("Oxidizer flow", flow, f"The flow at the start of the burn, with the CdA curve's "
+                                                     f"{u.text(z.inj_CdA, 'area')} at 0 s.")
+        elif t.holes:
             self.injector.set("Oxidizer flow", flow,
                               f"The flow through your {noun}s:\n{noun} count × flow per {noun} = {holes} × {per_hole} = {flow}")
         elif t.burn_time is None:
@@ -1270,7 +1317,9 @@ class SizingPage(QWidget):
                               f"oxidizer flow ÷ flow per {noun} = {flow} ÷ {per_hole} = {z.holes:.2f},\n"
                               f"rounded to {holes}. Apply to motor uses {holes}.")
         cda, cda_now = u.text(z.inj_CdA, "area"), u.text(z.inj_CdA * holes / z.holes, "area")
-        if t.holes:
+        if curve:
+            self.injector.set("Total CdA", cda, "The CdA curve's value at the start of the burn. The simulation follows the curve.")
+        elif t.holes:
             self.injector.set("Total CdA", cda, f"Cd × area over all your {noun}s. A cold flow measures this directly.")
         elif solve:
             self.injector.set("Total CdA", cda, "The Cd × area that gives the oxidizer flow. A cold flow measures this directly.")
@@ -1278,7 +1327,11 @@ class SizingPage(QWidget):
             self.injector.set("Total CdA", cda,
                               f"The Cd × area over all {noun}s that gives the oxidizer flow. A cold flow measures this directly.\n"
                               f"{holes} of your {noun}s give {cda_now}.")
-        if solve:
+        if curve:
+            self.injector.set("Liquid lasts", f"{lasts:.2f} s",
+                              f"liquid oxidizer ÷ starting flow = {u.text(z.ox_liquid, 'mass')} ÷ {flow} = {lasts:.2f} s.\n"
+                              "The CdA curve and the cooling tank change the flow, so the full simulation's liquid time differs.")
+        elif solve:
             self.injector.set("Liquid lasts", f"{lasts:.2f} s",
                               f"liquid oxidizer ÷ oxidizer flow = {u.text(z.ox_liquid, 'mass')} ÷ {flow} = {lasts:.2f} s.\n"
                               "The real flow falls as the tank cools, so the full simulation runs a little longer.")

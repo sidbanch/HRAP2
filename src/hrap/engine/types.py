@@ -40,7 +40,7 @@ class Settings:
     Pa: float
     tnk_V: float
     tnk_D: float
-    inj_CdA: float
+    inj_CdA: float  # m², one hole's, at the start of the burn
     inj_N: float
     vnt_S: int
     vnt_CdA: float
@@ -76,6 +76,7 @@ class Settings:
     dyer_kappa: float = 1.0
     hem_flux: Optional[Callable[[float, float], float]] = None
     solve_tank_cooling: bool = False  # cool the tank at the step's end temperature instead of HRAP's fallback
+    inj_CdA_curve: Optional[np.ndarray] = None  # times (s) and total CdA (m²) of an injector whose flow changes over the burn
 
 
 @dataclass
@@ -133,5 +134,6 @@ class Output:
     T_tnk: Optional[np.ndarray] = None
     grn_web: Optional[np.ndarray] = None
     inj_dP: Optional[np.ndarray] = None  # tank minus chamber pressure
+    inj_CdA: Optional[np.ndarray] = None  # total injector CdA (m²)
     sim_end_cond: str = ""
     extra: dict = field(default_factory=dict)

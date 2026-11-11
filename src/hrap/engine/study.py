@@ -14,7 +14,7 @@ import numpy as np
 from hrap.engine.sim import run
 from hrap.engine.sizing import SizingTargets, size_motor
 from hrap.engine.summary import summarize
-from hrap.io.config import _grain_geometry, clone_cfg, injector_cd, resolve
+from hrap.io.config import _grain_geometry, clone_cfg, injector_cd, injector_cda_curve, resolve
 from hrap.units import to_si
 
 
@@ -25,7 +25,8 @@ def _set_length(key: str) -> Callable[[dict, float], None]:
 
 
 def _set_cd(cfg: dict, value: float):
-    cfg.update(inj_Cd=value, inj_Cd_HEM=None, sw_cd_from_geometry=False)
+    """A constant injector Cd, in place of any CdA curve."""
+    cfg.update(inj_Cd=value, inj_Cd_HEM=None, sw_cd_from_geometry=False, inj_cda_curve=None)
 
 
 def _set_cda(cfg: dict, value: float):
@@ -65,7 +66,9 @@ def _current_length(key: str) -> Callable[[dict], float]:
 
 
 def total_cda(cfg: dict) -> float:
-    """Total injector Cd × area (m²) over every injector."""
+    """Total injector Cd × area (m²) over every injector, at the start of the burn."""
+    if (curve := injector_cda_curve(cfg)) is not None:
+        return float(np.interp(0.0, *curve))
     D = _current_length("inj_D")(cfg)
     return int(cfg["inj_N"]) * 0.25 * math.pi * D ** 2 * injector_cd(cfg)
 

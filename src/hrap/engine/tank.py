@@ -16,13 +16,23 @@ def _sat_props(s: Settings, T: float):
     return nox(T)
 
 
-def liquid_flow(s: Settings, T: float, rho_l: float, P_tnk: float, P_cmbr: float) -> float:
-    """Liquid oxidizer flow through all injector holes with the motor's injector model."""
+def hole_CdA(s: Settings, t: float) -> tuple[float, float]:
+    """One injector hole's CdA (m²) at time t, for the liquid (SPI) and boiling (HEM) parts of its flow. A motor
+    whose injector flow changes over the burn follows its curve in straight lines, holding the end values outside it."""
+    if s.inj_CdA_curve is None:
+        return s.inj_CdA, s.inj_CdA_HEM
+    CdA = float(np.interp(t, *s.inj_CdA_curve)) / s.inj_N
+    return CdA, CdA
+
+
+def liquid_flow(s: Settings, T: float, rho_l: float, P_tnk: float, P_cmbr: float, t: float = 0.0) -> float:
+    """Liquid oxidizer flow through all injector holes at time t with the motor's injector model."""
+    CdA, CdA_HEM = hole_CdA(s, t)
     dP = max(P_tnk - P_cmbr, 0.0)
-    spi = s.inj_CdA * s.inj_N * math.sqrt(2.0 * rho_l * dP)
+    spi = CdA * s.inj_N * math.sqrt(2.0 * rho_l * dP)
     if s.hem_flux is None:
         return spi
-    hem = s.inj_CdA_HEM * s.inj_N * s.hem_flux(T, P_cmbr / P_tnk)
+    hem = CdA_HEM * s.inj_N * s.hem_flux(T, P_cmbr / P_tnk)
     if s.inj_model == "HEM":
         return hem
     return (s.dyer_kappa * spi + hem) / (1.0 + s.dyer_kappa)
@@ -106,21 +116,23 @@ def tank(s: Settings, o: Output, x: State, t: float) -> State:
         )
 
     def liq_mdot() -> float:
-        return liquid_flow(s, x.T_tnk, x.ox_props.rho_l, x.P_tnk, x.P_cmbr)
+        return liquid_flow(s, x.T_tnk, x.ox_props.rho_l, x.P_tnk, x.P_cmbr, t)
+
+    inj_CdA = hole_CdA(s, t)[0]
 
     if s.tburn == 0 or t <= s.tburn:
         if s.vnt_S == 0:
             x.mdot_v = 0.0
-            x.mdot_o = vap_mdot(s.inj_CdA, s.inj_N, Mcc) if x.mLiq_new == 0 else liq_mdot()
+            x.mdot_o = vap_mdot(inj_CdA, s.inj_N, Mcc) if x.mLiq_new == 0 else liq_mdot()
             mD = (x.mdot_o + x.mdot_v) * dt
         elif s.vnt_S == 1:
             x.mdot_v = vap_mdot(s.vnt_CdA, 1.0, Matm)
-            x.mdot_o = vap_mdot(s.inj_CdA, s.inj_N, Mcc) if x.mLiq_new == 0 else liq_mdot()
+            x.mdot_o = vap_mdot(inj_CdA, s.inj_N, Mcc) if x.mLiq_new == 0 else liq_mdot()
             mD = (x.mdot_o + x.mdot_v) * dt
         elif s.vnt_S == 2:
             x.mdot_v = vap_mdot(s.vnt_CdA, 1.0, Matm)
             if x.mLiq_new == 0:
-                x.mdot_o = vap_mdot(s.inj_CdA, s.inj_N, Mcc)
+                x.mdot_o = vap_mdot(inj_CdA, s.inj_N, Mcc)
             else:
                 x.mdot_o = liq_mdot() + x.mdot_v
             mD = x.mdot_o * dt

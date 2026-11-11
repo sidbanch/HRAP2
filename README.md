@@ -45,6 +45,14 @@ Every mode shows **Total CdA**: the Cd × area the injector needs for that flow 
 
 A manual injector takes its **CdA per hole** (or per swirler): a cold flow's water flow ÷ √(2 × 998 kg/m³ × ΔP). The motor file stores it as a Cd on the hole or PTC bore.
 
+**Injector flow: Changes over the burn** swaps the CdA per hole for a table of time (s) against the whole injector's CdA, to reproduce a fire whose injector flow changed as it burned. Nobody knows ahead of time how an injector will change, so it's for matching a past fire, not for designing one.
+
+- Type rows, paste two columns from a spreadsheet, or **Import CSV…** (with more columns, the first one named CdA is used).
+- Between points the CdA changes in a straight line. Before the first point and after the last, including after the liquid runs out, it holds their values.
+- The hole count, sizes and Cds then only draw the injector, and the injector can't be sized for a target. The card's start-of-burn numbers use the CdA at 0 s.
+- The Simulation tab's Flow plot shows the injector CdA for every run.
+- Motor files store it as `"inj_cda_curve": [[time, CdA], …]` with its `"inj_cda_curve_unit"`. Without it the injector is constant.
+
 **Grain: Sizing** For O/F gives a grain length; Manual gives an O/F. **Nozzle: Sizing** For chamber pressure gives the throat and expansion ratio for a chamber pressure target; Manual uses the nozzle's own and gives the chamber pressure.
 
 ### Swirl injectors
@@ -98,7 +106,7 @@ Options that change the default MATLAB model:
 - Every sweep is kept in the **Runs** list and saved as `sweep 1.json`, … in the motor's `runs` folder, like Simulation runs, with each case's numbers but not its curves. **Load…** sets up the sweep from a sweep file to run it again. **CSV…** writes all case summaries in the current display units and labels incomplete batches as partial.
 - **Stop** finishes only cases already running; it queues no more. Closing the app waits for those workers too.
 
-Sweep O/F is total oxidizer mass divided by fuel mass during the simulated liquid phase. If a run ends before liquid runout, the runout cell says **Not reached** and O/F covers only the part simulated. Fuel depletion checks the existing straight cylindrical port model. Varying injector CdA overrides the geometry-derived Cd and uses the same Cd for SPI and HEM. Changing grain length keeps dry masses unchanged.
+Sweep O/F is total oxidizer mass divided by fuel mass during the simulated liquid phase. If a run ends before liquid runout, the runout cell says **Not reached** and O/F covers only the part simulated. Fuel depletion checks the existing straight cylindrical port model. Varying injector CdA overrides the geometry-derived Cd or a CdA curve, and uses the same Cd for SPI and HEM. Changing grain length keeps dry masses unchanged.
 
 ## Mass & export tab
 

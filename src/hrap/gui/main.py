@@ -193,7 +193,7 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
         return out
 
     a, b = flat(old), flat(new)
-    changes = []
+    changes = ["constant CdA"] if a.get("inj_cda_curve") and not b.get("inj_cda_curve") else []
     for k, v in b.items():
         key = k.split(".")[-1]
         if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
@@ -202,6 +202,8 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
         if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
             D = to_si(float(b["inj_D"]), b.get("inj_D_unit") or "in", "length")
             changes.append(f"CdA {from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²")
+        elif key == "inj_cda_curve":
+            changes.append("CdA over the burn")
         elif key == "grn_stl":  # the file's name, not its whole path
             changes.append(f"{name} {Path(v).name}")
         elif isinstance(v, float):
@@ -649,6 +651,9 @@ class MainWindow(QMainWindow):
             injector = f"{n} swirler{'s' if n != 1 else ''} ({sp.sw_ports.value()} × {u.text(sp.sw_D_port.si('length'), 'length')} holes)"
         else:
             injector = f"{n} × {u.text(sp.hole_D.si('length'), 'length')} holes"
+        if curve := sp.injector_curve():
+            unit = pretty_unit(sp.cda_curve.unit.currentText())
+            injector = f"injector CdA {curve[0][1]:.3g} → {curve[-1][1]:.3g} {unit} over the burn"
         throat, _exit, _er = sp.nozzle_size()
         self.sim.motor_summary.setText(" · ".join((f"{u.text(sp.tank_geometry()[2], 'volume')} tank", injector,
                                                f"{u.text(sp.grain_size()[0], 'length')} grain",
@@ -842,6 +847,7 @@ class MainWindow(QMainWindow):
         P_cmbr = self.sim.P_cmbr.si("pressure")
         stl = sp.grain_shape.currentData() == "stl"
         web = case = 0.0
+        inj_CdA = sp.result.inj_CdA if sp.result is not None else float("nan")  # total, at the start of the burn
 
         o = self._output
         if o is not None and o.t.size and index is not None:
@@ -861,6 +867,7 @@ class MainWindow(QMainWindow):
             of_ratio = float(o.OF[i])
             thrust = float(o.F_thr[i])
             P_cmbr = float(o.P_cmbr[i])
+            inj_CdA = float(o.inj_CdA[i])
             if (g := getattr(self._settings, "grain_geometry", None)) is not None:
                 web = float(o.grn_web[i])
                 case = float(np.interp(web, g.web, g.case_area))
@@ -886,7 +893,8 @@ class MainWindow(QMainWindow):
         swirler = sp.inj_type.currentText() == "Swirler"
         inj_card = ("Injector", (
             ("Swirlers" if swirler else "Holes", f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}"),
-            ("Cd", f"{inj_Cd:.3g}"),
+            (("CdA", u.text(inj_CdA, "area", 3) if math.isfinite(inj_CdA) else "—") if sp.injector_curve() else
+             ("Cd", f"{inj_Cd:.3g}")),
             ("Area", u.text(inj_A, "area", 3)),
             ("Oxidizer flow", at_time(u.text(ox_mdot, "mass_flow", 3))),
             ("ΔP", at_time(u.text(dp_inj, "pressure", 3))),
