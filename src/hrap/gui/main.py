@@ -72,6 +72,7 @@ from hrap.io.config import (
     bundled_motor,
     chamber_limit,
     default_cfg,
+    injector_cda_curve,
     load_json,
     load_matlab_mat,
     resolve,
@@ -193,7 +194,7 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
         return out
 
     a, b = flat(old), flat(new)
-    changes = ["constant CdA"] if a.get("inj_cda_curve") and not b.get("inj_cda_curve") else []
+    changes = ["constant CdA"] if a.get("inj_cda_curve") and b.get("inj_cda_curve") is None else []
     for k, v in b.items():
         key = k.split(".")[-1]
         if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
@@ -651,9 +652,11 @@ class MainWindow(QMainWindow):
             injector = f"{n} swirler{'s' if n != 1 else ''} ({sp.sw_ports.value()} × {u.text(sp.sw_D_port.si('length'), 'length')} holes)"
         else:
             injector = f"{n} × {u.text(sp.hole_D.si('length'), 'length')} holes"
-        if curve := sp.injector_curve():
-            unit = pretty_unit(sp.cda_curve.unit.currentText())
-            injector = f"injector CdA {curve[0][1]:.3g} → {curve[-1][1]:.3g} {unit} over the burn"
+        if (curve := sp.injector_curve()) is not None:
+            injector = "injector CdA from its table"
+            if rows := sorted(row for row in curve if None not in row):
+                unit = pretty_unit(sp.cda_curve.unit.currentText())
+                injector = f"injector CdA {rows[0][1]:.3g} → {rows[-1][1]:.3g} {unit} over the burn"
         throat, _exit, _er = sp.nozzle_size()
         self.sim.motor_summary.setText(" · ".join((f"{u.text(sp.tank_geometry()[2], 'volume')} tank", injector,
                                                f"{u.text(sp.grain_size()[0], 'length')} grain",
@@ -893,7 +896,7 @@ class MainWindow(QMainWindow):
         swirler = sp.inj_type.currentText() == "Swirler"
         inj_card = ("Injector", (
             ("Swirlers" if swirler else "Holes", f"{inj_N} × Ø{u.text(inj_D, 'length', 3)}"),
-            (("CdA", u.text(inj_CdA, "area", 3) if math.isfinite(inj_CdA) else "—") if sp.injector_curve() else
+            (("CdA", u.text(inj_CdA, "area", 3) if math.isfinite(inj_CdA) else "—") if sp.injector_curve() is not None else
              ("Cd", f"{inj_Cd:.3g}")),
             ("Area", u.text(inj_A, "area", 3)),
             ("Oxidizer flow", at_time(u.text(ox_mdot, "mass_flow", 3))),
@@ -1010,6 +1013,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("The grain STL is still loading. Run once it's in.")
             return
         self._running_cfg = self._form_to_cfg()
+        try:
+            injector_cda_curve(self._running_cfg)
+        except ValueError as exc:  # say what's wrong with the table in plain words, not as a traceback
+            QMessageBox.warning(self, "Injector CdA table", str(exc))
+            return
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
         self._progress.show()

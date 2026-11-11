@@ -209,10 +209,23 @@ def injector_cd(cfg: dict[str, Any]) -> float:
 def injector_cda_curve(cfg: dict[str, Any]) -> np.ndarray | None:
     """The injector's total CdA over the burn as rows of times (s) and CdA (m²), or None when it's constant.
     Motor files store it as [[time, CdA], ...] in inj_cda_curve_unit."""
-    points = np.array(cfg.get("inj_cda_curve") or [], dtype=float).reshape(-1, 2)
-    if not points.size:
+    if cfg.get("inj_cda_curve") is None:
         return None
-    points = points[np.argsort(points[:, 0], kind="stable")]
+    try:
+        points = np.array(cfg["inj_cda_curve"], dtype=float).reshape(-1, 2)
+    except (TypeError, ValueError):
+        points = np.full((1, 2), np.nan)
+    if not len(points):
+        raise ValueError("The injector CdA table is empty. Add a row, or set Injector flow to Constant.")
+    if not np.all(np.isfinite(points)):
+        raise ValueError("Every row of the injector CdA table needs a time and a CdA, both numbers.")
+    if np.any(points[:, 1] < 0):
+        raise ValueError("A CdA in the injector CdA table is negative.")
+    points = points[np.argsort(points[:, 0])]
+    if np.any(np.diff(points[:, 0]) == 0):
+        raise ValueError("Two rows of the injector CdA table have the same time.")
+    if np.interp(0.0, *points.T) == 0:
+        raise ValueError("The injector CdA table starts at zero, so nothing would flow.")
     return np.array([points[:, 0], points[:, 1] * to_si(1.0, cfg.get("inj_cda_curve_unit") or "in^2", "area")])
 
 

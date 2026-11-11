@@ -865,9 +865,9 @@ class SizingPage(QWidget):
         """A table of CdA against time sets the injector's flow."""
         return self.inj_flow.currentIndex() == 1
 
-    def injector_curve(self) -> list[list[float]]:
-        """The injector's [time, total CdA] points in the table's unit, when they set its flow."""
-        return self.cda_curve.points() if self._curve() else []
+    def injector_curve(self) -> list[list[float | None]] | None:
+        """The table's [time, total CdA] rows in its unit when they set the injector's flow, else None."""
+        return self.cda_curve.points() if self._curve() else None
 
     def _on_inj_flow(self, *_):
         """Start a new curve from the injector's current total CdA, so switching doesn't change the flow at first."""
@@ -1127,9 +1127,9 @@ class SizingPage(QWidget):
         self.hem_same.setChecked(not hem_cd)
         if hem_cd:
             self.inj_Cd_HEM.setValue(hem_cd)
-        curve = cfg.get("inj_cda_curve") or []
-        self.cda_curve.set_points(curve, cfg.get("inj_cda_curve_unit") or "in^2")
-        self.inj_flow.setCurrentIndex(1 if curve else 0)
+        curve = cfg.get("inj_cda_curve")
+        self.cda_curve.set_points(curve or [], cfg.get("inj_cda_curve_unit") or "in^2")
+        self.inj_flow.setCurrentIndex(0 if curve is None else 1)
         self.dyer_kappa.setValue(float(cfg.get("dyer_kappa") or 1.0))
 
         self.grain_shape.setCurrentIndex(max(self.grain_shape.findData(cfg.get("grn_shape") or "round"), 0))
@@ -1185,7 +1185,7 @@ class SizingPage(QWidget):
             "inj_model": self.inj_model.currentText(),
             "inj_Cd_HEM": 0.0 if self.hem_same.isChecked() else self.inj_Cd_HEM.value(),
             "dyer_kappa": self.dyer_kappa.value(),
-            **({"inj_cda_curve": curve, "inj_cda_curve_unit": self.cda_curve.unit.currentText()} if curve else {}),
+            **({"inj_cda_curve": curve, "inj_cda_curve_unit": self.cda_curve.unit.currentText()} if curve is not None else {}),
             **field("P_cmbr_max", self.P_limit),
             "grn_shape": self.grain_shape.currentData(), "grn_stl": self._stl_path, "grn_stl_unit": self.stl_unit.currentText(),
             "grn_stl_voxel": self.stl_voxel.value() or None, "grn_ends_burn": self.ends_burn.isChecked(),

@@ -202,7 +202,11 @@ class Axis(QWidget):
         if key == "grain_file":
             self._set_files([self.cfg["grn_stl"]] if self.cfg.get("grn_shape") == "stl" and self.cfg.get("grn_stl") else [])
         elif key and self.cfg:
-            value = INPUTS[key].current(self.cfg)
+            try:
+                value = INPUTS[key].current(self.cfg)
+            except ValueError:  # the motor can't be read as typed (its Motor tab says why), so there's nothing to start from
+                self.values.clear()
+                return
             if quantity:
                 value = from_si(value, default, quantity)
             values = [value - 10, value, value + 10] if quantity == "temperature" else [value * f for f in (0.8, 1, 1.2)]
