@@ -112,6 +112,17 @@ Sweep O/F is total oxidizer mass divided by fuel mass during the simulated liqui
 
 Tank and chamber dry masses and positions give the empty mass and CG, and the CG over the burn for RSE and ENG files. **File → Export** writes CSV, RSE (OpenRocket / RockSim) or ENG.
 
+## Flight tab (experimental)
+
+Flies a motor's runs on a rocket in OpenRocket's own simulator and compares what each reaches. It's the same as exporting each run's RSE and flying it in OpenRocket by hand.
+
+- **Open .ork…** picks the rocket. **Launch as in** picks one of the file's simulations for the launch rail, wind and launch site; set those up in OpenRocket.
+- **Runs to fly** lists the motor's runs from the Simulation tab. Tick the ones to fly and press **Fly**.
+- The table gives each run's apogee, top speed and Mach, speed and stability as it leaves the rail, peak acceleration and time to apogee. Settings that differ between the ticked runs (tank temperature, say) get their own column, and when it's one number **Plot** can show apogee against it.
+- Each run's motor file uses the Mass & export tab's dry mass, CG and size, as **Export RSE** does.
+- Every motor flies through the same gusts, so the same run always gives the same numbers. OpenRocket itself draws new gusts each time, so its own apogee differs by a few feet.
+- Needs OpenRocket 24.12 or newer installed (**Find OpenRocket…** if it's somewhere unusual). The motor goes in every motor mount of the rocket. Not in the Windows zip build.
+
 ## Command line
 
 ```sh
@@ -140,9 +151,9 @@ Ports farther off the axis, a bigger exit, or less total port area mean more swi
 
 | Folder | What's in it |
 | --- | --- |
-| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `study.py` (Sweep tab), `runs.py` (run files), `swirler_options.py` |
+| [`src/hrap/gui/`](src/hrap/gui/) | The desktop app: `main.py` (window, Simulation and Mass tabs), `sizing.py`, `study.py` (Sweep tab), `runs.py` (run files), `flight.py` (Flight tab), `swirler_options.py` |
 | [`src/hrap/engine/`](src/hrap/engine/) | Tank, injector, grain, combustion, nozzle and the burn loop (`sim.py`); sizing (`sizing.py`) and the swirl model (`swirl.py`) |
-| [`src/hrap/io/`](src/hrap/io/) | Motor files, units, propellant data and exports |
+| [`src/hrap/io/`](src/hrap/io/) | Motor files, units, propellant data and exports; `openrocket.py` and its worker process fly motors in an installed OpenRocket |
 | [`src/hrap/advanced/`](src/hrap/advanced/) | Opt-in chemistry, fluid, injector and grain models |
 | [`src/hrap/resources/`](src/hrap/resources/) | Propellant tables and example motors |
 | [`tests/`](tests/) | Tests and saved MATLAB traces |

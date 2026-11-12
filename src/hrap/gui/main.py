@@ -52,6 +52,7 @@ from hrap.engine.sim import run
 from hrap.engine.study import uses_spi
 from hrap.engine.summary import summarize
 from hrap.engine.types import Settings, State
+from hrap.gui.flight import FlightPage
 from hrap.gui.grain_view import GrainScene, GrainView
 from hrap.gui.runs import delete_run, new_run_file, read_run, run_files, write_run
 from hrap.gui.simulation import DASHES, Shown, SimulationPage, dash_icon, summary_text
@@ -182,37 +183,53 @@ _LAYOUT_KEYS = {"tnk_X", "cmbr_X", "export_OD", "export_L", "mtr_cg", "mtr_m"}
 _DERIVED_KEYS = {"inj_cd_as", "tnk_L", "tnk_X", "cmbr_X", "cmbr_V", "export_L", "export_OD", "mtr_cg", "tnk_m", "cmbr_m", "mtr_m"}
 
 
+def _flat(d: dict, prefix: str = "") -> dict:
+    """A motor's settings with the nested ones under dotted keys."""
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out.update(_flat(v, f"{prefix}{k}."))
+        else:
+            out[prefix + k] = v
+    return out
+
+
+def _compared(k: str) -> bool:
+    """Whether a setting counts when telling runs apart: not its unit, the motor's name, or what follows from others."""
+    key = k.split(".")[-1]
+    return not (key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm")
+
+
+def _setting(cfg: dict, k: str) -> tuple[str, str]:
+    """A setting's short name and its value as short text, from a motor's flattened settings."""
+    key, v = k.split(".")[-1], cfg.get(k)
+    name = _SETTING_NAMES.get(key, key.replace("_", " "))
+    if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
+        D = to_si(float(cfg["inj_D"]), cfg.get("inj_D_unit") or "in", "length")
+        return "CdA", f"{from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²"
+    if key == "inj_cda_curve":
+        return "CdA", "constant" if v is None else "over the burn"
+    if key == "grn_stl":  # the file's name, not its whole path
+        return name, Path(v).name if v else "none"
+    if isinstance(v, float):
+        unit = "%" if key == "fill" else pretty_unit(str(cfg.get(_SETTING_UNITS.get(key, f"{key}_unit")) or ""))
+        return name, f"{v:.4g}{' ' + unit if unit else ''}"
+    return name, "auto" if v is None else str(v)
+
+
 def _changed_settings(old: dict, new: dict) -> list[str]:
     """What a run changed from an earlier one, as short "setting value" pieces."""
-    def flat(d: dict, prefix: str = "") -> dict:
-        out = {}
-        for k, v in d.items():
-            if isinstance(v, dict):
-                out.update(flat(v, f"{prefix}{k}."))
-            else:
-                out[prefix + k] = v
-        return out
-
-    a, b = flat(old), flat(new)
+    a, b = _flat(old), _flat(new)
     changes = ["constant CdA"] if a.get("inj_cda_curve") and b.get("inj_cda_curve") is None else []
-    for k, v in b.items():
-        key = k.split(".")[-1]
-        if key in _DERIVED_KEYS or key.endswith("_unit") or key == "mtr_nm" or _same_cfg(a.get(k), v):
-            continue
-        name = _SETTING_NAMES.get(key, key.replace("_", " "))
-        if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
-            D = to_si(float(b["inj_D"]), b.get("inj_D_unit") or "in", "length")
-            changes.append(f"CdA {from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²")
-        elif key == "inj_cda_curve":
-            changes.append("CdA over the burn")
-        elif key == "grn_stl":  # the file's name, not its whole path
-            changes.append(f"{name} {Path(v).name}")
-        elif isinstance(v, float):
-            unit = "%" if key == "fill" else pretty_unit(str(b.get(_SETTING_UNITS.get(key, f"{key}_unit")) or ""))
-            changes.append(f"{name} {v:.4g}{' ' + unit if unit else ''}")
-        else:
-            changes.append(f"{name} {'auto' if v is None else v}")
-    return changes
+    return changes + [" ".join(_setting(b, k)) for k, v in b.items() if _compared(k) and not _same_cfg(a.get(k), v)]
+
+
+def _varied_settings(cfgs: list[dict]) -> list[tuple[str, list[str]]]:
+    """The settings that differ between motors: each one's short name, and its value in each motor."""
+    flats = [_flat(cfg) for cfg in cfgs]
+    keys = [k for k in dict.fromkeys(k for f in flats for k in f)
+            if _compared(k) and any(not _same_cfg(f.get(k), flats[0].get(k)) for f in flats[1:])]
+    return [(_setting(flats[0], k)[0], [_setting(f, k)[1] for f in flats]) for k in keys]
 
 
 def _same_cfg(a, b) -> bool:
@@ -286,7 +303,8 @@ class MainWindow(QMainWindow):
         self._close_when_finished = False
         self._result_cfg = None
         self._sim_runs: list[SimRun] = []
-        self._waiting_runs: dict[Path, list[Callable[[], None]]] = {}  # runs being simulated again, and what then
+        # Runs being simulated again, and for each who's waiting: what to do then, and what to do if it can't be.
+        self._waiting_runs: dict[Path, list[tuple[Callable[[], None], Callable[[], None] | None]]] = {}
         self._wanted_run: SimRun | None = None  # the run last clicked, which shows once it's simulated again
         self._grain_was_loading = False  # the grain's loading was on screen, so its end gets a status message
         self._measured: MeasuredCurve | None = None
@@ -432,6 +450,8 @@ class MainWindow(QMainWindow):
         self.study_page.started.connect(self._sync_busy)
         self.study_page.finished.connect(self._sync_busy)
         self.mass_page = self._make_mass_page()
+        self.flight_page = FlightPage(self._prefs, lambda: self.display_units, self._motor_runs, self._with_curves,
+                                      _varied_settings)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("pageTabs")
         self.tabs.setDocumentMode(True)
@@ -442,6 +462,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.sim, "Simulation")
         self.tabs.addTab(self.study_page, "Sweep")
         self.tabs.addTab(self.mass_page, "Mass && export")
+        self.tabs.addTab(self.flight_page, "Flight")
         self.tabs.setCurrentWidget(self.sim)
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1070,6 +1091,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Closing when the current simulation finishes…")
             event.ignore()
             return
+        self.flight_page.stop()
         self._save_session()
         event.accept()
 
@@ -1102,7 +1124,6 @@ class MainWindow(QMainWindow):
             same.output, same.state, same.settings = o, x, s
             self._select_run(same)
             return
-        name = str(cfg.get("mtr_nm") or "motor")
         previous = mine[-1] if mine else None
         changes = _changed_settings(previous.cfg, cfg) if previous else []
         what = (", ".join(changes[:3]) + (f" +{len(changes) - 3} more" if len(changes) > 3 else "")) if changes else (
@@ -1111,21 +1132,21 @@ class MainWindow(QMainWindow):
         info = summarize(s, x, o)
         results = {"total_impulse": info["total_impulse"], "peak_P_cmbr": info["peak_pressure_bar"] * 1e5,
                    "burn_time": info["burn_time"]}
-        run = SimRun(file, f"{number}. {name}: {what}", cfg, tuple(changes), results,
+        run = SimRun(file, f"{number}. {what}", cfg, tuple(changes), results,
                      datetime.now().isoformat(timespec="seconds"), o, x, s)
         run.save()
         self._sim_runs.append(run)
         self._add_run_item(run)
         self._select_run(run)
 
-    def _with_curves(self, sim_run: SimRun, then: Callable[[], None]):
+    def _with_curves(self, sim_run: SimRun, then: Callable[[], None], failed: Callable[[], None] | None = None):
         """Do something with a run's curves, once it's simulated again if it was read from its file."""
         if sim_run.output is not None:
             then()
             return
         waiting = self._waiting_runs.setdefault(sim_run.file, [])
-        if then not in waiting:
-            waiting.append(then)
+        if (then, failed) not in waiting:
+            waiting.append((then, failed))
         if len(waiting) == 1:
             self._resimulator.start(sim_run)
             stl = " Its grain STL can take a minute to load." if sim_run.cfg.get("grn_shape") == "stl" else ""
@@ -1135,10 +1156,13 @@ class MainWindow(QMainWindow):
         waiting = self._waiting_runs.pop(sim_run.file, [])
         if isinstance(result, str):
             self.statusBar().showMessage(f"Couldn't simulate {sim_run.label} again: {result}")
+            for _then, failed in waiting:
+                if failed is not None:
+                    failed()
         elif sim_run in self._sim_runs:  # not deleted meanwhile
             sim_run.settings, sim_run.state, sim_run.output = result
             self.statusBar().clearMessage()
-            for then in waiting:
+            for then, _failed in waiting:
                 then()
 
     def _sync_runs(self):
@@ -1168,6 +1192,7 @@ class MainWindow(QMainWindow):
         if shown is not None:
             self._select_run(shown)
         self.study_page.sync_runs(self._runs_dir(self._shown), self._motor_name())
+        self.flight_page.sync_runs()
 
     def _select_run(self, run: SimRun):
         """Highlight the run whose settings and results are shown."""
@@ -1270,7 +1295,7 @@ class MainWindow(QMainWindow):
                 self._refresh_plot()
 
     def _export_run(self, run: SimRun):
-        name = "".join(c if c.isalnum() or c in " -_." else "_" for c in run.label).strip() or "run"
+        name = "".join(c if c.isalnum() or c in " -_." else "_" for c in f"{run.cfg.get('mtr_nm') or 'motor'} {run.label}").strip()
         path, _ = QFileDialog.getSaveFileName(self, "Export run", self._dialog_path(f"{name}.csv"), "CSV (*.csv)")
         if path:
             self._remember_file_dir(path)
@@ -1795,6 +1820,7 @@ class MainWindow(QMainWindow):
         self._update_derived_labels()
         self.sizing_page.refresh()
         self.study_page.refresh()
+        self.flight_page.refresh()
         self.grain_view.refresh()
         self.sim.run_grain.refresh()
         if self._output is not None:
@@ -1808,6 +1834,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "sim"):
             self.sim.motor_panel.set_theme(name)
             self.sim.plots.set_theme(name)
+            self.flight_page.set_theme(name)
         if hasattr(self, "mass_preview"):
             self.mass_preview.set_theme(name)
         if hasattr(self, "sizing_page"):

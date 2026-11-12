@@ -24,6 +24,7 @@ dependencies = [
     "networkx",
     "scikit-image",
     "PyOpenGL",
+    "jpype1",
 ]
 
 [project.optional-dependencies]
