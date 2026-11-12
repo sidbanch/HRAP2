@@ -120,8 +120,8 @@ Flies a motor's runs on a rocket in OpenRocket's own simulator and compares what
 - **Runs to fly** lists the motor's runs from the Simulation tab. Tick the ones to fly and press **Fly**.
 - The table gives each run's apogee, top speed and Mach, speed and stability as it leaves the rail, peak acceleration and time to apogee. Settings that differ between the ticked runs (tank temperature, say) get their own column, and when it's one number **Plot** can show apogee against it.
 - Each run's motor file uses the Mass & export tab's dry mass, CG and size, as **Export RSE** does.
-- Every motor flies through the same gusts, so the same run always gives the same numbers. OpenRocket itself draws new gusts each time, so its own apogee differs by a few feet.
-- Needs OpenRocket 24.12 or newer installed (**Find OpenRocket…** if it's somewhere unusual). The motor goes in every motor mount of the rocket. Not in the Windows zip build.
+- Every motor flies through the same gusts, so the same run always gives the same numbers. OpenRocket itself draws new gusts each time, so its own numbers move a little from run to run.
+- Needs OpenRocket 24.12 or newer installed (**Find OpenRocket…** if it's somewhere unusual). The rocket must have exactly one motor mount; a cluster in that mount is fine. Not in the Windows zip build.
 
 ## Command line
 

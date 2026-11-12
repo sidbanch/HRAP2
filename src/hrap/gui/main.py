@@ -205,6 +205,8 @@ def _setting(cfg: dict, k: str) -> tuple[str, str]:
     key, v = k.split(".")[-1], cfg.get(k)
     name = _SETTING_NAMES.get(key, key.replace("_", " "))
     if key == "inj_Cd":  # the Motor tab shows the injector as a CdA
+        if v is None or cfg.get("inj_D") is None:
+            return "CdA", "auto"
         D = to_si(float(cfg["inj_D"]), cfg.get("inj_D_unit") or "in", "length")
         return "CdA", f"{from_si(float(v) * 0.25 * math.pi * D ** 2, 'in^2', 'area'):.4g} in²"
     if key == "inj_cda_curve":
@@ -221,7 +223,8 @@ def _changed_settings(old: dict, new: dict) -> list[str]:
     """What a run changed from an earlier one, as short "setting value" pieces."""
     a, b = _flat(old), _flat(new)
     changes = ["constant CdA"] if a.get("inj_cda_curve") and b.get("inj_cda_curve") is None else []
-    return changes + [" ".join(_setting(b, k)) for k, v in b.items() if _compared(k) and not _same_cfg(a.get(k), v)]
+    return changes + [" ".join(_setting(b, k)) for k, v in b.items() if _compared(k) and not _same_cfg(a.get(k), v)
+                      and not (k == "inj_cda_curve" and changes)]
 
 
 def _varied_settings(cfgs: list[dict]) -> list[tuple[str, list[str]]]:
@@ -1144,10 +1147,11 @@ class MainWindow(QMainWindow):
         if sim_run.output is not None:
             then()
             return
+        already_running = sim_run.file in self._waiting_runs
         waiting = self._waiting_runs.setdefault(sim_run.file, [])
         if (then, failed) not in waiting:
             waiting.append((then, failed))
-        if len(waiting) == 1:
+        if not already_running:
             self._resimulator.start(sim_run)
             stl = " Its grain STL can take a minute to load." if sim_run.cfg.get("grn_shape") == "stl" else ""
             self.statusBar().showMessage(f"Simulating {sim_run.label} again…{stl}")
@@ -1156,10 +1160,11 @@ class MainWindow(QMainWindow):
         waiting = self._waiting_runs.pop(sim_run.file, [])
         if isinstance(result, str):
             self.statusBar().showMessage(f"Couldn't simulate {sim_run.label} again: {result}")
+        if isinstance(result, str) or sim_run not in self._sim_runs:  # or it was deleted meanwhile
             for _then, failed in waiting:
                 if failed is not None:
                     failed()
-        elif sim_run in self._sim_runs:  # not deleted meanwhile
+        else:
             sim_run.settings, sim_run.state, sim_run.output = result
             self.statusBar().clearMessage()
             for then, _failed in waiting:

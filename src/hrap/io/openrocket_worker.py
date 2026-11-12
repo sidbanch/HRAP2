@@ -18,6 +18,24 @@ def _number(value) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _seed_wind(options):
+    """Keep the gusts the same across motors and separate flights."""
+    try:
+        winds = [options.getAverageWindModel()]
+        for level in options.getMultiLevelWindModel().getLevels():
+            model = level.getClass().getDeclaredField("model")
+            model.setAccessible(True)
+            winds.append(model.get(level))
+        for wind in winds:
+            seed = wind.getClass().getDeclaredField("seed")
+            seed.setAccessible(True)
+            seed.setInt(wind, 0)
+        options.setRandomSeed(0)
+    except Exception:
+        raise ValueError("Couldn't keep OpenRocket's gusts the same between flights. "
+                         "This OpenRocket version's wind model isn't supported.") from None
+
+
 def main():
     job = json.load(sys.stdin)
     import jpype
@@ -47,13 +65,10 @@ def main():
         if not mounts:
             raise ValueError("The rocket has no motor mount. In OpenRocket, tick \"This component is a motor mount\" "
                              "on its motor tube.")
-        # The same gusts for every motor and every time, so flights can be compared. OpenRocket picks the gusts'
-        # seed when it loads the file and has no way to set it.
-        wind = simulation.getOptions().getAverageWindModel()
-        seed = wind.getClass().getDeclaredField("seed")
-        seed.setAccessible(True)
-        seed.setInt(wind, 0)
-        simulation.getOptions().setRandomSeed(0)
+        if len(mounts) != 1:
+            raise ValueError(f"This rocket has {len(mounts)} motor mounts. "
+                             "The Flight tab only handles a rocket with one for now.")
+        _seed_wind(simulation.getOptions())
     except Exception as exc:  # nothing can be flown
         say(error=_message(exc))
         return
@@ -65,10 +80,10 @@ def main():
                 motor = core.file.motor.GeneralMotorLoader().load(stream, java.io.File(file).getName()).get(0).build()
             finally:
                 stream.close()
-            for mount in mounts:
-                fitted = core.motor.MotorConfiguration(mount, config, mount.getMotorConfig(config))
-                fitted.setMotor(motor)
-                mount.setMotorConfig(fitted, config)
+            mount = mounts[0]
+            fitted = core.motor.MotorConfiguration(mount, config, mount.getMotorConfig(config))
+            fitted.setMotor(motor)
+            mount.setMotorConfig(fitted, config)
             simulation.simulate()
             data = simulation.getSimulatedData()
             branch = data.getBranch(0)

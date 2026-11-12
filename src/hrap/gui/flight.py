@@ -240,7 +240,8 @@ class FlightPage(QWidget):
                                     "rail, the wind and the launch site.")
             return
         s = ork.simulations[i]
-        text = f"{self._length(s.rod_length, 1)} rail, {s.rod_angle:g}° from vertical, {self._speed(s.wind)} wind."
+        wind = "multi-level wind" if s.multi_level_wind else f"{self._speed(s.wind)} wind"
+        text = f"{self._length(s.rod_length, 1)} rail, {s.rod_angle:g}° from vertical, {wind}."
         if s.apogee:
             text += (f" OpenRocket last saved an apogee of {self._length(s.apogee)}"
                      + (f" on its {s.motor} motor." if s.motor else "."))
@@ -305,7 +306,8 @@ class FlightPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._ork is not None and self._ork.path.is_file() and self._ork.path.stat().st_mtime != self._ork_time:
+        if (not self.busy() and self._ork is not None and self._ork.path.is_file()
+                and self._ork.path.stat().st_mtime != self._ork_time):
             self._open_ork(str(self._ork.path), quiet=True)  # saved again in OpenRocket since
         self.sync_runs()
 
@@ -330,6 +332,11 @@ class FlightPage(QWidget):
             return
         self.error.hide()
         self._flying, self._stopped = runs, False
+        for run in runs:
+            self._flights.pop(run.file, None)
+        self._show_flights()
+        for control in (self.open_btn, self.simulations, self.find_btn):
+            control.setEnabled(False)
         self.fly_btn.setText("Stop")
         self.progress.setRange(0, 0)
         self.progress.show()
@@ -337,15 +344,16 @@ class FlightPage(QWidget):
         self.status.setText(f"Simulating {len(waiting)} saved run{'s' if len(waiting) != 1 else ''} again…" if waiting
                             else "Starting OpenRocket…")
         for run in waiting:
-            self._with_curves(run, self._launch_when_ready, self._simulation_failed)
-        self._launch_when_ready()
+            self._with_curves(run, lambda: self._launch_when_ready(runs), lambda: self._simulation_failed(runs))
+        self._launch_when_ready(runs)
 
-    def _simulation_failed(self):
-        if self.busy() and self._process is None:
-            self._end("One of the saved runs couldn't be simulated again (see the status bar). Untick it to fly the rest.")
+    def _simulation_failed(self, runs):
+        if runs is self._flying and self._process is None:
+            self._end("One of the saved runs couldn't be simulated again (see the status bar) or was deleted. "
+                      "Untick it to fly the rest.")
 
-    def _launch_when_ready(self):
-        if not self.busy() or self._process is not None or any(r.output is None for r in self._flying):
+    def _launch_when_ready(self, runs):
+        if runs is not self._flying or self._process is not None or any(r.output is None for r in runs):
             return
         self._tmp = tempfile.TemporaryDirectory(prefix="hrap-flight-")
         files = []
@@ -424,6 +432,8 @@ class FlightPage(QWidget):
             self._tmp.cleanup()
             self._tmp = None
         self.fly_btn.setText("Fly")
+        for control in (self.open_btn, self.simulations, self.find_btn):
+            control.setEnabled(True)
         self.progress.hide()
         self.status.setText(status)
         if error:

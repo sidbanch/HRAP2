@@ -70,6 +70,7 @@ class OrkSimulation:
     rod_length: float  # m
     rod_angle: float  # degrees from vertical
     wind: float  # m/s
+    multi_level_wind: bool
     motor: str  # the motor it was saved with
     apogee: float | None  # m, as saved
 
@@ -111,6 +112,7 @@ def read_ork(path: str | Path) -> Ork:
         simulations.append(OrkSimulation(
             sim.findtext("name") or f"Simulation {len(simulations) + 1}", number(sim, "launchrodlength"),
             number(sim, "launchrodangle"), number(sim, "windaverage"),
+            sim.findtext("conditions/windmodeltype") == "MultiLevel",
             motors.get(sim.findtext("conditions/configid"), ""), float(saved) if saved else None))
     return Ork(path, root.findtext("rocket/name") or path.stem, tuple(simulations))
 
