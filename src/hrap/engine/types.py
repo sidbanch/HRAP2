@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 import numpy as np
 
 if TYPE_CHECKING:
+    from hrap.advanced.tank import EquilibriumTank
     from hrap.engine.grain_stl import GrainTables
 
 
@@ -75,7 +76,6 @@ class Settings:
     inj_CdA_HEM: float = 0.0
     dyer_kappa: float = 1.0
     hem_flux: Optional[Callable[[float, float], float]] = None
-    solve_tank_cooling: bool = False  # cool the tank at the step's end temperature instead of HRAP's fallback
     inj_CdA_curve: Optional[np.ndarray] = None  # times (s) and total CdA (m²) of an injector whose flow changes over the burn
 
 
@@ -111,7 +111,8 @@ class State:
     m_t: float = 0.0
     cg: float = 0.0
     grn_web: float = 0.0
-    dT_cool: float = 0.0  # last step's tank cooling (K), the next step's starting guess
+    U_tnk: float = 0.0  # tank fluid internal energy [J], for the equilibrium model
+    equilibrium_tank: Optional[EquilibriumTank] = None
 
 
 @dataclass
@@ -135,5 +136,8 @@ class Output:
     grn_web: Optional[np.ndarray] = None
     inj_dP: Optional[np.ndarray] = None  # tank minus chamber pressure
     inj_CdA: Optional[np.ndarray] = None  # total injector CdA (m²)
+    U_tnk: Optional[np.ndarray] = None
+    m_liq: Optional[np.ndarray] = None
+    mdot_v: Optional[np.ndarray] = None  # external vent discharge [kg/s]
     sim_end_cond: str = ""
     extra: dict = field(default_factory=dict)

@@ -296,6 +296,12 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
     adv = cfg.get("advanced") or {}
     fluid_name = str(adv.get("ox_fluid") or "") if adv.get("enabled") else ""
     cp_fluid = "Oxygen" if "Oxygen" in fluid_name else "NitrousOxide"
+    equilibrium_tank = None
+    if cfg.get("solve_tank_cooling"):
+        from hrap.advanced.tank import EquilibriumTank
+
+        equilibrium_tank = EquilibriumTank(cp_fluid)
+        get_sat_props = equilibrium_tank.sat_props
     # HEM and Dyer take their injector flow from CoolProp, so the tank uses CoolProp too
     if get_sat_props is None and ("CoolProp" in fluid_name or cfg.get("inj_model", "SPI") != "SPI"):
         from hrap.advanced.fluid import coolprop_sat
@@ -416,7 +422,9 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
             return vapor_pressure(T) - P_targ
 
         try:
-            T_tnk = float(brentq(residual, 183.15, 309.56, xtol=2.2e-16, maxiter=200))
+            bounds = ((equilibrium_tank.t_min, equilibrium_tank.t_max) if equilibrium_tank is not None
+                      else (183.15, 309.56))
+            T_tnk = float(brentq(residual, *bounds, xtol=2.2e-16, maxiter=200))
         except ValueError:
             T_tnk = matlab_fzero(residual, 273.15)
     else:
@@ -463,7 +471,9 @@ def resolve(cfg: dict[str, Any], get_sat_props=None, *, grain_tables=None) -> tu
         F_thr=0.0,
         ox_props=ox,
     )
-    s.solve_tank_cooling = bool(cfg.get("solve_tank_cooling"))
+    if equilibrium_tank is not None:
+        x.equilibrium_tank = equilibrium_tank
+        equilibrium_tank.initialize(s, x)
     if cfg.get("inj_model", "SPI") != "SPI":
         from hrap.advanced.injector import hem_flux_table
         s.inj_model = str(cfg["inj_model"])

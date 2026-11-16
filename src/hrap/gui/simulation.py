@@ -620,11 +620,12 @@ class SimulationPage(QSplitter):
         root.setSpacing(CARD_GAP)
         root.addWidget(motor)
 
-        self.solve_tank_cooling = QCheckBox("Solve tank cooling each step")
+        self.solve_tank_cooling = QCheckBox("Conserve tank mass and energy (experimental)")
         self.solve_tank_cooling.setToolTip(
-            "Near the end of the liquid, HRAP's tank model runs into a numerical problem and switches to an\n"
-            "averaged pressure drop. This works out the tank cooling properly instead.\n"
-            "Total impulse usually changes by under 1%."
+            "Uses the same mass and energy balance through liquid runout and gas discharge.\n"
+            "Assumes liquid leaves until runout, phase equilibrium, and no heat from the tank wall.\n"
+            "After runout, vapor leaves and any condensate stays in the tank.\n"
+            "Uses CoolProp properties. Leave unchecked for the original HRAP tank model."
         )
         self.tmax = PlainDoubleSpinBox()
         self.tmax.setRange(0.01, 120)

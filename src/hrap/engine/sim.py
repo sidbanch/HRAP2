@@ -42,12 +42,18 @@ def _blank_output(s: Settings) -> Output:
         cg=z(),
         T_tnk=z(),
         grn_web=z(),
+        U_tnk=z() if s.get_sat_props is not None else None,
+        m_liq=z(),
+        mdot_v=z(),
     )
     return o
 
 
 def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
-    if x.mLiq_new <= 0 and "liquid_runout_time" not in o.extra:
+    if x.equilibrium_tank is not None:
+        if x.equilibrium_tank.runout_time is not None:
+            o.extra["liquid_runout_time"] = x.equilibrium_tank.runout_time
+    elif x.mLiq_new <= 0 and "liquid_runout_time" not in o.extra:
         o.extra["liquid_runout_time"] = t
     o.t[i] = t
     o.m_o[i] = x.m_o
@@ -68,6 +74,10 @@ def record(o: Output, x: State, t: float, i: int, s: Settings) -> None:
     o.dP[i] = x.dP
     o.F_thr[i] = x.F_thr
     o.T_tnk[i] = x.T_tnk
+    if o.U_tnk is not None:
+        o.U_tnk[i] = x.U_tnk
+    o.m_liq[i] = x.mLiq_new
+    o.mdot_v[i] = x.mdot_v
     mp = mass_properties(s, x)
     o.m_t[i] = mp[0]
     o.cg[i] = mp[1]
@@ -131,6 +141,10 @@ def sim_loop(
         "grn_web", "grn_ID", "mdot_n", "rdot", "m_f", "F_thr", "dP", "m_t", "cg", "T_tnk",
     ):
         setattr(o, name, getattr(o, name)[:last])
+    for name in ("U_tnk", "m_liq", "mdot_v"):
+        values = getattr(o, name)
+        if values is not None:
+            setattr(o, name, values[:last])
     o.inj_dP = o.P_tnk - o.P_cmbr
     o.inj_CdA = (np.full(o.t.size, s.inj_CdA * s.inj_N) if s.inj_CdA_curve is None
                  else np.interp(o.t, *s.inj_CdA_curve))
@@ -159,6 +173,12 @@ def run(
     o.m_f[0] = x.m_f
     if s.grain_geometry is not None and s.grain_geometry.case_web == 0:
         o.extra.update(case_contact_time=0.0, case_contact_fuel_percent=100.0)
+    if x.equilibrium_tank is not None:
+        o.extra["tank_model"] = "Adiabatic equilibrium (CoolProp)"
+        o.U_tnk[0] = x.U_tnk
+    else:
+        o.U_tnk = None
+    o.m_liq[0] = x.mLiq_new
     o.T_tnk[0] = x.T_tnk
     mp = mass_properties(s, x)
     o.m_t[0] = mp[0]

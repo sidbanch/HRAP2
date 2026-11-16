@@ -32,6 +32,10 @@ def export_csv(path: str | Path, o: Output, s: Settings | None = None) -> None:
         cols["m_t"] = o.m_t
     if o.cg is not None:
         cols["cg"] = o.cg
+    for name in ("T_tnk", "U_tnk", "m_liq", "mdot_v"):
+        values = getattr(o, name)
+        if values is not None:
+            cols[name] = values
     header = ",".join(cols.keys())
     data = np.column_stack([cols[k] for k in cols])
     np.savetxt(path, data, delimiter=",", header=header, comments="")

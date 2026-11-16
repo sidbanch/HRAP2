@@ -169,7 +169,7 @@ _SETTING_NAMES = {
     "reg_model": "fuel flow", "inj_model": "flow model", "grn_shape": "grain shape", "grn_stl": "STL",
     "grn_stl_voxel": "cube size", "grn_ends_burn": "ends burn",
     "sw_ports": "swirler holes", "sw_D_port": "swirler hole", "sw_R_in": "hole offset", "sw_xi": "inlet loss",
-    "noz_eff": "nozzle eff", "solve_tank_cooling": "tank cooling", "inj_type": "injector type",
+    "noz_eff": "nozzle eff", "solve_tank_cooling": "tank mass and energy", "inj_type": "injector type",
     "cmbr_L": "TCA length", "tnk_L": "tank length",
     "sw_cd_from_geometry": "Cd from geometry", "ptc_stock": "stock PTC", "ox_fluid": "oxidizer fluid",
     "enabled": "advanced options", "live_chem": "live chemistry", "dt": "timestep", "t_max": "max run time",

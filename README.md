@@ -91,7 +91,7 @@ Options that change the default MATLAB model:
   - **Dyer:** a blend of the two, weighted by κ (default 1).
 
   HEM and Dyer use CoolProp nitrous properties for the injector and the tank.
-- **Solve tank cooling each step** (Simulation tab, Run): replaces HRAP's averaged pressure drop near the end of the liquid with a calculated one. Changes total impulse by under 1%.
+- **Conserve tank mass and energy (experimental)** (Simulation tab, Run): uses an adiabatic equilibrium tank through liquid runout and vapor discharge. Assumes condensate stays in the tank after runout. Replaces the former optional cooling fix; see [assumptions and checks](docs/tank-model.md).
 - **Enable advanced options:** live chemistry and experimental fluid and grain models.
 
 ## Sweep tab
